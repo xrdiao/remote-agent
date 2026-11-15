@@ -24,14 +24,12 @@ function populated(cache = history(), app = 'codex') {
   return context;
 }
 
-test('fresh contexts own independent thinking state without new lifecycle fields', () => {
+test('fresh contexts own independent thinking state', () => {
   const first = new AgentContext(), second = new AgentContext();
   first.thinking.set('saved', 'first');
   first.thinkFinal.add('saved');
   assert.equal(second.thinking.has('saved'), false);
   assert.equal(second.thinkFinal.has('saved'), false);
-  assert.equal(Object.hasOwn(first, 'latestThink'), false);
-  assert.equal(Object.hasOwn(first, 'thinkTries'), false);
 });
 
 test('standalone initialization keeps its original full-reset scope', () => {

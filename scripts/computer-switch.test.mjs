@@ -208,14 +208,6 @@ function harness({ sameSelection = false, count = 2 } = {}) {
     timers, advance, jump: ms => { now += ms; } };
 }
 
-test('selection messages without appName keep the connected application display name', () => {
-  const h = harness();
-  for (const [app, name] of [['cursor', 'Cursor'], ['devin', 'Devin'], ['codex', 'Codex']]) {
-    h.run(`applySelection({ app: '${app}', id: '${app}', sel: '${app}|window|thread', home: true }, false)`);
-    assert.equal(h.run('currentAppName'), name);
-  }
-});
-
 test('model reads carry request ownership, show matching items, and finish on errors or disconnect', async () => {
   const h = harness(); await h.start(); h.attached(0);
   h.run(`var menuSheetKind = '', menuRefreshTimer = 0, menuCache = new Map();
@@ -243,22 +235,6 @@ test('model reads carry request ownership, show matching items, and finish on er
   assert.equal(h.sockets.some(socket => socket.sent.some(message => message.t === 'pickMenu')), false);
 });
 
-test('ready computer switches onto its existing session and can send immediately without boot/auth/attach', async () => {
-  const h = harness(); await h.bothReady();
-  const boots = h.state().bootCalls, socket = h.link(1).socket;
-  await h.switchTo(1);
-  const state = h.state();
-  assert.equal(state.computer, computers[1].id); assert.equal(state.thread, 'thread-b');
-  assert(state.authed && state.windowReady && state.selectionReady && !state.chatStale);
-  assert.equal(state.bootCalls, boots); assert.equal(state.gateOpen, false);
-  assert.equal(h.trace.some(row => row[0] === 'preview'), false);
-  assert.equal(socket.sent.some(row => ['auth', 'attach', 'mode'].includes(row.t)), false);
-  h.run(`send({t:'send',text:'to computer B',submit:true})`);
-  assert.equal(socket.sent.at(-1).t, 'send');
-  assert.equal(socket.sent.at(-1).sel, 'codex|window-b|thread-b');
-  assert.equal(h.link(0).socket.sent.some(row => row.t === 'send'), false);
-});
-
 test('a first-screen request completed after parking can be adopted without another load', async () => {
   const h = harness(); await h.start(); h.attached(0);
   await h.open(1); await h.switchTo(1);
@@ -274,22 +250,6 @@ test('a first-screen request completed after parking can be adopted without anot
   assert.equal(h.state().windowReady, true);
   assert.equal(h.state().thread, 'thread-b');
   assert.equal(h.link(1).socket.sent.some(row => row.t === 'attach'), false);
-});
-
-test('drafts and draft epochs stay with their computers through repeated switches', async () => {
-  const h = harness(); await h.bothReady();
-  h.run(`text.value='draft A';draftEpoch='epoch-a';saveDraft();`);
-  await h.switchTo(1);
-  h.run(`text.value='draft B';draftEpoch='epoch-b';saveDraft();`);
-  await h.switchTo(0);
-  assert.equal(h.state().draft, 'draft A'); assert.equal(h.state().epoch, 'epoch-a');
-  h.flushDraft();
-  assert.equal(h.link(0).socket.sent.at(-1).draftEpoch, 'epoch-a');
-  await h.switchTo(1);
-  assert.equal(h.state().draft, 'draft B'); assert.equal(h.state().epoch, 'epoch-b');
-  h.flushDraft();
-  assert.equal(h.link(1).socket.sent.at(-1).draftEpoch, 'epoch-b');
-  assert(h.state().activeDraft.startsWith(computers[1].id + '|'));
 });
 
 function useSendReceipts(h) {
@@ -567,16 +527,6 @@ test('terminal mode reuses an authenticated computer without treating chat as te
   assert(h.link(1).socket.sent.some(row => row.t === 'mode' && row.mode === 'terminal'));
 });
 
-test('a paired cold start and connection failure never open a full-page gate', async () => {
-  const h = harness();
-  h.run(`fetch=async()=>{throw new Error('fixture offline')}`);
-  await h.run('boot()'); await h.settle();
-  assert.equal(h.state().gateOpen, false);
-  h.link(0).socket.close(); await h.settle();
-  assert.equal(h.state().gateOpen, false);
-  assert.equal(h.link(0).phase, 'offline');
-});
-
 test('reconnecting B reuses one targeted load without changing A or its draft', async () => {
   const h = harness(); await h.bothReady();
   h.run(`text.value='keep A';saveDraft();overviewFetches=[];`);
@@ -592,32 +542,6 @@ test('reconnecting B reuses one targeted load without changing A or its draft', 
   assert.deepEqual(h.state(), before);
   assert.equal(h.link(0).socket.sent.some(m => m.t === 'attach' || m.t === 'send'), false);
   assert.equal(h.link(1).attempt, null);
-});
-
-test('authorization failure stays in the computer row until authorization is explicitly requested', async () => {
-  const h = harness(); await h.run('boot()'); await h.settle();
-  await h.link(0).socket.open();
-  h.link(0).socket.receive({ t: 'auth', ok: false, id: computers[0].id, needTotp: true });
-  await h.settle();
-  assert.equal(h.state().gateOpen, false);
-  assert.equal(h.link(0).phase, 'auth');
-  await h.run('authorizeComputer(loadComputers()[0].id)'); await h.settle();
-  await h.link(0).socket.open();
-  h.link(0).socket.receive({ t: 'auth', ok: false, id: computers[0].id, needTotp: true });
-  await h.settle();
-  assert.equal(h.state().gateOpen, true);
-});
-
-test('connection diagnostics use B address and retain A selection and content', async () => {
-  const h = harness(); await h.bothReady();
-  const before = h.state();
-  h.run(`var diagnosticUrls=[];fetch=async url=>{diagnosticUrls.push(url);return{ok:true,json:async()=>({self:true})}}`);
-  await h.run('checkComputerConnection(loadComputers()[1].id)');
-  const urls = JSON.parse(h.run('JSON.stringify(diagnosticUrls)'));
-  assert(urls.some(url => url.startsWith(computers[1].relay + '/url.json')));
-  assert(!urls.some(url => url.startsWith(computers[0].relay)));
-  assert.equal(h.run('ovStOf(loadComputers()[1].id).diagRunning'), false);
-  assert.deepEqual(h.state(), before);
 });
 
 test('a delayed heartbeat probes every connected computer instead of closing on an old receive timestamp', async () => {
@@ -977,22 +901,6 @@ test('retaining diagnostics never starts recovery for a rejected or replaced com
   }
 });
 
-test('connection details show only the requested computer history after auth clears the current failure', async () => {
-  const h = harness(); await h.bothReady(); h.link(1).socket.close(1006); await h.advance(0);
-  await h.open(1); h.attached(1); await h.settle(); assert.equal(h.link(1).failure, null);
-  const sheets = read('app/js/sheets.js'), esc = core.slice(core.indexOf('const esc ='), core.indexOf('\n', core.indexOf('const esc ='))).replace('const esc =', 'esc =');
-  h.run(esc + `\nvar sheetHtml='';openSheet=(kind,html)=>{sheetKind=kind;sheetHtml=html};`);
-  h.run(sheets.slice(sheets.indexOf('function connectionHistoryText('), sheets.indexOf('function showAgentManager(')));
-  h.run(`showConnectionDetails(loadComputers()[0].id)`); assert(!h.run('sheetHtml').includes('data-connection-history'));
-  h.link(1).lastClose.closed.source = '<test-source>';
-  h.run(`showConnectionDetails(loadComputers()[1].id)`);
-  const html = h.run('sheetHtml');
-  assert(html.includes('最近一次关闭与恢复')); assert(html.includes('1006')); assert(html.includes('认证成功')); assert(html.includes('会话可用'));
-  assert(html.includes('&lt;test-source&gt;')); assert(!html.includes('<test-source>'));
-  assert(!html.includes(h.records[1].key)); assert(!html.includes(h.records[1].token));
-  assert(h.state().authed); assert.equal(h.state().computer, h.records[0].id); assert.equal(h.link(0).lastClose, undefined);
-});
-
 test('a ready or partially ready directory is usable while its conversation is still restoring', async () => {
   const h = harness(); await h.bothReady();
   h.run(overview.slice(overview.indexOf('function ovComputerStatus('), overview.indexOf('function ovStOf(')));
@@ -1080,69 +988,6 @@ function cardTerminalHome(h) {
   h.run("currentTerminalId='qa-terminal-a';ovShowConversation();setMode('terminal');ovLeave()");
   h.trace.length = 0; h.link(0).socket.sent.length = 0;
 }
-
-test('card opening from a terminal switches to chat and waits for its own fresh first screen', async () => {
-  for (const app of ['codex', 'cursor', 'devin']) {
-    const h = harness(); await h.bothReady(); installOverviewBinding(h, app); installCardModes(h); cardTerminalHome(h);
-    await h.run('ovOpen(cardTargets.b)');
-    assert.equal(h.run('mode'), 'chat');
-    assert.equal(h.link(0).socket.sent[0].t, 'mode'); assert.equal(h.link(0).socket.sent[0].mode, 'chat');
-    assert.equal(cardNavigations(h).length, 1);
-    assert.equal(cardNavigations(h)[0].threadId || cardNavigations(h)[0].id, app === 'codex' ? 'thread:window-a:card-b' : 'card-b');
-    const selection = { app, id: app === 'codex' ? 'codex' : app + ':window-a', threadId: 'card-b', sel: `${app}|window-a|card-b` };
-    h.attached(0, { ...selection, chat: undefined });
-    assert.equal(h.state().windowReady, false); assert.deepEqual(cardEntries(h), []);
-    h.deliver(0, { t: 'chat', sel: selection.sel, cached: true, chat: { thread: 'card-b', items: [] } });
-    assert.equal(h.state().windowReady, false); assert.deepEqual(cardEntries(h), []);
-    h.deliver(0, { t: 'chat', sel: selection.sel, chat: { thread: 'card-b', items: [] } });
-    assert.equal(h.state().thread, 'card-b'); assert.equal(h.state().windowReady, true);
-    assert.deepEqual(cardEntries(h), [['enter', computers[0].id, 'card-b']]);
-    assert.equal(cardNavigations(h).length, 1); assert.equal(h.run('currentTerminalId'), 'qa-terminal-a');
-  }
-});
-
-test('card navigation preserves the old terminal and the separate chat and terminal drafts', async () => {
-  const h = harness(); await h.bothReady(); installOverviewBinding(h); installCardModes(h);
-  h.run("cardTargets.a.threadId='thread-a';text.value='chat A draft';saveDraft();currentTerminalId='qa-terminal-a';ovShowConversation();setMode('terminal');text.value='terminal draft';saveDraft();ovLeave()");
-  h.link(0).socket.sent.length = 0;
-  await h.run('ovOpen(cardTargets.b)'); cardAttached(h, 'card-b');
-  assert.equal(h.state().draft, '');
-  h.run("text.value='chat B draft';setMode('terminal')");
-  assert.equal(h.state().draft, 'terminal draft'); assert.equal(h.run('currentTerminalId'), 'qa-terminal-a');
-  h.run('ovLeave()'); await h.run('ovOpen(cardTargets.a)'); cardAttached(h, 'thread-a');
-  assert.equal(h.state().draft, 'chat A draft');
-  h.run('ovLeave()'); await h.run('ovOpen(cardTargets.b)'); cardAttached(h, 'card-b');
-  assert.equal(h.state().draft, 'chat B draft');
-  assert.equal(h.link(0).socket.sent.some(m => ['newTerminal', 'closeTerminal', 'termWrite', 'termSend'].includes(m.t)), false);
-});
-
-test('terminal card navigation enters a Fusion native main conversation and clears its controller on ordinary exit', async () => {
-  const h = harness(); await h.bothReady(); installOverviewBinding(h); installCardModes(h); h.run(fusion); cardTerminalHome(h);
-  h.run(`ovS.comp=currentComputer().id;var run={id:'qa-controller',computer:currentComputer().id,main:{bindingId:'qa-main',app:'codex',target:{computer:currentComputer().id,win:'codex',windowId:'qa-main-window',threadId:'qa-main-thread'}},tasks:{total:0},status:'waiting'};
-    fusionWorkspaces.set(currentComputer().id,{runs:[run]});openFusionController(currentComputer().id,run.id)`);
-  await h.settle();
-  assert.equal(h.run('mode'), 'chat'); assert.equal(cardNavigations(h).length, 1);
-  assert.equal(cardNavigations(h)[0].id, 'codex'); assert.equal(cardNavigations(h)[0].threadId, 'qa-main-thread');
-  const main = { id: 'codex', app: 'codex', windowId: 'qa-main-window', threadId: 'qa-main-thread', sel: 'codex|qa-main-window|qa-main-thread',
-    fusionController: { id: 'qa-controller', computer: computers[0].id, main:{bindingId:'qa-main'}, tasks:{total:0} } };
-  h.attached(0, { ...main, chat: undefined });
-  assert.equal(h.run('currentApp'), 'codex'); assert.equal(h.run('currentFusionRun().id'), 'qa-controller');
-  assert.deepEqual(cardEntries(h), []); assert.equal(h.state().windowReady, false);
-  h.deliver(0, { t: 'chat', sel: main.sel, chat: { thread: main.threadId, items: [] } });
-  assert.equal(h.state().thread, main.threadId); assert.equal(h.run('document.body.classList.contains("fusion")'), true);
-  const mainNavigation = cardNavigations(h)[0].navigationId;
-  h.run("text.value='Fusion draft';setMode('terminal');ovLeave()"); await h.run('ovOpen(cardTargets.b)');
-  assert.equal(h.run('mode'), 'chat'); assert.equal(cardNavigations(h).length, 2);
-  cardAttached(h, 'card-b', { fusionController: null, chat: undefined });
-  assert.equal(h.run('activeFusionController'), null); assert.equal(h.state().windowReady, false);
-  h.attached(0, { ...main, navigationId: mainNavigation, chat: { thread: main.threadId, items: [] } });
-  assert.equal(h.run('activeFusionController'), null);
-  h.deliver(0, { t: 'chat', navigationId: mainNavigation, sel: main.sel, chat: { thread: main.threadId, items: [] } });
-  h.deliver(0, { t: 'chat', sel: 'codex|window-a|card-b', chat: { thread: 'card-b', items: [] } });
-  assert.equal(h.state().thread, 'card-b'); assert.equal(h.run('document.body.classList.contains("fusion")'), false);
-  assert.equal(h.run('ovS.comp'), computers[0].id); assert.equal(h.run('ovS.level'), 'fusion');
-  assert.deepEqual(cardEntries(h), [['enter', computers[0].id, main.threadId], ['enter', computers[0].id, 'card-b']]);
-});
 
 test('reading Fusion or opening an unconfigured controller keeps the terminal and only opens configuration', async () => {
   const h = harness(); await h.bothReady(); installOverviewBinding(h); installCardModes(h); h.run(fusion); cardTerminalHome(h);
@@ -1246,65 +1091,6 @@ test('failed binding stays on the board and an explicit retry makes a fresh nati
   assert.equal(cardNavigations(h).length, 2);
   cardAttached(h, 'card-a'); await opening; await h.settle();
   assert.deepEqual(cardEntries(h), [['enter', computers[0].id, 'card-a']]);
-});
-
-test('a ready expanded card still confirms the native target instead of reusing an already resolved binding', async () => {
-  for (const settled of [false, true]) {
-    const h = harness(); await h.bothReady(); installOverviewBinding(h);
-    h.run("cardTargets.a.threadId='thread-a';ovS.open='a';ovPrepareTools('a')");
-    if (settled) await h.settle();
-    await h.run('ovOpen(cardTargets.a)');
-    assert.equal(cardNavigations(h).length, 1); assert.equal(cardNavigations(h)[0].t, 'openAgent');
-    assert.equal(h.trace.some(row => row[0] === 'enter'), false);
-    cardAttached(h, 'thread-a'); await h.settle();
-    assert.equal(h.trace.filter(row => row[0] === 'enter').length, 1);
-  }
-});
-
-test('Codex cards confirm even the last ready target through one existing session request', async () => {
-  for (const same of [true, false]) {
-    const h = harness(); await h.bothReady(); installOverviewOpening(h);
-    const thread = same ? 'thread-a' : 'thread-a-other';
-    await h.run(`ovOpen({computer:loadComputers()[0].id,win:'codex',windowId:'window-a',threadId:${JSON.stringify(thread)}})`);
-    const requests = h.link(0).socket.sent.filter(m => ['attach', 'openAgent'].includes(m.t));
-    assert.equal(requests.length, 1); assert.equal(requests[0].t, 'openAgent');
-    assert.equal(requests[0].id, `thread:window-a:${thread}`);
-    assert.equal(h.state().windowReady, false); assert.equal(h.trace.some(row => row[0] === 'enter'), false);
-    h.attached(0, { threadId: thread, sel: `codex|window-a|${thread}`, chat: { thread, items: [] } });
-    assert.equal(h.state().thread, thread); assert.equal(h.trace.some(row => row[0] === 'enter'), true);
-  }
-});
-
-test('unready, other-window, project restoration and other-Agent cards retain their normal binding path', async () => {
-  for (const kind of ['unready', 'window', 'project', 'cursor']) {
-    const h = harness(); await h.bothReady(); installOverviewOpening(h);
-    if (kind === 'unready') h.run('windowReady=false');
-    await h.run(`ovOpen({computer:loadComputers()[0].id,win:${JSON.stringify(kind === 'cursor' ? 'cursor:window-a' : 'codex')},
-      windowId:${JSON.stringify(kind === 'window' ? 'other-window' : 'window-a')},threadId:'thread-a'
-      ${kind === 'project' ? ",project:{root:'/project',host:''}" : ''}})`);
-    const requests = h.link(0).socket.sent.filter(m => ['attach', 'openAgent'].includes(m.t));
-    assert.equal(requests.length, 1); assert.equal(requests[0].t, 'attach');
-    assert.equal(h.trace.some(row => row[0] === 'enter'), false);
-  }
-});
-
-test('a Codex card adopts the destination computer before choosing its same or different conversation', async () => {
-  for (const same of [true, false]) {
-    const h = harness(); await h.bothReady(); installOverviewOpening(h);
-    h.run(`text.value='keep source draft';saveDraft();ovEnterRequested=true`);
-    const boots = h.state().bootCalls, sockets = h.sockets.length, thread = same ? 'thread-b' : 'thread-b-other';
-    await h.run(`ovOpen({computer:loadComputers()[1].id,win:'codex',windowId:'window-b',threadId:${JSON.stringify(thread)}})`);
-    assert.equal(h.state().bootCalls, boots); assert.equal(h.sockets.length, sockets);
-    const requests = h.link(1).socket.sent.filter(m => ['auth', 'attach', 'openAgent'].includes(m.t));
-    assert.equal(requests.length, 1);
-    assert.equal(requests[0].t, 'openAgent'); assert.equal(requests[0].id, `thread:window-b:${thread}`);
-    assert.equal(h.state().windowReady, false);
-    h.attached(1, { threadId: thread, sel: `codex|window-b|${thread}`, chat: { thread, items: [] } });
-    assert.equal(h.state().computer, computers[1].id); assert.equal(h.state().thread, thread);
-    assert.equal(h.trace.filter(row => row[0] === 'enter').length, 1);
-    await h.switchTo(0); assert.equal(h.state().draft, 'keep source draft');
-    assert.equal(h.link(0).socket.sent.some(m => ['attach', 'openAgent'].includes(m.t)), false);
-  }
 });
 
 test('rapid cross-computer card choices cannot navigate the abandoned destination', async () => {

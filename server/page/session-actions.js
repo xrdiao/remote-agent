@@ -22,7 +22,9 @@
   };
   const cursorSessionWorkspaceUris = (id, current, header, workspace) => {
     const selected = current.workspaceIdentifier || header?.workspaceIdentifier;
+    if (selected?.id === 'empty-window') return [];
     if (selected?.uri) return [selected.uri];
+    if (header?.workspaceIdentifier?.uri && (!selected || selected.id === header.workspaceIdentifier.id)) return [header.workspaceIdentifier.uri];
     return selected?.id === workspace.id || !selected && id === activeThread()
       ? workspace.folders.map(folder => folder.uri) : null;
   };
@@ -48,7 +50,7 @@
       const uris = cursorSessionWorkspaceUris(id, data, headers.find(row => row.composerId === id), workspace);
       if (!uris) throw new Error('尚未读取到这个 Cursor 会话的项目目录');
       const roots = uris.map(uri => ({ root: uri.scheme === 'file' ? uriFilePath(uri) : uri.path, host: uri.scheme === 'file' ? '' : uri.authority.replace(/^ssh-remote\+/, '') }));
-      return { app, threadId: id, host: roots[0]?.host || '', cwd: roots[0]?.root || '', roots };
+      return { app, threadId: id, host: roots[0]?.host || '', cwd: roots[0]?.root || '', roots, projectless: uris.length === 0 };
     }
     const session = devinSessionRecord(id);
     if (!session) throw new Error('Devin 原生目录中没有这个会话');

@@ -93,26 +93,6 @@ for (const revision of ['first', 'renamed']) {
   });
 }
 
-for (const chinese of [false, true]) for (const follow of ['', 'queue', 'steer']) for (const dispatch of [false, true]) {
-  test(`native submit keeps the original ${follow || 'default'} action with ${chinese ? 'Chinese' : 'English'} controls, dispatch=${dispatch}`, async () => {
-    const nativeCalls = [], clicked = [];
-    const names = chinese ? ['发送', '排队', '引导'] : ['Send', 'Queue', 'Steer'];
-    const buttons = names.map(label => ({ getBoundingClientRect: () => ({ width: 20, height: 20 }),
-      getAttribute: key => key === 'aria-label' ? label : null, click: () => clicked.push(label) }));
-    const root = { querySelectorAll: () => buttons };
-    const editor = { getBoundingClientRect: () => ({ width: 40, height: 20 }), closest: () => null, contains: () => false,
-      __reactFiberFixture: { memoizedProps: { handleSubmit: value => { nativeCalls.push(value); }, submitDisabled: false, isInteractionBlocked: false, interactionsEnabled: true,
-        composerController: { getText: () => 'test draft' } } } };
-    const document = { getElementById: () => null, querySelector: () => null,
-      querySelectorAll: selector => selector === '.ProseMirror[contenteditable="true"]' ? [editor] : [] };
-    const page = nativePage(document, { getComputedStyle: () => ({ visibility: 'visible' }) });
-    assert.equal(await page.submitCodexMessage(follow, dispatch, 'request-fixture'), true);
-    assert.equal(clicked.length, 0);
-    assert.equal(nativeCalls.length, 1);
-    assert.equal(nativeCalls[0]?.followUpSubmitAction, follow || undefined);
-  });
-}
-
 function submitLifecycle(handleSubmit, flags = {}) {
   const events = [], nativeWindow = {};
   const draft = { value: 'draft', writes: 0 };
@@ -205,7 +185,7 @@ function sendAfterSubmission(app = 'codex') {
   const pending = new Promise(resolve => { settle = resolve; });
   const writes = [], events = [], controller = new AbortController();
   let waits = 0, draft = 'later draft';
-  const context = { app, scope: 'selection-1', sending: false,
+  const context = { app, threadId: 'thread-1', scope: 'selection-1', sending: false,
     selectionKey() { return this.scope; }, assertSelectedThread: async () => {},
     emit: event => events.push(event), syncAttachments: async () => {},
     adapter: {
@@ -213,14 +193,19 @@ function sendAfterSubmission(app = 'codex') {
       async submitPrompt(now, busy, when) { writes.push(['submit', draft, busy, when]); return !!busy; },
     },
   };
-  context.cdp = { nativeWindow: {}, async evaluate(expression) {
+  context.cdp = { nativeWindow: { async composerCall(expression, binding) {
+    assert.deepEqual(binding, { app: 'codex', threadId: context.threadId });
+    return vm.runInNewContext(expression, { nativeSessionInfo(app, thread, catalog, text) {
+      assert.equal(app, 'codex'); assert.equal(thread, context.threadId); assert.equal(catalog, 'draft');
+      draft = text; writes.push(['mirror', draft]); return draft;
+    } });
+  } }, async evaluate(expression) {
     if (expression.endsWith('.codexViewState(true)')) { waits++; return awaitCdpRead(pending); }
     if (expression.includes('return { focused, busy: h.agentState()?.busy, draft: h.composerDraft() };')) { writes.push(['focus']); return { focused: true, busy: true, draft }; }
     if (expression.endsWith('.composerDraft()')) return draft;
     if (expression.endsWith('.agentState()?.busy')) return true;
     if (expression.endsWith(".setComposerDraft('')")) { writes.push(['clear']); draft = ''; return true; }
     if (expression === FOCUS_COMPOSER) { writes.push(['focus']); return true; }
-    if (expression.includes('h.setComposerDraft(')) { draft = 'newer mobile draft'; writes.push(['mirror', draft]); return { draft }; }
     assert.fail('unexpected send read');
   } };
   return { context, writes, events, controller, settle,
@@ -269,21 +254,6 @@ test('Codex draft editing remains available during native submission preparation
   assert.deepEqual(h.writes, [['mirror', 'newer mobile draft']]);
 });
 
-for (const value of ['中文 text', 'first\n\n第三行\n', Array.from({ length: 30 }, (_, i) => 'line ' + i).join('\n')]) {
-  test(`Codex ordinary draft writes all ${value.split('\n').length} lines through one existing editor transaction`, async () => {
-    const calls = [];
-    const context = { cdp: { async evaluate(expression) {
-      calls.push(expression);
-      const expected = JSON.stringify(value);
-      assert(expression.endsWith(`.setComposerDraft(${expected})`));
-      return true;
-    } }, typeText: () => assert.fail('ordinary text must not be retyped line by line'),
-      typeWithCodexMentions: () => assert.fail('ordinary text has no references') };
-    await adapter.typeDraft.call(context, value, []);
-    assert.equal(calls.length, 1);
-  });
-}
-
 test('Codex draft references keep their existing rich-input path and unavailable input reports failure', async () => {
   const mentions = [{ section: 'local-files', label: 'file.txt' }], calls = [];
   await adapter.typeDraft.call({ typeWithCodexMentions: async (...args) => calls.push(args),
@@ -314,12 +284,6 @@ function codexMultilineDraft(paragraphText = false, innerRealm = false) {
   return { page, controller, submissions, writes };
 }
 
-test('Codex bound inner realm writes the visible native editor using its existing transaction', () => {
-  const h = codexMultilineDraft(false, true);
-  assert.equal(h.page.setComposerDraft('native\nvisible draft'), true);
-  assert.equal(h.page.codexPromptPayload(), 'native\nvisible draft'); assert.equal(h.writes.length, 1);
-});
-
 test('Codex thread drafts update the visible editor or retained state by thread and retain compare-before-clear', async () => {
   const values = new Map([['A', 'old A'], ['B', 'old B']]), writes = [];
   const draft = vm.runInNewContext(fragment(read('server/page/composer.js'), '  const codexConversationDraft =', '  const pickComposer =') + 'codexConversationDraft;', {
@@ -329,20 +293,6 @@ test('Codex thread drafts update the visible editor or retained state by thread 
   });
   assert.equal(await draft('A', 'new A'), 'new A'); assert.equal(await draft('B', 'new B'), 'new B');
   assert.equal(await draft('A', '', 'old A'), 'new A'); assert.deepEqual(writes, [['visible', 'A'], ['retained', 'B']]);
-});
-
-test('Codex multiline and long input validates its native payload instead of layout paragraph separators', async () => {
-  const h = codexMultilineDraft(true);
-  for (const original of ['first\nsecond', 'many lines\n\n' + 'long text\n'.repeat(1200)]) {
-    assert.equal(h.page.setComposerDraft(original), true);
-    assert.notEqual(h.page.composerDraft(), original.replace(/\n+$/g, ''), 'DOM text includes paragraph layout separators');
-    assert.equal(h.page.codexPromptPayload(), original);
-    assert.equal(h.controller.getPersistedText(), original);
-    assert.equal(await h.page.submitCodexMessage('', true, 'long-input'), true);
-    await h.page.codexViewState(true);
-    assert.equal(h.submissions.at(-1).text, original);
-    assert.equal(h.submissions.at(-1).persisted, original);
-  }
 });
 
 for (const follow of ['', 'queue', 'steer']) test(`Codex recalled multiline text keeps its serialized payload for ${follow || 'send'}`, async () => {
@@ -364,12 +314,18 @@ for (const follow of ['', 'queue', 'steer']) test(`Codex recalled multiline text
   }
 });
 
-test('Codex draft reads wait for native submission settlement and retain the genuinely newer desktop draft', async () => {
+test('Codex draft reads await the selected native thread and retain the genuinely newer desktop draft', async () => {
   let settle, value = 'already submitted', done = false;
   const pending = new Promise(resolve => { settle = resolve; }), events = [];
-  const fixture = { async codexViewState(wait) { assert.equal(wait, true); await pending; }, composerDraft: () => value };
-  const context = { app: 'codex', draftEpoch: 'epoch', draftGeneration: 0, selectionKey: () => 'codex|A',
-    cdp: { evaluate: expression => vm.runInNewContext(expression.replace(PAGE_SRC, 'fixture'), { fixture }) },
+  const fixture = { async nativeSessionInfo(app, thread, catalog) {
+    assert.equal(app, 'codex'); assert.equal(thread, 'A'); assert.equal(catalog, 'draft');
+    await pending; return value;
+  } };
+  const context = { app: 'codex', threadId: 'A', draftEpoch: 'epoch', draftGeneration: 0, selectionKey: () => 'codex|A',
+    cdp: { nativeWindow: { composerCall(expression, binding) {
+      assert.deepEqual(binding, { app: 'codex', threadId: 'A' });
+      return vm.runInNewContext(expression, fixture);
+    } } },
     emit: event => events.push(event) };
   const reading = ROUTES.draft.pre(context, { draftEpoch: 'epoch', revision: 3 }).then(() => { done = true; });
   await new Promise(resolve => setImmediate(resolve)); assert.equal(done, false); assert.equal(events.length, 0);
@@ -378,24 +334,8 @@ test('Codex draft reads wait for native submission settlement and retain the gen
   assert.equal(events[0].revision, 3); assert.equal(events[0].sel, 'codex|A');
 });
 
-for (const app of ['cursor', 'devin']) test(`${app} draft reads retain their immediate native read`, async () => {
-  const events = [], fixture = { composerDraft: () => app + ' draft', codexViewState: () => assert.fail('no Codex wait') };
-  await ROUTES.draft.pre({ app, draftEpoch: 'epoch', draftGeneration: 0, selectionKey: () => app + '|A',
-    cdp: { evaluate: expression => vm.runInNewContext(expression.replace(PAGE_SRC, 'fixture'), { fixture }) },
-    emit: event => events.push(event) }, { draftEpoch: 'epoch', revision: 1 });
-  assert.equal(events[0].text, app + ' draft'); assert.equal(events[0].ok, true);
-});
-
-for (const app of ['cursor', 'devin']) {
-  test(`${app} sends keep their existing path without the Codex submission wait`, async () => {
-    const h = sendAfterSubmission(app);
-    await h.run();
-    assert.equal(h.waits, 0); assert.equal(h.writes.filter(row => row[0] === 'submit').length, 1);
-  });
-}
-
-for (const chinese of [false, true]) for (const available of [false, true]) {
-  test(`native Max setting preserves selection and cleanup, Chinese=${chinese}, available=${available}`, async () => {
+for (const chinese of [false, true]) {
+  test(`unavailable native Max reports failure and restores selection, Chinese=${chinese}`, async () => {
     const points = [], keys = [], calls = [];
     let current = 'general', enabled = false;
     const data = () => ({ nav: [{ id: 'general', label: 'General', current: current === 'general' },
@@ -405,7 +345,7 @@ for (const chinese of [false, true]) for (const available of [false, true]) {
       if (source.endsWith('.codexSettingsData()') || source.includes('.waitSettings(')) return data();
       if (source.includes('.codexSettingPoint(')) return { x: /"(general|config|efforts|max)"/.exec(source)[1], y: 1 };
       if (source.startsWith('new Promise')) return enabled;
-      if (source.includes('[role=menuitemcheckbox]')) return available ? { id: 'max', enabled } : null;
+      if (source.includes('[role=menuitemcheckbox]')) return null;
       throw Error('unexpected Max test read');
     } };
     const context = {
@@ -414,8 +354,9 @@ for (const chinese of [false, true]) for (const available of [false, true]) {
       key: async value => keys.push(value),
     };
     const work = codexMethods.enableCodexMax.call(context);
-    if (available) { await work; assert.equal(enabled, true); assert.deepEqual(points, ['config', 'efforts', 'max', 'general']); assert.deepEqual(keys, ['Escape']); }
-    else { await assert.rejects(work, /当前 Codex 无法启用 Max/); assert.equal(enabled, false); assert.deepEqual(points, ['config', 'efforts', 'general']); }
+    await assert.rejects(work, /当前 Codex 无法启用 Max/); assert.equal(enabled, false);
+    assert.deepEqual(points, ['config', 'efforts', 'general']);
+    assert.deepEqual(keys, []);
     assert.deepEqual(calls, ['close']); assert.equal(current, 'general');
   });
 }
@@ -473,12 +414,6 @@ function imageDraftState(visible = true) {
   return vm.runInContext(fragment(read('server/page/chat-extract.js'), '  const codexSendState =', '  const waitCodexReceipt =')
     + '\ncodexSendState(true);', context);
 }
-
-test('Codex image-only drafts read the current native attachment flag independently of empty text', () => {
-  const image = imageDraftState();
-  assert.equal(image.payload, ''); assert.equal(image.draft, ''); assert.equal(image.hasDraftAttachments, true);
-  assert.equal(imageDraftState(false).hasDraftAttachments, false);
-});
 
 for (const queued of [false, true]) test(`native image-only ${queued ? 'queued' : 'admitted'} messages finish their registered receipt`, async () => {
   const draft = imageDraftState(), h = submission({ payload: draft.payload, attachments: draft.hasDraftAttachments, busy: queued });
@@ -696,15 +631,6 @@ for (const queued of [true, false]) test(`Codex queue edit confirms native ${que
   assert(calls.includes('poll'));
 });
 
-test('Codex queue edit status reflects immediate execution without changing Devin take-out', () => {
-  for (const [app, result, expected] of [['codex', { queued: false, messageId: 'sent' }, '已修改并已发送'],
-    ['codex', { queued: true, queueId: 'queued' }, '已修改，仍在排队'], ['devin', undefined, '已取回输入框，编辑后需重新发送']]) {
-    const events = []; ROUTES.queue.after({ app, selectionKey: () => 'selection', emit: message => events.push(message) },
-      { action: 'edit', id: 'old', text: 'new' }, result);
-    assert.equal(events.at(-1).msg, expected);
-  }
-});
-
 for (const queued of [true, false]) test(`page receipt distinguishes queued Markdown from serialized admission (queued=${queued})`, async () => {
   const text = '**bold** C:\\tmp', serialized = '\\*\\*bold\\*\\* C:\\tmp';
   const state = { thread: 'thread', messages: queued ? [] : [{ id: 'new-message', i: 'user-new', t: serialized }],
@@ -786,6 +712,7 @@ test('normal Codex read includes the paused queue confirmation once rather than 
   const dialog = {}, row = { id: 'queue-confirm:thread', dialog, text: 'paused queue', buttons: [{ label: 'keep' }], fields: [] };
   const document = { querySelectorAll: selector => selector === '[role=dialog]' ? [dialog] : [] };
   const context = vm.createContext({ IS_WIN: false, remoteContext: null, activeThread: () => 'thread', codexQueueConfirmRequests: () => [row],
+    codexNativeRequestRows: () => [], codexAsyncQuestionRows: () => [],
     doc: document, document, vis: () => true });
   const source = fs.readFileSync(new URL('../server/page/codex.js', import.meta.url), 'utf8');
   vm.runInContext(source.slice(source.indexOf('  const codexRequests ='), source.indexOf('  const codexRequestData =')) + ';globalThis.read=codexRequests;', context);

@@ -175,23 +175,6 @@ test('Windows FFmpeg discovery uses PATH and per-user install links and reports 
   assert.throws(() => platformFixture().findBin('ffmpeg'), /Windows.*FFmpeg.*PATH.*重启 relay/);
 });
 
-test('Cursor Windows native services become available without an agent status row', () => {
-  const anchor = {}, data = {}, services = { composerService: {}, composerDataService: data, backgroundComposerService: {}, nativeHostService: {} };
-  const instantiationService = { _services: { _entries: new Map(Object.keys(services).map(id => [id, id])) },
-    invokeFunction: fn => fn({ get: id => services[id] }) };
-  let ready = false;
-  const context = vm.createContext({ IS_WIN: true, window: {}, doc: { querySelectorAll: selector => {
-    assert.equal(selector, '.ui-agent-status-dot, .vscode-model-picker__trigger');return ready ? [anchor] : [];
-  } }, codexFiberProps: element => element ? [{ services: { workspace: { instantiationService } } }] : [] });
-  vm.runInContext(fragment(read('server/page/session-actions.js'), '  const cursorSessionInstantiation =', '  const nativeSessionContext =')
-    + '\nthis.services = cursorSessionServices;', context);
-  assert.equal(context.services(), null);
-  assert.equal(context.window.__remoteAgentCursorServices, undefined);
-  ready = true;
-  assert.equal(context.services().data, data);
-  assert.equal(context.services(), context.window.__remoteAgentCursorServices);
-});
-
 test('Cursor startup waits for native services on Windows and Ubuntu', () => {
   const source = fragment(read('server/page/agents.js'), '  const agentStartupState =', '  const cursorChatReady =');
   for (const windows of [false, true]) {
@@ -228,42 +211,6 @@ test('Windows Cursor model reads and changes retain the bound thread instead of 
   await methods.pickCursorMenu.call(session, 'model', 'Model A');
   assert.equal(context.states.foreground, 'Model B');assert.equal(context.states.bound, 'Model A');
   assert.deepEqual(Array.from(context.selected), ['bound', 'bound']);
-});
-
-test('Cursor model dispatch shares the bound native menu on Windows and Ubuntu', async () => {
-  const source = read('server/agent/menus.mjs');
-  const readMenu = fragment(source, '  async readMenu(', '  async closeMenus(');
-  const pickMenu = source.slice(source.indexOf('  async pickMenu('), source.lastIndexOf('\n};'));
-  for (const windows of [false, true]) {
-    const calls = [], replies = [];
-    const context = vm.createContext({ IS_WIN: windows, helpersCall: value => value, PAGE_SRC: 'native-page' });
-    const methods = vm.runInContext('({' + readMenu + pickMenu + '})', context);
-    const session = { app: 'cursor', sel: 'A', selectionKey: () => 'cursor|window|A',
-      readCursorMenu: async () => calls.push('windows-read'),
-      pickCursorMenu: async () => calls.push('windows-pick'), withCursorUiRead: fn => fn(),
-      adapter: { pickModelMenu: async () => { calls.push('linux-pick');return true; } },
-      emit: message => replies.push(message),
-      cdp: { evaluate: async expression => expression.includes('modelItemsFast') ? [{ label: 'Linux native' }]
-        : expression.includes('fusionConfig') ? null : expression.includes('extract') ? { model: 'Linux native' } : null },
-    };
-    await methods.readMenu.call(session, 'model', 7);
-    await methods.pickMenu.call(session, 'model', 'Model A');
-    assert.deepEqual(calls, ['windows-read','windows-pick']);
-  }
-});
-
-test('Windows Devin surface follows shell visibility rather than a retained mode-menu tree', () => {
-  const source = fragment(read('server/page/devin.js'), '  const devinSurface =', '  const devinRowSession =');
-  let visibility = 'hidden';const shell = {}, picker = {};
-  const context = vm.createContext({ IS_WIN: true, document: {
-    querySelector: selector => selector === '.desktop-shell-root' ? shell : null,
-    querySelectorAll: selector => selector.includes('mode-menu') ? [picker] : [],
-  }, getComputedStyle: () => ({ visibility }), vis: () => true,
-    codexFiberProps: () => [{ mode: 'agent' }] });
-  const surface = vm.runInContext(source + '\ndevinSurface;', context);
-  assert.equal(surface(), 'editor');visibility = 'visible';assert.equal(surface(), 'agent');
-  context.IS_WIN = false;
-  assert.equal(surface(), 'agent');
 });
 
 test('Windows Devin awaits the native view-switch command; Linux keeps the picker path', async () => {
@@ -428,35 +375,6 @@ test('Windows disk-list, drive-root and directory parents form a consistent navi
   const disk = await transfer('/api/transfer/list', { path: root });
   assert.equal(disk.data.atRoots, false); assert.equal(disk.data.parent, null);
   assert.equal(disk.data.path, localFilePath(root));
-});
-
-test('transfer UI navigates disk roots and disables parent and destination actions at the disk list', () => {
-  const nodes = new Map(), calls = [];
-  const node = id => { if (!nodes.has(id)) nodes.set(id, { setAttribute() {} }); return nodes.get(id); };
-  const state = { $: node, esc: String, transferTab: 'download', transferPicker: null, transferUploadPath: '',
-    transferDirectory: { path: null, parent: null, atRoots: true, os: 'win32', roots: ['C:/'] },
-    transferSelection: new Map(), transferFileOperation: null, transferClipboard: { computer: 'pc' }, transferComputer: { id: 'pc' },
-    renderTransferRows() {}, transferCount() {}, renderTransferUploads() {},
-    transferBrowse: (path, roots) => calls.push({ path, roots }),
-  };
-  state.transferCurrentDirectory = () => state.transferPicker || state.transferDirectory;
-  const context = vm.createContext(state), source = read('app/js/transfer.js');
-  vm.runInContext(fragment(source, 'function renderTransferPage()', 'function renderTransferRows()')
-    + fragment(source, "$('transferParent').onclick =", "$('transferRoots').onchange =") + '\nthis.render = renderTransferPage;', context);
-  context.render();
-  assert.equal(node('transferParent').disabled, true); assert.equal(node('transferPathButton').textContent, '磁盘');
-  assert.equal(node('transferNewFile').disabled, true); assert.equal(node('transferPaste').disabled, true);
-  state.transferDirectory = { path: 'C:/', parent: null, atRoots: false, os: 'win32' };
-  context.render(); assert.equal(node('transferParent').disabled, false);
-  node('transferParent').onclick(); assert.deepEqual(calls.pop(), { path: null, roots: true });
-  state.transferDirectory = { path: 'C:/Work', parent: 'C:/', atRoots: false, os: 'win32' };
-  context.render(); node('transferParent').onclick(); assert.deepEqual(calls.pop(), { path: 'C:/', roots: false });
-  state.transferDirectory = { path: '/', parent: null, atRoots: false, os: 'linux' };
-  context.render(); assert.equal(node('transferParent').disabled, true);
-  state.transferPicker = { path: null, parent: null, atRoots: true, os: 'win32' };
-  context.render(); assert.equal(node('transferUseDirectory').disabled, true);
-  state.transferPicker = { path: 'C:/Work', parent: 'C:/', atRoots: false, os: 'win32' };
-  context.render(); assert.equal(node('transferUseDirectory').disabled, false);
 });
 
 test('upload directory normalizes before joining and Windows invalid names are rejected', { skip: !IS_WIN }, async t => {

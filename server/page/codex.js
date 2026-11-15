@@ -363,14 +363,14 @@
     const questions = new Map();
     for (const scope of scopes) for (const bindings of scope.familyBindings.values()) {
       for (const [encoded, binding] of bindings) {
-        if (typeof encoded !== 'string' || !encoded.startsWith('{"entityKey":')) continue;
+        if (typeof encoded !== 'string' || !encoded.startsWith('{')) continue;
         const key = JSON.parse(encoded);
         if (key.threadId !== thread || key.hostId !== host) continue;
         const source = codexHistoryBinding(scope, binding), value = source?.get();
         if (!value?.question || value.question.id !== key.itemId) continue;
         sources.set(source.key, source);
         if (!value.isSkipped && (value.lastSubmission == null || value.draft.trim() !== value.lastSubmission))
-          questions.set(key.itemId, { ...value, key, selected: key.itemId === group?.selectedQuestionKey.itemId });
+          questions.set(key.itemId, { ...value, key, selected: key.itemId === group?.selectedQuestionKey?.itemId });
       }
     }
     return { sources, questions: [...questions.values()] };
@@ -379,21 +379,23 @@
     const manager = codexNativeManager();
     if (!manager) return [];
     const { questions } = codexAsyncQuestionState(codexRequestThread(), manager.hostId);
-    const selected = questions.find(state => state.selected) || questions[0];
-    return (selected ? [selected] : []).map(state => ({ id: 'async:' + state.question.id, text: state.question.title,
+    return questions.map(state => ({ id: 'async:' + state.question.id, text: state.question.title,
       buttons: [...state.question.options.map(option => ({ label: typeof option === 'string' ? option : option.label, disabled: state.isSubmitting })),
         { label: 'Skip', disabled: state.isSubmitting }, { label: 'Send', disabled: state.isSubmitting || !state.draft?.trim() }],
       fields: [{ label: '回答', value: state.draft || '', type: 'text', options: null }] }));
   };
   const codexOpenQuestion = async id => {
     const thread = codexRequestThread(), manager = codexNativeManager();
-    const question = codexAsyncQuestionState(thread, manager.hostId).questions.find(state => 'async:' + state.question.id === id);
+    const questions = codexAsyncQuestionState(thread, manager.hostId).questions;
+    const question = questions.find(state => 'async:' + state.question.id === id);
     if (!question) throw new Error('这条问题已不在所选会话的待回答列表中');
+    if (codexVisibleThread() !== thread && !await openCodexThread(thread)) throw new Error('未能打开问题所属的会话');
     const [native, { scope }] = await Promise.all([codexNativeModule('questions'), codexComposerScope(thread)]);
     if (thread !== codexRequestThread()) throw new Error('会话已切换，请重新打开问题');
     scope.set(native.groups, manager.hostId, current => {
       const groups = new doc.defaultView.Map(current);
-      groups.set(thread, nativeValue({ selectedQuestionKey: question.key, questionIds: [question.key.itemId] }));
+      groups.set(thread, nativeValue({ selectedQuestionKey: question.key,
+        questionIds: questions.filter(state => state.key.entityKey === question.key.entityKey).map(state => state.key.itemId) }));
       return groups;
     });
     const started = Date.now();
@@ -474,13 +476,9 @@
     };
   };
   const codexRequests = () => {
-    if (remoteContext?.app === 'codex') return [...codexNativeRequestRows(), ...codexAsyncQuestionRows(), ...codexQueueConfirmRequests()];
-    if (!activeThread()) return [];
-    {
-      const native = codexNativeRequestRows();
-      if (native.length) return [...native, ...codexQueueConfirmRequests()];
-    }
-    const rows = new Map(codexQueueConfirmRequests().map(row => [row.id, row]));
+    if (!(remoteContext?.threadId || activeThread())) return [];
+    const native = codexNativeRequestRows();
+    const rows = new Map([...native, ...codexAsyncQuestionRows(), ...codexQueueConfirmRequests()].map(row => [row.id, row]));
     const asyncSkips = new Set();
     const query = selector => [...new Set([doc, document])].flatMap(d => [...d.querySelectorAll(selector)]);
     for (const skip of query('[data-request-input-dismiss]').filter(vis)) {
@@ -490,7 +488,8 @@
       asyncSkips.add(skip);
       if (Array.isArray(props.questionAndOptions)) {
         const item = owner?.pendingRequest.item;
-        if (owner?.conversationId !== activeThread() || item?.requestId == null || item.completed) continue;
+        if (owner?.conversationId !== codexRequestThread() || item?.requestId == null || item.completed) continue;
+        if (codexNativeRequests().some(request => request.method === 'item/tool/requestUserInput' && request.id === item.requestId)) continue;
         const native = props, indexHook = fiber.memoizedState, answersHook = indexHook.next;
         const index = indexHook.memoizedState, answers = answersHook.memoizedState;
         props = {
@@ -516,11 +515,13 @@
       const question = props.questions[index];
       if (!question) continue;
       const id = 'async:' + question.id;
+      if (remoteContext && !rows.has(id) && owner?.conversationId !== codexRequestThread()) continue;
       const buttons = question.options.map(option => ({ label: option, selected: question.draft === option, disabled: !!props.isSubmitting, action: () => props.onDraftChange(option) }));
       buttons.push({ el: skip, label: skip.innerText || 'Skip', disabled: !!props.isSubmitting });
       buttons.push({ label: index < props.questions.length - 1 ? 'Next' : props.hasSubmitted ? 'Send update' : 'Send', disabled: !!props.isSubmitting || !question.draft.trim(), submit: index === props.questions.length - 1, action: () => index < props.questions.length - 1 ? props.onQuestionChange(index + 1) : props.onSubmit() });
       rows.set(id, { id, submissionKey: fiber.key, text: question.question, buttons, fields: [{ label: '回答', value: question.draft, type: question.type || 'text', options: question.type === 'select' ? question.options.map(value => ({ value, label: value })) : null, onChange: props.onDraftChange }] });
     }
+    if (remoteContext || native.length) return [...rows.values()];
     for (const el of query('button, input, textarea, select, [role=radio], [role=checkbox]')) {
       if (!vis(el) || el.closest('[contenteditable=true]')) continue;
       const approvalCard = el.closest('[data-codex-approval-surface]');
@@ -610,7 +611,6 @@
       await button.action();
       return true;
     }
-    if (remoteContext?.app === 'codex') return codexNativeRequestAction(id, n, fields);
     {
       if (codexNativeRequests().some(request => codexNativeRequestId(request) === id)) return codexNativeRequestAction(id, n, fields);
       if (id.startsWith('async:') && !codexRequests().find(row => row.id === id)?.buttons.some(button => button.action)) await codexOpenQuestion(id);
@@ -652,7 +652,7 @@
   };
   const codexRequestField = (id, n, value) => {
     const field = codexRequests().find(r => r.id === id)?.fields[n];
-    if (!remoteContext && id.startsWith('async:') && field && !field.el && !field.onChange
+    if (id.startsWith('async:') && field && !field.el && !field.onChange
         && !codexNativeRequests().some(request => codexNativeRequestId(request) === id))
       return codexOpenQuestion(id).then(() => codexRequestField(id, n, value));
     if (field?.onChange) { field.onChange(value); return true; }
@@ -716,12 +716,12 @@
     for (const item of changed?.items || []) {
       if (item.type !== 'patch') continue;
       for (const [name, change] of Object.entries(item.changes || {})) {
-        const diff = typeof change === 'string' ? change : change.unified_diff || change.diff || change.unifiedDiff || (change.type === 'add' ? String(change.content || '').replace(/\n$/, '').split('\n').map(l => '+' + l).join('\n') : '');
-        const lines = diff.split('\n');
+        const result = codexFileDiff([{ ...change, path: name, change }]);
         const previous = files.get(name);
-        const add = lines.filter(l => l.startsWith('+') && !l.startsWith('+++')).length;
-        const del = lines.filter(l => l.startsWith('-') && !l.startsWith('---')).length;
-        files.set(name, { name, add: diff ? '+' + (add + Number(previous?.add || 0)) : '未获取', del: diff ? '-' + (del + Math.abs(Number(previous?.del || 0))) : '', diff: [previous?.diff, diff].filter(Boolean).join('\n') });
+        const known = result.add != null && (!previous || previous.add !== '未获取');
+        files.set(name, { name, add: known ? '+' + (result.add + Number(previous?.add || 0)) : '未获取',
+          del: known ? '-' + (result.del + Math.abs(Number(previous?.del || 0))) : '',
+          diff: [previous?.diff, result.diff.map(([kind, text]) => kind === '…' ? text : kind + text).join('\n')].filter(Boolean).join('\n') });
       }
     }
     const last = !remoteContext || codexVisibleThread() === remoteContext.threadId

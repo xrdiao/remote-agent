@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isLocalFileReference, codeBlockHtml, elicitationFields } from '../../lib/shared-rules.mjs';
+import { codexFileDiff } from '../../lib/codex-diff.mjs';
 import { IS_WIN, normPath, windowsFilePath, posixFilePath, localFilePath, pathKey, samePath, localFileUri, uriFilePath } from '../../lib/platform.mjs';
 
 const DIR = path.dirname(fileURLToPath(import.meta.url));
@@ -11,6 +12,7 @@ const FRAGMENTS = [
 ];
 const sources = FRAGMENTS.map(f => fs.readFileSync(path.join(DIR, f), 'utf8').replace(/\s+$/, ''));
 const SHARED_SRC = `const IS_WIN = ${IS_WIN};
+const codexFileDiff = ${codexFileDiff.toString()};
 const normPath = ${normPath.toString()};
 const fileURLToPath = value => {
   const uri = new URL(value);

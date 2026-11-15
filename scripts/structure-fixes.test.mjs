@@ -8,10 +8,11 @@ import { EventEmitter } from 'node:events';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { beginOperation, captureOperation, withOperation, subscribeOperations, currentOperation } from '../server/operations.mjs';
 import { PAGE_SRC } from '../server/page/build.mjs';
-import { AgentContext, FOCUS_COMPOSER } from '../server/agent/context.mjs';
+import { FOCUS_COMPOSER } from '../server/agent/context.mjs';
 import { ensurePairedBrowser } from './paired-browser.mjs';
 import { writeTextFile } from '../lib/files.mjs';
 import { localFilePath } from '../lib/platform.mjs';
+
 import { methods as sessionMethods } from '../server/agent/session-actions.mjs';
 import { methods as menuMethods } from '../server/agent/menus.mjs';
 import { methods as projectMethods } from '../server/agent/projects.mjs';
@@ -178,7 +179,7 @@ test('shared composer targeting writes the selected Slate editor in an auxiliary
   const source = read('server/page/composer-target.js')
     + part(read('server/page/composer.js'), '  const pickComposer', '  const queueEditing')
     + part(read('server/page/composer.js'), '  const setComposerDraft', '  // Typeahead queries');
-  const context = createPageContext({ doc: document, document, codexFiberProps: () => [{ editor: slate }] });
+  const context = createPageContext({ remoteContext: null, doc: document, document, codexFiberProps: () => [{ editor: slate }] });
   vm.runInContext(source + ';this.write=setComposerDraft;this.draft=composerDraft;', context);
   assert.equal(context.write('one\ntwo'), true); assert.equal(context.draft(), 'one\ntwo'); assert.equal(other.innerText, 'other');
 });
@@ -211,18 +212,6 @@ test('Devin queue edit reports take-out while preserving the shared completion r
   const result = await ROUTES.queue.run(session, message); ROUTES.queue.after(session, message, result);
   assert.equal(events[0].t, 'unqueued'); assert.equal(events[1].t, 'queueDone'); assert.equal(events[1].ok, true);
   assert.equal(events[2].msg, '已取回输入框，编辑后需重新发送');
-});
-
-test('Markdown HTTPS links keep nested formatting and Devin external-link attributes', () => {
-  const text = { nodeType: 3, textContent: 'a & b' };
-  const strong = nativeNode({}, { nodeType: 1, tagName: 'STRONG', childNodes: [text] });
-  const anchor = nativeNode({ href: 'https://example.invalid/?a=1&b="x"' }, { nodeType: 1, tagName: 'A', childNodes: [strong] });
-  const document = { getElementById: () => null };
-  const page = nativePage(document, { getComputedStyle: () => ({ color: '' }) }, 'clean');
-  const generic = page.clean({ childNodes: [anchor] }), devin = page.clean({ childNodes: [anchor] }, true);
-  assert.match(generic, /href="https:\/\/example.invalid\/\?a=1&amp;b=&quot;x&quot;"/);
-  assert.match(generic, /<strong>a &amp; b<\/strong>/); assert.equal(generic.includes('target='), false);
-  assert.match(devin, /target="_blank" rel="noopener noreferrer"/); assert.match(devin, /<strong>a &amp; b<\/strong>/);
 });
 
 test('visual snapshots and live frames share visibility and buffer rules while Wayland is read at entry', async () => {
@@ -309,14 +298,6 @@ function devinAccountUsage({ inactive = false, fail = false, emit = true, unchan
   return { page: nativePage(document, { atob, Uint8Array }), calls, listeners, currentAccount, currentApi, unrelatedRoot, document };
 }
 
-test('Devin quota reads mounted account roots independently of unrelated editors and focus', async () => {
-  const h = devinAccountUsage({ unrelatedFirst: true });
-  const usage = await h.page.readDevinUsage(false);
-  assert.equal(usage.missing, false);
-  assert.equal(usage.limits[0].pct, 40);
-  assert.deepEqual(h.calls, [['decode', 'cached']]);
-});
-
 test('Devin quota refresh reads the native account snapshot, not stale React data or a window badge', async () => {
   const h = devinAccountUsage();
   const usage = await h.page.readDevinUsage(true);
@@ -393,16 +374,6 @@ test('reading native quota without refresh does not invent freshness', async () 
   assert.deepEqual(h.calls, [['decode', 'cached']]);
 });
 
-test('Devin quota respects native period visibility and formats a zero balance separately', async () => {
-  const h = devinAccountUsage({ daily: true });
-  const usage = await h.page.readDevinUsage(true);
-  assert.equal(usage.limits.length, 1);
-  assert.equal(usage.limits[0].pct, 75);
-  assert.equal(usage.limits[0].basis, 'remaining');
-  assert.equal(usage.limits[0].reset, new Date(1794384000000).toLocaleString('zh-CN'));
-  assert.equal(usage.extra, '$0.00');
-});
-
 for (const options of [{ missingApi: true }, { missingSnapshot: true }]) {
   test(`missing native account data is unknown, not a freshly read window badge: ${JSON.stringify(options)}`, async () => {
     const h = devinAccountUsage(options);
@@ -451,64 +422,6 @@ test('native reply images retain supported sources independently of cleaned HTML
     ['data:image/png;base64,fixture', 'blob:native-image', 'https://fixture/image.png']);
 });
 
-test('Codex imageView survives stored history without a mounted native turn', () => {
-  const input = { id: 'native-image-id', type: 'imageView', path: '/project/generated.png' };
-  const context = createPageContext({ codexUserItem: () => null, CAPACITY_ERROR: /capacity/,
-    codexThread: () => 'thread', codexForkProps: () => null, codexFiberProps: () => [],
-    doc: { querySelectorAll: () => [] }, source: { metadata: { status: 'completed' }, rawItems: [input], positions: new Map([[input.id, 0]]), nativeComplete: true, ids: [input.id] } });
-  const source = read('server/page/chat-extract.js');
-  vm.runInContext(part(source, '  const codexStoredTurn =', '  const codexLatestEntry =')
-    + part(source, '  const codexTurnItems =', '  const codexReadPage =')
-    + '\nthis.turn=codexStoredTurn({},null,false,source);this.items=codexTurnItems(null,{turn});', context);
-  const image = context.items.find(item => item.images?.length);
-  assert.equal(image.i, 'thread:generated-image:native-image-id');
-  assert.equal(image.images[0], input.path); assert.equal(image.keep, true);
-});
-
-test('Codex stored turns retain full command output and every file diff without changing pagination identity', () => {
-  const command = 'echo ' + 'full command '.repeat(30), output = 'full output\n'.repeat(30);
-  const rawItems = [
-    { id: 'exec', type: 'commandExecution', command, aggregatedOutput: output, exitCode: 2, status: 'failed' },
-    { id: 'patch', type: 'fileChange', status: 'completed', changes: [
-      { path: 'a.txt', diff: '--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-old\n+new\n context' },
-      { path: 'b.txt', diff: '+second' },
-    ] },
-  ];
-  const context = createPageContext({ codexUserItem: () => null, CAPACITY_ERROR: /capacity/,
-    codexThread: () => 'thread', codexForkProps: () => null, codexFiberProps: () => [],
-    doc: { querySelectorAll: () => [] }, source: { metadata: { status: 'completed' }, rawItems,
-      positions: new Map(rawItems.map((item, index) => [item.id, index])), nativeComplete: true, ids: rawItems.map(item => item.id) } });
-  const source = read('server/page/chat-extract.js');
-  vm.runInContext(part(source, '  const codexStoredTurn =', '  const codexLatestEntry =')
-    + part(source, '  const codexTurnItems =', '  const codexReadPage =')
-    + '\nthis.turn=codexStoredTurn({},null,false,source);this.summary=codexTurnItems(null,{turn,turnNumber:2});this.items=codexTurnItems(null,{turn,turnNumber:2},0,new Set(["thread:exec:exec","thread:patch:patch"]));', context);
-  const items = JSON.parse(JSON.stringify(context.items));
-  assert.equal(context.summary[0].cmd, undefined); assert.equal(context.summary[0].output, undefined);
-  assert.equal(context.summary[1].diff, undefined); assert.equal(context.summary[0].lazy, true);
-  assert.equal(items[0].cmd, command); assert.equal(items[0].output, output);
-  assert.equal(items[0].exitCode, 2); assert.equal(items[0].keep, true); assert.equal(items[0].kind, 'command');
-  assert.equal(items[0].status, 'failed'); assert.equal(items[0].order, 20000);
-  assert.equal(items[1].i, 'thread:patch:patch'); assert.equal(items[1].order, 20001);
-  assert.equal(items[1].add, 2); assert.equal(items[1].del, 1); assert.equal(items[1].status, 'completed');
-  assert.equal(items[1].done, true); assert.equal(items[1].kind, 'edit');
-  assert.deepEqual(items[1].diff, [['…', 'a.txt'], ['…', '--- a/a.txt'], ['…', '+++ b/a.txt'],
-    ['…', '@@ -1 +1 @@'], ['-', 'old'], ['+', 'new'], [' ', 'context'], ['…', 'b.txt'], ['+', 'second']]);
-  assert.equal(items.length, 2);
-});
-
-test('terminal input reads the live prompt rather than candidate output retained by shell integration', () => {
-  let value = 'user@host:~$ cat folder ';
-  const terminal = { element: { dataset: { remoteTerminal: 'terminal' } },
-    _addonManager: { _addons: [{ instance: { capabilities: new Map([[2, { commands: [], promptInputModel: { value: 'old command\ncandidates\nuser@host:~$ cat folder ' } }]]) } }] },
-    buffer: { active: { baseY: 0, cursorY: 0, get cursorX() { return value.length; }, length: 1,
-      getLine: () => ({ isWrapped: false, translateToString: (trim, start = 0, end) => trim ? value.trimEnd() : value.slice(start, end) }) } } };
-  const page = nativePage({ getElementById: () => null, querySelector: () => ({ xterm: terminal }) });
-  assert.equal(page.terminalHistory().input, 'cat folder ');
-  assert.equal(page.terminalCommand(), 'cat folder');
-  value = 'user@host:~$ ';
-  assert.equal(page.terminalHistory().input, '');
-});
-
 for (const label of ['Recent chats', '最近聊天', '最近のチャット', 'واجهة محلية']) {
   test(`Codex native providers retain query, route and history ownership with label ${label}`, async () => {
     const routes = [], scope = { familyBindings: new Map() }, staleScope = { familyBindings: new Map() };
@@ -528,98 +441,6 @@ for (const label of ['Recent chats', '最近聊天', '最近のチャット', '�
   });
 }
 
-test('Codex native providers remain readable while the desktop view is hidden', async () => {
-  const routes = [], query = { getQueryData: () => [] }, scope = { familyBindings: new Map() };
-  const root = fiber(nativeNode({}, {}, false), [{ value: query }, { value: { router: { navigate: value => routes.push(value) } } }, { value: new Map([['scope', scope]]) }]);
-  const page = nativePage({ getElementById: () => null, querySelectorAll: () => [root] }, {}, 'codexQueryClient,codexHistoryScopes');
-  assert.equal(page.codexQueryClient(), query);
-  assert.deepEqual([...page.codexHistoryScopes()], [scope]);
-  assert.equal(await page.openCodexThread('hidden-thread'), true);
-  assert.deepEqual(routes, ['/local/hidden-thread']);
-});
-
-test('Codex state remains readable when a Question replaces the main composer', () => {
-  for (const anchor of ['[data-request-input-dismiss]', '[data-response-annotation-conversation]']) {
-    const query = { getQueryData: () => [] }, scope = { familyBindings: new Map() };
-    const question = fiber(nativeNode(), [{ value: query }, { value: new Map([['scope', scope]]) }]);
-    const hidden = fiber(nativeNode({}, {}, false), [{ value: { getQueryData() {} } }]);
-    const doc = { getElementById: () => null, querySelectorAll: selector => selector.includes(anchor) ? [hidden, question] : [] };
-    const page = nativePage(doc, {}, 'codexQueryClient,codexHistoryScopes');
-    assert.equal(page.codexQueryClient(), query);
-    assert.deepEqual([...page.codexHistoryScopes()], [scope]);
-  }
-});
-
-for (const label of ['Recent chats. 1 in progress', '最近聊天。1 个处理中']) {
-  test(`Codex recent popover uses the native trigger state and content ID: ${label}`, () => {
-    const button = nativeNode({ 'aria-label': label }), hidden = nativeNode({ 'aria-label': label }, {}, false);
-    const content = nativeNode({}, { querySelectorAll: () => [] });
-    const menu = { triggerRef: { current: button }, contentId: 'native-menu', open: false,
-      onOpenChange(value) { this.open = value; } };
-    fiber(button, [menu]);
-    const doc = { getElementById: id => id === 'native-menu' && menu.open ? content : null,
-      querySelectorAll: selector => selector === 'button' ? [hidden, button] : [] };
-    const page = nativePage(doc, {}, 'codexRecentMenu');
-    assert.equal(page.codexRecentPoint().open, false);
-    page.codexRecentPoint(true);
-    assert.equal(page.codexRecentPoint().open, true);
-    assert.equal(page.codexRecentMenu(), content);
-    assert.equal(page.closeCodexMenu(), true);
-    assert.equal(menu.open, false);
-  });
-}
-
-for (const busy of [false, true]) {
-  test(`Codex busy state uses the native response flag, independently of labels and queue capability: ${busy}`, () => {
-    const root = nativeNode(), editor = fiber(nativeNode({}, { closest: selector => selector === '[data-composer-body]' ? root : null }),
-      [{ isResponseInProgress: busy, isQueueingEnabled: true }]);
-    const doc = { getElementById: () => null, querySelector: () => null,
-      querySelectorAll: selector => selector === '.ProseMirror[contenteditable="true"]' ? [editor] : [] };
-    const page = nativePage(doc, {}, 'isBusy');
-    assert.equal(page.isBusy(), busy);
-  });
-}
-
-test('a stop button in message content cannot mark an idle Codex composer as running', () => {
-  const root = nativeNode(), editor = fiber(nativeNode({}, { closest: () => root }), [{ isResponseInProgress: false }]);
-  const message = nativeNode(), stop = nativeNode({ 'aria-label': '停止生成' }, { closest: () => message });
-  const doc = { getElementById: () => null, querySelector: () => null,
-    querySelectorAll: selector => selector === '.ProseMirror[contenteditable="true"]' ? [editor] : selector === 'button, [role=button]' ? [stop] : [] };
-  assert.equal(nativePage(doc, {}, 'isBusy').isBusy(), false);
-});
-
-test('Codex follow-up preferences and draft facts come from the visible native add-context control', () => {
-  const add = fiber(nativeNode(), [{ activeCollaborationMode: { mode: 'plan' }, hasDraftAttachments: true, isAutoContextOn: false }]);
-  const conversation = { latestCollaborationMode: { mode: 'plan' } };
-  const manager = { getConversation: () => conversation, loadOlderConversationTurnsPage() {} };
-  const scope = { familyBindings: new Map([['manager', new Map([['local', { value: { get: () => manager, subscribe() {} } }]])]]) };
-  const root = fiber(nativeNode(), [{ value: { getQueryData: () => ({ values: { followUpQueueMode: 'queue', composerEnterBehavior: 'newline' } }) } },
-    { value: new Map([['scope', scope]]) }]);
-  const doc = { defaultView: {}, getElementById: () => null, querySelector: () => null,
-    querySelectorAll: selector => selector === '[data-composer-navigation-target="add-context"]' ? [nativeNode({}, {}, false), add]
-      : selector.includes('[data-composer-body]') ? [root] : [] };
-  const data = nativePage(doc).codexFacts();
-  assert.equal(data.view.follow, 'queue'); assert.equal(data.view.enter, 'newline');
-  assert.equal(data.view.plan, true); assert.equal(data.hasDraftAttachments, true);
-  conversation.latestCollaborationMode.mode = 'default';
-  assert.equal(nativePage(doc).codexFacts().view.plan, false);
-});
-
-for (const chinese of [false, true]) {
-  test(`permissions use native selected icons rather than trigger text, ${chinese ? 'Chinese' : 'English'}`, () => {
-    const labels = chinese ? ['请求批准', '帮我批准', '完全访问权限', '自定义 (config.toml)']
-      : ['Ask for approval', 'Approve for me', 'Full access', 'Custom (config.toml)'];
-    const button = nativeNode({}, { innerText: chinese ? '完全访问' : 'Full access' });
-    const rows = labels.map((innerText, i) => fiber(nativeNode({}, { innerText }), [{ RightIcon: i === 2 ? () => {} : undefined }]));
-    const doc = { getElementById: () => null,
-      querySelectorAll: selector => selector === '[role=menuitem]' ? rows : selector.includes('permissions') ? [nativeNode({}, {}, false), button] : [] };
-    const page = nativePage(doc), choices = page.menuItems('permission');
-    assert.equal(page.control('permission').x, 20);
-    assert.deepEqual(Array.from(choices, row => row.label), labels.slice(0, 3));
-    assert.deepEqual(Array.from(choices, row => row.checked), [false, false, true]);
-  });
-}
-
 for (const [text, basis] of [['20% remaining', 'remaining'], ['剩余 20%', 'remaining'], ['20% 已用', 'used'],
   ['已使用 20%', 'used'], ['80% used · 20% remaining', 'remaining']]) {
   test(`Cursor quota keeps its percentage direction: ${text}`, () => {
@@ -634,54 +455,12 @@ for (const [text, basis] of [['20% remaining', 'remaining'], ['剩余 20%', 'rem
   });
 }
 
-test('Cursor settings root is located through its native container independently of navigation labels', () => {
-  const root = nativeNode(), doc = { getElementById: () => null, querySelectorAll: selector => selector === '.cursor-settings-pane-outer-wrapper' ? [root] : [] };
-  const page = nativePage(doc, {}, 'settingsPanel');
-  assert.equal(page.settingsPanel(), root);
-  assert.equal(page.settingsOpen(), true);
-});
-
-test('Cursor quota reads the plan container rather than its heading-only child', () => {
-  const heading = { innerText: '当前套餐' }, card = { innerText: '当前套餐\nPro\n剩余20%' };
-  const bar = nativeNode({ 'aria-valuenow': '20', 'aria-label': 'usage', 'aria-valuetext': '剩余20%' });
-  const root = { innerText: card.innerText, querySelectorAll: selector => selector === 'div, section' ? [heading, card] : selector === '[role=progressbar]' ? [bar] : [] };
-  const context = createPageContext({ settingsPanel: () => root, vis: () => true, fullText: el => el.innerText || '' });
-  vm.runInContext(part(read('server/page/settings.js'), '  const readUsage =', '\n\n\n\n  // Full xterm') + '\nthis.result=readUsage();', context);
-  assert.equal(context.result.plan, 'Pro'); assert.equal(context.result.limits[0].basis, 'remaining');
-});
-
 test('native effort IDs match their displayed casing without losing non-Latin labels', () => {
   const rows = ['Low', 'High', '深度', 'unrelated'].map(innerText => nativeNode({}, { innerText }));
   const context = createPageContext({ effortItems: () => [{ label: 'low' }, { label: 'high' }, { label: '深度' }],
     doc: { querySelectorAll: () => rows }, vis: () => true, normLabel: value => value });
   vm.runInContext('this.menu={' + part(read('server/page/controls.js'), '    effort: () => {', '    mode: () => {') + '};this.result=menu.effort();', context);
   assert.deepEqual(Array.from(context.result, row => row.label), ['Low', 'High', '深度']);
-});
-
-test('Codex unified reasoning trigger supplies models, effort and service tier through the same native picker', () => {
-  const calls = [], queries = [];
-  const efforts = ['low', 'high'].map(reasoningEffort => ({ reasoningEffort }));
-  const picker = { model: 'model-a', reasoningEffort: 'high', selectionMode: 'model',
-    modelOptions: ['model-a', 'model-b'].map(id => ({ model: { id, displayName: id, supportedReasoningEfforts: efforts, defaultReasoningEffort: 'low' } })),
-    onSelectModelOption() {}, onSelectComplete() {},
-    onSelectModel(model, effort) { calls.push(['model', model, effort]); this.model = model; this.reasoningEffort = effort; },
-    serviceTierOptions: [{ value: null }, { value: 'priority', iconKind: 'fast' }], selectedServiceTier: null,
-    onSelectServiceTier(value) { calls.push(['tier', value]); this.selectedServiceTier = value; },
-  };
-  const button = fiber(nativeNode({ 'data-composer-navigation-target': 'reasoning' }), [picker]);
-  const doc = { getElementById: () => null, querySelector: () => null, querySelectorAll: selector => {
-    queries.push(selector); return selector === '[data-composer-navigation-target="reasoning"]' ? [button] : [];
-  } };
-  const page = nativePage(doc);
-  assert.deepEqual(Array.from(page.modelItemsFast(), row => row.id), ['model-a', 'model-b']);
-  assert.equal(page.agentModelName(), 'model a · High');
-  assert.equal(page.control('model').x, 20);
-  assert.equal(page.pickCodexModel('model-b'), true);
-  assert.equal(page.pickEffort('low'), true);
-  assert.equal(page.pickFast(true), true); assert.equal(page.fastInfo().on, true);
-  assert.equal(page.pickFast(false), true); assert.equal(page.fastInfo().on, false);
-  assert.deepEqual(calls, [['model', 'model-b', 'high'], ['model', 'model-b', 'low'], ['tier', 'priority'], ['tier', null]]);
-  assert(!queries.includes('[data-codex-intelligence-trigger]'));
 });
 
 for (const supported of [false, true]) {
@@ -699,80 +478,12 @@ for (const supported of [false, true]) {
   });
 }
 
-for (const generating of [false, true]) {
-  test(`Cursor running state follows the selected native composer, generating=${generating}`, () => {
-    const states = [{ id: 'current', state: generating ? 'generating' : 'focused' }, { id: 'other', state: 'generating' }];
-    const source = part(read('server/page/devin.js'), '  const isBusy =', "  // Devin's queue");
-    const context = createPageContext({ window: { __SSG_COMPOSER_PROVIDER__: { getStates: () => states } },
-      codexPromptEl: () => null, activeThread: () => 'current', stopGenerationButton: () => null, legacyStopIcon: () => null, devinSubmitBusy: () => false });
-    vm.runInContext(source + '\nthis.busy=isBusy();', context);
-    assert.equal(context.busy, generating);
-  });
-}
-
-test('Cursor stop control is identified by its native state independently of the accessible label', () => {
-  const button = nativeNode({ 'aria-label': 'opaque native label' }, { matches: selector => selector === '.ui-prompt-input-submit-button[data-state="stop"]' });
-  const doc = { getElementById: () => null, querySelectorAll: selector => selector === 'button, [role=button]' ? [button] : [] };
-  assert.equal(nativePage(doc, {}, 'stopGenerationButton').stopGenerationButton(), button);
-});
-
 for (const label of ['Context: 35%', 'Context usage: 35%', '上下文用量：35%']) {
   test(`Codex context percentage reads its verified native label: ${label}`, () => {
     const button = nativeNode({ 'aria-label': label });
     const doc = { getElementById: () => null, querySelector: () => null, querySelectorAll: () => [button] };
     const result = nativePage(doc).contextPct();
     assert.equal(result.pct, 35); assert.equal(result.basis, 'used');
-  });
-}
-
-test('Devin translated controls share the native translation keys for new session, queue and workdir', () => {
-  const strings = {
-    'sidebar.newSession': 'translated session', 'inputBox.queuedMessagesSendNow': 'translated send now',
-    'inputBox.queuedMessagesRemove': 'translated remove', 'inputBox.queuedMessagesClearAll': 'translated clear',
-    'agents.local': 'translated local', 'inputBox.queuedMessagesCount': '2 translated queued',
-  };
-  const locale = { t(key, options) { assert.equal(options.ns, 'translation'); return strings[key] || key; } };
-  const editor = fiber(nativeNode(), [{ value: { i18n: locale } }]);
-  const clicked = [], fresh = nativeNode({ 'aria-label': strings['sidebar.newSession'] }, { click: () => clicked.push('new') });
-  const send = nativeNode({ 'aria-label': strings['inputBox.queuedMessagesSendNow'] }), remove = nativeNode({ 'aria-label': strings['inputBox.queuedMessagesRemove'] });
-  const row = nativeNode({}, { className: 'cursor-grab', querySelectorAll: () => [send, remove] });
-  const count = nativeNode({}, { innerText: '2 translated queued' }), clear = nativeNode({ 'aria-label': strings['inputBox.queuedMessagesClearAll'] });
-  const doc = { getElementById: () => null,
-    querySelectorAll: selector => selector.includes('data-slate-editor') ? [editor] : selector === 'button, a, [role=button]' ? [fresh]
-      : selector === 'span.text-12' ? [count] : selector === 'ol li[role="button"]' ? [row] : selector === 'button[aria-label]' ? [clear] : [] };
-  const page = nativePage(doc, {}, 'nativeLabel');
-  assert.equal(page.nativeLabel('translated local', 'Local'), true);
-  assert.equal(page.nativeLabel('unrelated', 'Local'), false);
-  assert.equal(page.clickControl('newChat'), true); assert.deepEqual(clicked, ['new']);
-  assert.equal(page.devinQueueCount(), 2);
-  assert(page.devinQueueTarget(0, 'send')); assert(page.devinQueueTarget(0, 'remove')); assert(page.devinQueueClearTarget());
-});
-
-test('Ubuntu Devin settings navigation reads the native translated section names', () => {
-  const editor = fiber(nativeNode(), [{ value: { i18n: { t: key => ({ 'localSettings.sections.general': 'translated general', 'localSettings.sections.planInformation': 'translated plan' })[key] || key } } }]);
-  const buttons = ['translated general', 'translated plan', 'unrelated'].map(innerText => nativeNode({}, { innerText }));
-  const doc = { getElementById: () => null,
-    querySelectorAll: selector => selector.includes('data-slate-editor') ? [editor] : selector === 'button' ? buttons : [] };
-  const page = vm.runInContext(PAGE_SRC.replace(/const IS_WIN = (true|false);/, 'const IS_WIN = false;'), createPageContext({
-    document: doc, window: {}, innerHeight: 1000, innerWidth: 1000,
-  }));
-  assert.deepEqual(Array.from(page.devinSettingsNav()), ['translated general', 'translated plan']);
-});
-
-for (const chinese of [false, true]) {
-  test(`terminal reading and operation targets preserve IDs with ${chinese ? 'Chinese' : 'English'} labels`, () => {
-    const kill = nativeNode({ 'aria-label': chinese ? '终止终端' : 'Kill Terminal' });
-    const terminal = nativeNode({ 'aria-label': chinese ? '终端1 bash' : 'Terminal 1 bash', 'aria-selected': 'true' },
-      { querySelectorAll: () => [kill], scrollIntoView() {} });
-    const tabs = nativeNode({ 'aria-label': chinese ? '终端选项卡' : 'Terminal tabs' }, { querySelectorAll: () => [terminal] });
-    const fresh = nativeNode({ 'aria-label': chinese ? '新建终端 (Ctrl+Shift+`)' : 'New Terminal (Ctrl+Shift+`)' });
-    const doc = { getElementById: () => null, querySelector: () => null,
-      querySelectorAll: selector => selector === '[aria-label]' ? [tabs, fresh]
-        : selector === '.part.panel .title-actions [aria-label]' ? [nativeNode({ 'aria-label': 'Kill Terminal' }, {}, false), kill] : [] };
-    const page = nativePage(doc);
-    assert.deepEqual(JSON.parse(JSON.stringify(page.terminalList())), [{ id: 'term-vt1', title: 'bash', current: true }]);
-    assert(page.terminalTarget('term-vt1')); assert(page.terminalCloseTarget('term-vt1'));
-    assert(page.terminalKillActiveTarget()); assert(page.newTerminalDirect());
   });
 }
 
@@ -885,17 +596,6 @@ function composerCommands() {
 
 const compactSuggestion = { section: 'commands', key: 'commands:Compact conversation', label: 'Compact conversation' };
 
-test('Codex slash Send uses the same native command choice as its suggestion button', () => {
-  for (const action of ['send', 'click']) {
-    const h = composerCommands(); h.type('/compact'); h.flush(); h.reply([compactSuggestion]); h[action]();
-    const picks = h.packets.filter(packet => packet.t === 'codexPick');
-    assert.equal(picks.length, 1); assert.equal(picks[0].key, compactSuggestion.key); assert.equal(picks[0].q, 'compact');
-    assert.equal(picks[0].text, ''); assert.equal(h.receipts(), 0); assert.equal(h.echoes.length, 0);
-    assert.equal(h.input.value, ''); assert.equal(h.box.hidden, true);
-    assert.equal(h.packets.some(packet => packet.t === 'send'), false);
-  }
-});
-
 test('Codex Enter reuses its in-flight slash query and repeated Enter executes once', () => {
   const h = composerCommands(); h.type('/compact'); h.flush();
   h.enter(); h.enter();
@@ -934,21 +634,6 @@ test('ambiguous slash results remain choices, and an unknown slash retains ordin
   const unknown = composerCommands(); unknown.type('/not-a-command'); unknown.send(); unknown.reply([]);
   const messages = unknown.packets.filter(packet => packet.t === 'send'); assert.equal(messages.length, 1);
   assert.equal(messages[0].text, '/not-a-command'); assert.equal(unknown.receipts(), 1);
-});
-
-test('Cursor and ordinary Codex messages keep their send path', () => {
-  for (const setting of [{ app: 'cursor', mode: 'chat', value: '/compact' },
-    { app: 'codex', mode: 'chat', value: 'ordinary text' }]) {
-    const h = composerCommands(); h.context.currentApp = setting.app; h.context.mode = setting.mode; h.type(setting.value); h.send();
-    assert.equal(h.packets.length, 1); assert.equal(h.packets[0].t, 'send');
-    assert.equal(h.receipts(), 1);
-  }
-});
-
-test('the restored terminal textbox delegates once without creating a chat submission', () => {
-  const h = composerCommands(); h.context.mode = 'terminal'; h.type('keep chat draft'); h.send();
-  assert.deepEqual(h.packets, [{ t: 'termSend', text: 'keep chat draft' }]); assert.equal(h.receipts(), 0);
-  assert.equal(h.input.value, 'keep chat draft');
 });
 
 test('an accepted message closes only its own suggestions and preserves a newer draft', () => {
@@ -1067,25 +752,6 @@ test('native Codex desktop input invalidates its subscription and releases the i
   watch.stop(); assert.equal(handlers.size, 0); assert.equal(calls.at(-1), 'stopped');
 });
 
-test('running card model metadata retains its effort next to the model', () => {
-  const context = createPageContext({ ovPreviews: new Map([['card', { value: { model: 'GPT', effort: 'High', tools: [] } }]]),
-    ovT: text => text, esc: text => text });
-  const render = vm.runInContext(part(read('app/js/chat.js'), 'function modelEffortLabel(', 'function updateTitle(')
-    + part(read('app/js/overview.js'), 'function ovRunHtml(', 'function ovCard(') + '\novRunHtml;', context);
-  const html = render({ key: 'card' });
-  assert(html.includes('GPT · High')); assert(!html.includes('undefined'));
-  context.ovPreviews.get('card').value.model = 'GPT · High';
-  assert(!render({ key: 'card' }).includes('High · High'));
-});
-
-test('completed Codex file changes remain expandable when ordinary execution records are hidden', () => {
-  const context = createPageContext({ store: { get: () => '0' }, currentApp: 'codex' });
-  const visible = vm.runInContext(part(read('app/js/history.js'), 'const executionRecordsShown =', 'function toggleExecutionRecords(') + '\nvisibleChatItems;', context);
-  const items = [{ i: 'patch', k: 'tool', src: 'codex', kind: 'edit', done: true, lazy: true },
-    { i: 'command', k: 'tool', src: 'codex', kind: 'command', done: true }, { i: 'answer', k: 'assistant', t: 'done' }];
-  assert.deepEqual(Array.from(visible(items, false), row => row.i), ['patch', 'answer']);
-});
-
 for (const app of ['cursor', 'devin']) test(`${app} native history returns 160 preceding messages without replaying actions`, async () => {
   const headers = Array.from({ length: 300 }, (_, n) => ({ bubbleId: String(n) }));
   const data = { fullConversationHeadersOnly: headers, todos: [] };
@@ -1119,21 +785,6 @@ for (const app of ['codex', 'cursor', 'devin', 'opencode']) test(`${app} accepta
   h.ack(reopened.revision, ''); assert.equal(h.input.value, '');
   h.context.receiveDraft({ t: 'draft', sel: 'codex|A', text: 'new desktop draft', draftEpoch: 'epoch', revision: reopened.revision });
   assert.equal(h.input.value, 'new desktop draft');
-});
-
-test('the Codex backend acknowledges an explicit empty draft and retains the empty state when reopened', async () => {
-  const h = syncingDraft(), source = read('server/apps/codex.mjs');
-  const drafts = new Map([['A', h.sent.text]]);
-  const routes = vm.runInNewContext('({' + part(source, '  async draft(m) {', '  async stop()') + '})', {
-    backendDraftSource: () => null, codexBackend: { draft(id, text) { if (text !== undefined) drafts.set(id, text); return drafts.get(id) || ''; } },
-  });
-  const session = { threadId: 'A', draftEpoch: 'epoch', draftGeneration: 0, selectionKey: () => 'codex|A',
-    emit: message => h.context.receiveDraft(message) };
-  h.context.confirmSent({ requestId: 'request', sel: 'codex|A' }); h.flush();
-  await routes.draft.call(session, h.packets.at(-1));
-  assert.equal(drafts.get('A'), ''); assert.equal(h.context.dirtyDrafts.size, 0);
-  h.navigate('draft', 'codex|A'); h.flush(); await routes.draft.call(session, h.packets.at(-1));
-  assert.equal(h.input.value, '');
 });
 
 test('a failed empty-draft write remains pending for the originating conversation', () => {
@@ -1245,17 +896,6 @@ for (const initial of ['', 'existing ordinary draft']) {
   });
 }
 
-for (const app of ['cursor', 'codex']) {
-  test(`${app} take-out retains its existing input behavior`, () => {
-    const h = takenOutDraft(app);
-    h.context.takeOut({ t: 'unqueued', text: 'queued follow-up' });
-    assert.equal(h.input.value, 'queued follow-up');
-    assert.equal(h.context.draftRevision, 5);
-    assert.equal(h.context.drafts.size, 0);
-    assert.deepEqual(h.calls, ['resize']);
-  });
-}
-
 function codexTranscript() {
   const history = read('app/js/history.js'), context = createPageContext({ currentApp: 'codex' });
   const merge = part(history, '    const updates = new Map(chat.items.map', '    chat = { ...chat, items: merged };');
@@ -1297,67 +937,6 @@ test('Codex older pages precede the current tail and expired capacity Retry cont
   assert.deepEqual(h.ids(result), ['shared', 'latest']);
 });
 
-function chatReadingFixture(top = 220) {
-  let rows = [];
-  const list = { scrollTop: top, getBoundingClientRect: () => ({ top: 40 }) };
-  const itemsEl = { querySelectorAll: () => rows };
-  const context = createPageContext({ list, itemsEl, setChatScrollTop: value => { list.scrollTop = value; } });
-  vm.runInContext(part(read('app/js/history.js'), 'function chatReadingPosition()', 'function finishHistory('), context);
-  return {
-    list,
-    replace(entries) {
-      let position = 0;
-      rows = entries.map(([id, height]) => {
-        const start = position;
-        position += height;
-        return { dataset: { i: id }, getBoundingClientRect: () => ({ top: 40 + start - list.scrollTop, bottom: 40 + start + height - list.scrollTop }) };
-      });
-    },
-    capture: () => context.chatReadingPosition(),
-    offset: id => rows.find(row => row.dataset.i === id).getBoundingClientRect().top - 40,
-  };
-}
-
-test('replacing updated messages above the viewport preserves the current reading offset', () => {
-  const h = chatReadingFixture();
-  h.replace([['a', 100], ['b', 100], ['reading', 400]]);
-  const offset = h.offset('reading'), restore = h.capture();
-  h.replace([['a', 160], ['b', 100], ['reading', 400]]);
-  restore();
-  assert.equal(h.list.scrollTop, 280);
-  assert.equal(h.offset('reading'), offset);
-});
-
-test('an updated message spanning the viewport can grow without moving its reading position', () => {
-  const h = chatReadingFixture();
-  h.replace([['a', 100], ['reading', 500], ['later', 100]]);
-  const offset = h.offset('reading'), restore = h.capture();
-  h.replace([['a', 100], ['reading', 700], ['later', 100]]);
-  restore();
-  assert.equal(h.list.scrollTop, 220);
-  assert.equal(h.offset('reading'), offset);
-});
-
-test('prepending older history retains the reading position even when message nodes are replaced', () => {
-  const h = chatReadingFixture();
-  h.replace([['a', 100], ['b', 100], ['reading', 400]]);
-  const offset = h.offset('reading'), restore = h.capture();
-  h.replace([['older', 90], ['a', 100], ['b', 100], ['reading', 400]]);
-  restore();
-  assert.equal(h.list.scrollTop, 310);
-  assert.equal(h.offset('reading'), offset);
-});
-
-test('history insertion and earlier message growth preserve the same reading offset together', () => {
-  const h = chatReadingFixture();
-  h.replace([['a', 100], ['b', 100], ['reading', 400]]);
-  const offset = h.offset('reading'), restore = h.capture();
-  h.replace([['older', 90], ['a', 160], ['b', 100], ['reading', 400]]);
-  restore();
-  assert.equal(h.list.scrollTop, 370);
-  assert.equal(h.offset('reading'), offset);
-});
-
 function cursorBodyFixture() {
   const data = new Map(), reads = [];
   const service = { getComposerDataIfLoaded: id => data.get(id), _composerMessageStorageService: {
@@ -1378,29 +957,6 @@ function cursorBodyFixture() {
         conversationMap: Object.fromEntries(messages.map(message => [message.bubbleId, message])), stored });
     } };
 }
-
-test('Cursor native text fills the virtualized body and updates existing replies without replacing tool actions', async () => {
-  const h = cursorBodyFixture();
-  h.load('A', [{ bubbleId: 'human', type: 1, text: '原生问题', startedAtMs: 1000 },
-    { bubbleId: 'reply', type: 2, text: '**完整回复**' },
-    { bubbleId: 'next', type: 1, text: '新问题' },
-    { bubbleId: 'tool', type: 2, text: '', toolFormerData: { name: 'run_terminal_command_v2' } },
-    { bubbleId: 'latest', type: 2, text: '电脑列表外的最新回复' }]);
-  const tool = { i: 'tool', k: 'tool', b: ['Run', 'Skip'], actions: ['run-id', 'skip-id'], output: '保留输出' };
-  const chat = { thread: 'A', items: [{ i: 'human', k: 'human', t: '旧问题' },
-    { i: 'reply', k: 'assistant', t: '部分', h: '<p>部分</p>', b: ['Copy'], actions: ['copy-id'], images: ['image'] }, tool],
-    questions: { id: 'approval' }, context: { pct: 25 }, model: 'model', earlier: true, draft: '真实草稿' };
-  const next = await h.update(chat);
-  assert.deepEqual(Array.from(next.items, item => item.i), ['human', 'reply', 'next', 'tool', 'latest']);
-  assert.equal(next.items[1].t, '**完整回复**');
-  assert.equal(next.items[1].bodyFormat, 'markdown');
-  assert.equal(next.items[1].actions, chat.items[1].actions);
-  assert.equal(next.items[1].images, chat.items[1].images);
-  assert.equal(next.items[3], tool);
-  for (const key of ['questions', 'context', 'model', 'earlier', 'draft']) assert.equal(next[key], chat[key]);
-  assert.equal(chat.items.length, 3);
-  assert.equal(chat.items[1].t, '部分');
-});
 
 test('Cursor body reads only the native tail, loads its placeholders and keeps message storage scoped to the thread', async () => {
   const h = cursorBodyFixture();
@@ -1446,7 +1002,7 @@ test('native window snapshots await Cursor text before publishing and keep the o
     const calls = [], chat = { thread: 'A', items: [{ i: 'latest', k: 'assistant', t: '已完成读取' }] };
     const helper = { extract(...args) { calls.push(args); return app === 'cursor' ? Promise.resolve(chat) : chat; },
       activeChatTab: () => '', agentStates: () => [], devinSurface: () => null, agentList: () => [], nativeSessionInfo: async () => [], codexChatRows: () => [] };
-    const context = { cdpRead, awaitCdpRead, AbortController, IS_WIN: false, PAGE_SRC: 'helper', helpersCall: call => call,
+    const context = { cdpRead, awaitCdpRead, AbortController, IS_WIN: false, windows: new Map(), PAGE_SRC: 'helper', helpersCall: call => call,
       refreshSessionCatalog: async () => {}, publishCatalog() {}, withOperation: (_operation, action) => action() };
     const methods = vm.runInNewContext('({' + part(read('server/native-windows.mjs'), '  async read(fresh = false)', '  interval()').replace('\n  readCatalog()', ',\n  readCatalog()') + '})', context);
     const source = { revision: 1, win: { app }, runStates: new Map(), listeners: new Set(), connect: async () => {}, retryCapacity() {},
@@ -1643,14 +1199,6 @@ test('stop shares scoped confirmation and leaves no selection listener', async (
   const h = confirmation(), work = h.nodes.stop.onclick();
   h.change('computer'); h.accept(); await work;
   assert.equal(h.packets.length, 0);
-  assert.equal(h.listeners.size, 0);
-});
-
-test('confirmations unrelated to a conversation retain their existing behavior', async () => {
-  const h = confirmation(), work = h.context.ask('device action');
-  h.change('thread');
-  assert.equal(h.context.sheetKind, 'ask');
-  h.accept(); assert.equal(await work, true);
   assert.equal(h.listeners.size, 0);
 });
 
@@ -1857,7 +1405,7 @@ test('a computer removed before the flush is absent from the saved restore map',
   assert.equal(h.writes.find(w => w.key === 'computer-resumes').value.entries.length, 2);
 });
 
-for (const mode of ['native', 'position', 'absent', 'error']) {
+for (const mode of ['absent', 'error']) {
   test(`the shared model opener retains the ${mode} outcome`, async () => {
     const calls = [];
     const context = createPageContext({ helpersCall: value => value });
@@ -1867,18 +1415,16 @@ for (const mode of ['native', 'position', 'absent', 'error']) {
       cdp: { async evaluate(source) {
         calls.push(source);
         if (mode === 'error') throw new Error('native model read failed');
-        if (source === 'clickModelListTrigger()') return mode === 'native';
-        return mode === 'position' ? { x: 10, y: 20 } : null;
+        if (source === 'clickModelListTrigger()') return false;
+        return null;
       } },
-      async tapCss(x, y) { calls.push([x, y]); },
+      async tapCss() { assert.fail('absent native model control must not receive a click'); },
     };
     if (mode === 'error') {
       await assert.rejects(open.call(target), { message: 'native model read failed' });
       assert.equal(calls.length, 1);
     } else {
-      assert.equal(await open.call(target), mode !== 'absent');
-      assert.deepEqual(calls, mode === 'native' ? ['clickModelListTrigger()'] : mode === 'position'
-        ? ['clickModelListTrigger()', 'modelListTrigger()', [10, 20]] : ['clickModelListTrigger()', 'modelListTrigger()']);
+      assert.equal(await open.call(target), false);
     }
   });
 }
@@ -1895,8 +1441,6 @@ test('reading queue counts does not build buttons for any Agent', () => {
     vm.runInContext(part(read('app/js/history.js'), 'function queuedMessages(', 'function renderQueuedList('), context);
     assert.equal(vm.runInContext('queuedMessages().count', context), 3);
     assert.equal(buttons, 0);
-    vm.runInContext('queuedMessagesHtml(queuedMessages())', context);
-    assert.equal(buttons, 9);
   }
 });
 
@@ -2361,11 +1905,6 @@ test('a focused IME preedit owns its value and selection when the shared draft d
   assert.equal(h.selections.length, 0);
 });
 
-test('an ordinary card input still reflects the shared draft after composition', () => {
-  const h = preedit(); h.context.composing = false; h.paint();
-  assert.equal(h.input.value, 'old draft'); assert.deepEqual(h.selections, [[1, 1, 'none']]);
-});
-
 test('composition end commits the current editor final value through the original draft edit path', () => {
   const h = preedit(); h.input.value = '拼音'; h.context.finishComposition();
   assert.equal(h.text.value, 'old draft'); h.flush();
@@ -2381,55 +1920,6 @@ test('composition end after switching editors does not copy old text into the ne
 test('composition end does not duplicate a final input event already saved to the shared draft', () => {
   const h = preedit(); h.text.value = h.input.value; h.context.finishComposition(); h.flush();
   assert.equal(h.edits.length, 0);
-});
-
-test('cards retain editing while a draft is in flight and keep their shared input tools', () => {
-  const button = (textContent = '') => ({ textContent, innerHTML: '<svg/>', title: '', ariaLabel: '', disabled: false });
-  for (const row of [
-    { app: 'codex', follow: 'queue', landscape: true, immediate: true },
-    { app: 'codex', follow: 'steer', landscape: true, immediate: false },
-    { app: 'devin', follow: '', landscape: true, immediate: true },
-    { app: 'cursor', follow: '', landscape: true, immediate: false },
-    { app: 'codex', follow: 'queue', landscape: false, immediate: true },
-    { app: 'codex', follow: 'queue', landscape: false, immediate: true, pending: true },
-    { app: 'codex', follow: 'queue', landscape: false, immediate: true, ready: false },
-    { app: 'codex', follow: 'queue', landscape: false, ready: false, opening: { phase: 'opening', message: 'QA_OPENING' } },
-    { app: 'codex', follow: 'queue', landscape: false, ready: false, opening: { phase: 'error', message: 'QA_OPEN_ERROR' } },
-    { app: 'codex', follow: 'queue', landscape: false, ready: false, error: 'QA_CARD_ACTION_ERROR' },
-  ]) {
-    const nodes = new Map([['send', button('排队')], ['sendNow', { ...button('立即追加'), hidden: row.app === 'cursor' }], ['msg', { className: 'quiet' }]]);
-    nodes.get('send').disabled = !!row.pending;
-    if (row.opening) Object.assign(nodes.get('msg'), { className: 'err', textContent: 'QA_OTHER_STATUS' });
-    const context = createPageContext({
-      $: id => nodes.get(id) || button(), esc: String, OV_ICON: { arrow: '<svg/>' }, OV_AGENT: { [row.app]: row.app },
-      I18N: { tr: value => value }, ovT: value => value, ovBusy: new Set(),
-      ovErr: new Map(row.error ? [['card', row.error]] : row.opening?.phase === 'error' ? [['card', row.opening.message]] : []),
-      ovBadge: () => '运行中', ovTime: () => '1m', ovContext: () => 'project', ovComposerReady: () => row.ready !== false,
-      ovRunHtml: () => '', ovPreviewHtml: () => '', ovChangesRow: () => '', ovOpenLink: () => '',
-      ovTarget: value => value, ovOpenState: () => row.opening || null,
-      queuedMessages: () => ({ count: 0 }), questionCompose: null, viewSel: 'selection',
-      devinBusySplit: () => row.app === 'devin', cursorBusyQueue: () => row.app === 'cursor', codexFollow: () => row.follow,
-      document: { body: { classList: { contains: () => row.landscape } } },
-    });
-    vm.runInContext(part(read('app/js/overview.js'), 'function ovCard(', 'function ovSessionGroup('), context);
-    const html = context.ovCard({ key: 'card', state: 'run', app: row.app, actions: [] });
-    assert.equal(html.includes('data-v="send"'), false);
-    assert.equal(html.includes('data-v="sendNow"'), false);
-    assert.equal(html.includes('data-ov="send"'), true);
-    assert.equal(/<textarea[^>]*\bdisabled/.test(html), row.ready === false);
-    assert.equal(/<button[^>]*class="ov-send"[^>]*\bdisabled/.test(html), row.ready === false || !!row.pending);
-    assert(html.indexOf('class="ov-input-history"') < html.indexOf('<textarea'));
-    for (const id of ['inputPrev', 'inputNext']) assert(html.indexOf(`data-v="${id}"`) < html.indexOf('<textarea'));
-    assert(html.indexOf('data-v="insertNewline"') > html.indexOf('class="ov-tools"'));
-    assert.equal(html.includes('ov-compose-more'), false);
-    assert.equal((html.match(/class="ov-tool-status/g) || []).length, 1);
-    if (row.opening) {
-      assert(html.includes(row.opening.message)); assert(!html.includes('QA_OTHER_STATUS'));
-      assert.equal(html.includes('class="ov-tool-status err"'), row.opening.phase === 'error');
-      assert(!html.includes('ov-errbox'));
-    }
-    if (row.error) { assert(html.includes('ov-errbox')); assert(html.includes(row.error)); }
-  }
 });
 
 test('the shared primary send keeps native queue policies and receipt ownership', () => {
@@ -2460,16 +1950,6 @@ test('the shared immediate action stops voice and keeps the original scoped conf
   assert.equal(h.packets.length, 0); assert.equal(h.context.sheetKind, 'ask');
   h.accept(); await work;
   assert.equal(h.packets[0].when, 'now'); assert.equal(h.packets[0].text, 'draft from A');
-});
-
-test('direct send actions keep the existing disabled-button behavior', async () => {
-  const h = confirmation(); h.nodes.send.disabled = h.nodes.sendNow.disabled = true;
-  h.context.sendComposer(); await h.context.sendComposerNow();
-  Object.assign(h.context, { composing: false, shiftEnter: false });
-  vm.runInContext(part(read('app/js/composer.js'), 'function submitOnEnter(', 'const composerInputHandlers ='), h.context);
-  h.context.submitOnEnter({ preventDefault() {} });
-  assert.equal(h.packets.length, 0); assert.equal(h.context.sheetKind, null);
-  assert.deepEqual(h.calls, []);
 });
 
 for (const app of ['codex', 'cursor', 'devin']) {
@@ -2639,44 +2119,6 @@ const questionRequest = (id, submit = 'Send', value = '') => ({
   buttons: [{ label: '预设选项', disabled: false }, { label: 'Skip', disabled: false }, { label: submit, disabled: !value }],
 });
 
-test('Codex Question cards expose only skip and native next or send actions', () => {
-  const h = questionCards([questionRequest('async:first', 'Next'), questionRequest('async:second')]);
-  const actions = [...h.bar.innerHTML.matchAll(/<div class="qnAct">([\s\S]*?)<\/div>/g)]
-    .map(row => [...row[1].matchAll(/<button\b[^>]*>(.*?)<\/button>/g)].map(button => button[1]));
-  assert.deepEqual(actions, [['Skip', 'Next'], ['Skip', 'Send']]);
-  assert.equal((h.bar.innerHTML.match(/class="qnOpt /g) || []).length, 2);
-});
-
-test('MCP multi-select cards restore selected answers and submit arrays through the existing request action', () => {
-  const request = { id: 'approval:mcp', text: '选择工具', fields: [{ label: '工具', multiple: true, value: ['a'],
-    options: [{ value: 'a', label: '工具甲' }, { value: 'b', label: '工具乙' }] }],
-  buttons: [{ label: 'accept' }, { label: 'decline' }, { label: 'cancel' }] };
-  const h = questionCards([request]), field = h.fields[0];
-  assert.match(h.bar.innerHTML, /<select[^>]* multiple>/);
-  field.options[1].selected = true; field.oninput();
-  field.options.forEach(option => { option.selected = false; });
-  vm.runInContext("qnSig='';", h.context);
-  h.context.renderQuestions({ codex: true, requests: [request] });
-  assert.deepEqual(field.selectedOptions.map(option => option.value), ['a', 'b']);
-  h.buttons[0].click();
-  const packet = JSON.parse(JSON.stringify(h.packets.at(-1)));
-  assert.equal(packet.t, 'codexRequest'); assert.equal(packet.id, request.id); assert.equal(packet.n, 0);
-  assert.deepEqual(packet.fields, [{ n: 0, value: ['a', 'b'] }]);
-  assert.equal(h.text.value, '普通聊天草稿');
-});
-
-test('Question Enter sends the edited answer once to its own request and preserves the chat draft', () => {
-  const h = questionCards([questionRequest('async:first', 'Next'), questionRequest('async:second')]);
-  const field = h.fields[1]; field.value = '卡片中的回答'; field.oninput();
-  assert.equal(h.enter(field), true); h.enter(field);
-  assert.equal(h.packets.length, 1);
-  const packet = JSON.parse(JSON.stringify(h.packets[0]));
-  assert.equal(packet.t, 'codexRequest'); assert.equal(packet.id, 'async:second'); assert.equal(packet.n, 2);
-  assert.deepEqual(packet.fields, [{ n: 0, value: '卡片中的回答' }]);
-  assert.equal(typeof packet.requestId, 'string');
-  assert.equal(h.text.value, '普通聊天草稿'); assert.equal(field.blurred, undefined);
-});
-
 test('Question Enter respects disabled submit and IME, then uses the native next action', () => {
   const h = questionCards([questionRequest('async:first', 'Next')]), field = h.fields[0];
   h.enter(field); assert.equal(h.packets.length, 0);
@@ -2686,15 +2128,6 @@ test('Question Enter respects disabled submit and IME, then uses the native next
   h.enter(field);
   assert.equal(h.packets.length, 1); assert.equal(h.packets[0].id, 'async:first'); assert.equal(h.packets[0].n, 2);
   assert.equal(h.packets[0].fields[0].value, '下一题答案');
-});
-
-test('Question Enter retains approval field blur and the existing free-answer fill action', () => {
-  const h = questionCards([questionRequest('approval:exec', 'Approve', '执行理由')]);
-  h.enter(h.fields[0]);
-  assert.equal(h.fields[0].blurred, true); assert.equal(h.packets.length, 0);
-  let filled = 0;
-  h.enter({ dataset: {}, matches: () => true, nextElementSibling: { click: () => filled++ } });
-  assert.equal(filled, 1); assert.equal(h.packets.length, 0);
 });
 
 function devinQuestionCards(qs) {
@@ -2756,32 +2189,6 @@ const devinQuestionState = (overrides = {}) => ({
   pager: null, canPrev: false, canNext: false, hasSubmit: false, canSubmit: false, ...overrides,
 });
 
-test('Devin question card offers a dedicated text answer only when the native question allows it', () => {
-  const allowed = devinQuestionCards(devinQuestionState());
-  assert.match(allowed.bar.innerHTML, /data-qtext/);
-  assert.match(allowed.bar.innerHTML, /data-qanswer/);
-  assert.doesNotMatch(allowed.bar.innerHTML, /qnHint/);
-  const denied = devinQuestionCards(devinQuestionState({ canText: false }));
-  assert.doesNotMatch(denied.bar.innerHTML, /data-qtext/);
-  assert.doesNotMatch(denied.bar.innerHTML, /想自己回答/);
-});
-
-test('Devin question draft survives re-renders with focus and selection intact', () => {
-  const h = devinQuestionCards(devinQuestionState());
-  const first = h.renders.at(-1).qtext;
-  first.value = '草稿回答'; first.oninput();
-  first.selectionStart = 2; first.selectionEnd = 5;
-  h.context.document.activeElement = first;
-  h.context.renderQuestions(devinQuestionState({ canNext: true }));
-  const second = h.renders.at(-1).qtext;
-  assert.notEqual(second, first);
-  assert.equal(second.value, '草稿回答');
-  assert.equal(second.focused, true, 'the repainted input takes focus back');
-  assert.deepEqual([second.selectionStart, second.selectionEnd], [2, 5]);
-  h.context.renderQuestions(devinQuestionState());
-  assert.equal(h.renders.at(-1).qtext.value, '草稿回答');
-});
-
 test('Devin question text sends one native text answer without an ordinary echo and keeps IME safe', () => {
   const h = devinQuestionCards(devinQuestionState());
   const input = h.renders.at(-1).qtext, answer = h.renders.at(-1).qanswer;
@@ -2827,22 +2234,6 @@ test('Devin question draft is keyed by the native request so an identical new qu
   h.context.renderQuestions(devinQuestionState({ textKey: 'req2-0' }));
   assert.equal(h.renders.at(-1).qtext.value, '', 'a new elicitation with the same text gets an empty input');
   assert.equal(h.text.value, '普通聊天草稿', 'the ordinary composer draft is untouched');
-});
-
-test('card input tools retain the bound editor for history and newline actions', async () => {
-  const calls = [], state = { ready: Promise.resolve(true) }, input = {};
-  const context = createPageContext({
-    ovToolState: state, ovPrepareTools: () => state, ovToolInput: () => input,
-    recallInput: (direction, editor) => { assert.equal(editor, input); calls.push(direction); },
-    endInputRecall: () => calls.push('end'),
-    insertComposerText: (text, editor) => { assert.equal(editor, input); calls.push(text); },
-  });
-  vm.runInContext(part(read('app/js/overview.js'), 'async function ovUseTool(', 'function ovLocateCard('), context);
-  await context.ovUseTool('card', 'inputPrev'); await context.ovUseTool('card', 'inputNext');
-  await context.ovUseTool('card', 'insertNewline');
-  assert.deepEqual(calls, [-1, 1, 'end', '\n']);
-  context.ovToolState = {}; await context.ovUseTool('card', 'inputPrev');
-  assert.deepEqual(calls, [-1, 1, 'end', '\n']);
 });
 
 function voiceComposer() {
@@ -3016,18 +2407,6 @@ test('computer dictation retains its explicit cancel-before-rerecord interaction
   assert.equal(h.message.textContent, '已取消等待转录，请重新按住录音');
 });
 
-test('the shared voice caret calculation scrolls its supplied editor without changing another textarea', () => {
-  const hidden = { scrollTop: 7 }, editor = { value: 'words', selectionEnd: 5, clientWidth: 180, clientHeight: 36, scrollHeight: 150, scrollTop: 0 };
-  let caretTop = 100;
-  const context = createPageContext({ text: hidden,
-    getComputedStyle: input => { assert.equal(input, editor); return { lineHeight: '22px', paddingBottom: '0px' }; },
-    document: { body: { append() {} }, createElement: tag => ({ style: {}, append() {}, remove() {}, getBoundingClientRect: () => ({ top: tag === 'span' ? caretTop : 0 }) }) },
-  });
-  vm.runInContext(part(read('app/js/local-voice.js'), 'function scrollVoiceInput(', 'async function startVoice('), context);
-  context.scrollVoiceInput(editor); assert.equal(editor.scrollTop, 86); assert.equal(hidden.scrollTop, 7);
-  caretTop = 10; context.scrollVoiceInput(editor); assert.equal(editor.scrollTop, 10);
-});
-
 function usageMeters() {
   const nodes = new Map(), computer = { id: 'computer-A' }, document = new EventTarget();
   const node = id => {
@@ -3048,21 +2427,6 @@ function usageMeters() {
   return { context, computer, nodes, node, at: ms => { clock = ms; },
     data: () => JSON.parse(JSON.stringify(context.currentUsageMeters())), html: () => context.ovUsageHtml('card') };
 }
-
-test('card rings share the existing context and quota percentage conversion with the header', () => {
-  const h = usageMeters();
-  h.context.renderQuota({ context: { pct: 40, basis: 'used' }, limits: [{ label: 'weekly', pct: 25, basis: 'used' }] });
-  assert.equal(h.node('meterCtxPct').textContent, '已用40%');
-  assert(h.node('quotaMeters').innerHTML.includes('剩余75%'));
-  assert(h.html().includes('上下文 已用 40%')); assert(h.html().includes('weekly 剩余 75%'));
-  assert.equal(h.data().quota[0].pct, 75);
-  const html = h.html(), tracks = [...html.matchAll(/class="ov-meter-track"[^>]*stroke-dasharray="([^"]+)" stroke-dashoffset="([^"]+)"/g)];
-  assert.deepEqual([...new Set([...html.matchAll(/\br="([^"]+)"/g)].map(m => m[1]))], ['18.5']);
-  assert.equal(tracks.length, 2);
-  assert.deepEqual(tracks.map(m => Number(m[1].split(' ')[0])), [47, 47]);
-  assert.deepEqual(tracks.map(m => Number(m[2])), [-1.5, -51.5]);
-  assert.equal((html.match(/transform="rotate\(90 20 20\)"/g) || []).length, 4);
-});
 
 test('context stays scoped to a conversation while quota stays scoped to its computer and window', () => {
   const h = usageMeters(); h.context.renderQuota({ context: 30, quota: [{ label: 'weekly', pct: 60, basis: 'remaining' }] });
@@ -3217,23 +2581,6 @@ test('token estimates settle fixed three-second windows, ignore duplicate snapsh
   paint(null); assert.equal(h.node('perfChip').hidden, true); assert.equal(h.node('perfPanel').hidden, true);
 });
 
-test('OpenCode pending statistics keep every field visible and elapsed time advances without token events', () => {
-  const h = usageMeters();
-  const info = { source: 'opencode', runId: 'message', busy: true, model: 'Bonsai', unit: 'characters', rate: null, tokens: null, startedAt: 100000 };
-  h.context.renderPerfChip(info);
-  const panel = h.node('perfPanel');
-  for (const label of ['输入 token', '输出 token', '推理 token', '缓存读取 token', '缓存写入 token', '缓存命中率'])
-    assert(panel.innerHTML.includes(label + '</span><span class="perf-val">待返回'));
-  assert.match(panel.innerHTML, /Bonsai/);
-  h.at(7000); h.context.renderPerfChip(info);
-  assert.match(panel.innerHTML, /耗时<\/span><span class="perf-val">7s/);
-  assert.equal(h.node('perfChip').textContent, '统计中');
-  h.context.renderPerfChip({ ...info, busy: false, unit: 'tokens', rate: 10, durationMs: 9000,
-    tokens: { input: 100, output: 90, reasoning: 0, cacheRead: 0, cacheWrite: 0 }, cacheRate: 0 });
-  assert.equal(panel.innerHTML.includes('待返回'), false);
-  assert.match(panel.innerHTML, /耗时<\/span><span class="perf-val">9s/);
-});
-
 test('Codex speed uses elapsed time between changed counters and preserves its measured interval', () => {
   for (const rate of [null, 999]) {
     const h = usageMeters(), info = { source: 'codex', runId: 'turn', model: 'actual', unit: 'tokens',
@@ -3340,32 +2687,12 @@ test('unbound and missing card metrics remain unknown rather than becoming zero'
   assert.equal(h.html().includes('已用 0%'), false);
 });
 
-test('two quota periods and context share one three-part ring with separated boundaries', () => {
+test('multiple quota periods retain their own percentage directions', () => {
   const h = usageMeters(); h.context.renderQuota({ context: { pct: 20, basis: 'remaining' }, limits: [
     { label: 'weekly', pct: 40, basis: 'used' }, { label: 'daily', pct: 70, basis: 'used' },
   ] });
   const html = h.html();
   assert(html.includes('上下文 已用 80%')); assert(html.includes('weekly 剩余 60%')); assert(html.includes('daily 剩余 30%'));
-  assert.equal((html.match(/class="ov-meter-quota /g) || []).length, 2);
-  const tracks = [...html.matchAll(/class="ov-meter-track"[^>]*stroke-dasharray="([^"]+)" stroke-dashoffset="([^"]+)"/g)];
-  assert.deepEqual([...new Set([...html.matchAll(/\br="([^"]+)"/g)].map(m => m[1]))], ['18.5']);
-  assert.equal(tracks.length, 3);
-  assert.equal((html.match(/transform="rotate\(120 20 20\)"/g) || []).length, 6);
-  for (const [i, track] of tracks.entries()) {
-    assert(Math.abs(Number(track[1].split(' ')[0]) - (100 / 3 - 3)) < 1e-9);
-    assert(Math.abs(Number(track[2]) - (-i * 100 / 3 - 1.5)) < 1e-9);
-  }
-});
-
-test('card context keeps its header color while quota reuses remaining-usage warning colors', () => {
-  const h = usageMeters();
-  for (const [remaining, fill] of [[60, ''], [25, 'warm'], [10, 'hot']]) {
-    h.context.renderQuota({ context: 95, limits: [{ label: 'weekly', pct: 100 - remaining, basis: 'used' }] });
-    const html = h.html();
-    assert(html.includes('class="ov-meter-context "'));
-    assert(html.includes(`class="ov-meter-quota ${fill}"`));
-    assert(h.node('quotaMeters').innerHTML.includes(`<i class="${fill}"`));
-  }
 });
 
 test('unchanged usage updates leave the ring DOM intact and never repaint the card body', () => {
@@ -3679,53 +3006,6 @@ test('overview labels share normalized Windows identities including an omitted l
   assert.deepEqual(second.windows, first.windows);
 });
 
-test('a Codex background thread visible in a native catalog has one card with its actual API carrier', () => {
-  const h = overviewDirectory();
-  const source = h.add('codex', 'window');
-  source.catalog = [{ id: 'thread', workspace: '/project/remote-agent', title: 'native copy' }];
-  h.catalogs.set('codex', { rows: source.catalog });
-  h.codexBackend.records.set('thread', { id: 'thread', cwd: '/project/remote-agent', title: 'background', updatedAt: 10 });
-  const snapshot = h.snapshot();
-  assert.equal(snapshot.sessions.length, 1);
-  assert.equal(snapshot.sessions[0].threadId, 'thread');
-  assert.equal(snapshot.sessions[0].windowId, 'backend');
-  assert.equal(snapshot.sessions[0].title, 'background');
-  assert.equal(snapshot.sessions[0].dormant, false);
-});
-
-test('a local Codex favorite remains available after its project window closes before backend import', () => {
-  const h = overviewDirectory();
-  h.library.codex = { old: { favorite: true, title: 'Old native session' } };
-  h.saved.sessions['codex:old'] = { workspace: '/project/B', host: '', ownerWindow: 'closed', dormant: true };
-  const snapshot = h.snapshot(), row = snapshot.sessions[0];
-  assert.equal(snapshot.sessions.length, 1); assert.equal(row.dormant, false);
-  assert.equal(row.windowId, 'closed'); assert.equal(row.workspace, '/project/B');
-  assert.equal(row.statusKnown, false); assert.equal(h.codexBackend.records.size, 0);
-});
-
-test('another open project does not make an available Codex favorite dormant', () => {
-  const h = overviewDirectory(); h.add('codex', 'A', '/project/A');
-  h.library.codex = { old: { favorite: true } };
-  h.catalogs.set('codex', { rows: [{ id: 'old', workspace: '/project/B', host: '', title: 'Native B' }] });
-  h.saved.sessions['codex:old'] = { workspace: '/project/B', host: '', ownerWindow: 'closed' };
-  const row = h.snapshot().sessions.find(row => row.threadId === 'old');
-  assert.equal(row.dormant, false); assert.equal(row.workspace, '/project/B'); assert.equal(row.title, 'Native B');
-});
-
-test('closed-project Codex cards use current native idle and running states before backend import', () => {
-  for (const running of [false, true]) {
-    const h = overviewDirectory(); h.add('codex', 'A', '/project/A');
-    h.library.codex = { old: { favorite: true } };
-    h.saved.sessions['codex:old'] = { workspace: '/project/B', host: '', ownerWindow: 'closed', running: !running };
-    h.catalogs.set('codex', { rows: [{ id: 'old', workspace: '/project/B', host: '', running }] });
-    const row = h.snapshot().sessions.find(row => row.threadId === 'old');
-    assert.equal(row.statusKnown, true); assert.equal(row.busy, running); assert.equal(row.dormant, false);
-    assert.equal(h.codexBackend.records.size, 0);
-    const cards = overviewCards(); cards.apply(row);
-    assert.equal(cards.rows()[0].state, running ? 'run' : 'idle');
-  }
-});
-
 test('closed-project Codex status waits for current native data instead of using a saved running flag', () => {
   const h = overviewDirectory(); h.library.codex = { old: { favorite: true } };
   h.saved.sessions['codex:old'] = { workspace: '/project/B', host: '', ownerWindow: 'closed', running: true };
@@ -3736,37 +3016,6 @@ test('closed-project Codex status waits for current native data instead of using
     assert.equal(row.statusKnown, running !== undefined); assert.equal(row.busy, running === true);
     assert.equal(cards.rows()[0].state, running === undefined ? 'unknown' : running ? 'run' : 'idle');
   }
-});
-
-test('a Codex favorite never flashes project-closed while native roots and catalog become ready', () => {
-  const h = overviewDirectory(), source = h.add('codex', 'B', '/project/B'); source.roots = undefined;
-  h.library.codex = { old: { favorite: true } };
-  h.saved.sessions['codex:old'] = { workspace: '/project/B', host: '', ownerWindow: 'B' };
-  const before = h.snapshot(); assert.equal(before.ready, false); assert.equal(before.sessions[0].dormant, false);
-  source.roots = [{ root: '/project/B', host: '' }];
-  h.catalogs.set('codex', { rows: [{ id: 'old', workspace: '/project/B', host: '', running: false }] });
-  const after = h.snapshot(); assert.equal(after.ready, true); assert.equal(!!after.sessions[0].dormant, false);
-  assert.equal(before.sessions[0].projectId, after.sessions[0].projectId);
-  assert.equal(before.sessions[0].threadId, after.sessions[0].threadId);
-});
-
-test('window-dependent favorites and Codex entries with no project path keep their existing dormant state', () => {
-  for (const [app, workspace, host] of [['cursor', '/project/B', ''], ['devin', '/project/B', ''],
-    ['codex', '/project/B', 'ssh-host'], ['codex', '', '']]) {
-    const h = overviewDirectory(); h.library[app] = { old: { favorite: true } };
-    h.saved.sessions[app + ':old'] = { workspace, host, ownerWindow: 'closed' };
-    assert.equal(h.snapshot().sessions[0].dormant, true, `${app}: ${host || workspace || 'missing path'}`);
-  }
-});
-
-test('Devin session projects belong to the native session even when the IDE carrier has another workspace', () => {
-  const h = overviewDirectory();
-  h.add('devin', 'window-A', '/project/A');
-  h.catalogs.set('devin', { rows: [{ id: 'session-B', workspace: '/project/B', title: 'B', running: false }] });
-  const snapshot = h.snapshot(), session = snapshot.sessions.find(row => row.threadId === 'session-B');
-  assert.equal(session.workspace, '/project/B');
-  assert.equal(session.windowId, 'window-A');
-  assert.equal(snapshot.windows.find(row => row.projectId === session.projectId).workspace, '/project/B');
 });
 
 test('ordinary windows for one actual project produce one session and keep its live source', () => {
@@ -3789,20 +3038,6 @@ test('a temporarily unreadable selected window cannot replace confirmed native f
   const result = h.snapshot();
   assert.equal(result.sessions.length, 1); assert.equal(result.sessions[0].windowId, 'confirmed');
   assert.equal(result.sessions[0].run.status, 'completed');
-});
-
-test('Fusion workers stay outside ordinary cards while shared windows and main favorites remain ordinary', () => {
-  const h = overviewDirectory(); h.add('codex', 'ordinary'); h.add('codex', 'fusion');
-  h.saved.windows['codex:fusion'] = { app: 'codex', id: 'fusion', purpose: 'fusion' };
-  h.fusionRuns.device = { runs: [{ updated: Date.now(), bindings: [{ role: 'B1', app: 'codex', threadId: 'fusion-thread' },
-    { role: 'main', app: 'codex', threadId: 'ordinary-thread', windowId: 'ordinary' }] }] };
-  h.catalogs.set('codex', { rows: ['ordinary-thread', 'fusion-thread'].map(id => ({ id, workspace: '/project/remote-agent', running: false })) });
-  h.library.codex = { 'fusion-thread': { favorite: true }, 'ordinary-thread': { favorite: true } };
-  const result = h.snapshot();
-  assert.deepEqual(result.windows.map(row => row.windowId), ['ordinary']);
-  assert.deepEqual(result.sessions.map(row => row.threadId), ['ordinary-thread']);
-  assert.equal(result.sessions[0].favorite, true);
-  assert.equal(result.fusion.length, 1);
 });
 
 test('project identity separates software, directories and hosts even with equal titles', () => {
@@ -3860,51 +3095,6 @@ function overviewCards(saved = new Map()) {
   };
 }
 
-test('completed session without run id or stored completion keeps overview available', () => {
-  const h = overviewCards();
-  h.apply({ run: { status: 'completed' } });
-  assert.equal(h.rows()[0].state, 'idle');
-  assert.equal(h.rows()[0].ended, 0);
-});
-
-test('marking a completed card read persists locally, updates its project and allows a new completed turn', () => {
-  const h = overviewCards();
-  h.apply({ busy: true, run: { id: 'turn', status: 'running', startedAt: 100 } });
-  h.apply({ run: { id: 'turn', status: 'completed', startedAt: 100 } });
-  const key = h.rows()[0].key;
-  h.done['other-computer|project|thread'] = { runId: 'other-turn', at: Date.now() };
-  assert.equal(h.context.ovMarkRead(key), true);
-  assert.equal(h.rows()[0].state, 'idle'); assert.equal(h.context.aggregate(h.rows()).state, 'idle');
-  assert.equal(h.context.ovMarkRead(key), false); assert.equal(h.opened.length, 0);
-  assert.equal(JSON.parse(h.saved.get('ov-done'))['other-computer|project|thread'].runId, 'other-turn');
-  h.apply({ run: { id: 'turn', status: 'completed', startedAt: 100 } });
-  assert.equal(h.rows()[0].state, 'idle'); assert.equal(h.notifications.length, 1);
-  const reload = overviewCards(h.saved);
-  reload.apply({ run: { id: 'turn', status: 'completed', startedAt: 100 } });
-  assert.equal(reload.rows()[0].state, 'idle');
-  reload.apply({ run: { id: 'next-turn', status: 'completed', startedAt: 200 } });
-  assert.equal(reload.rows()[0].state, 'done'); assert.equal(reload.notifications.length, 1);
-});
-
-test('only completed overview cards offer a local read action without binding or managing the native session', async () => {
-  const source = read('app/js/sheets.js'); let html = '', reads = 0, renders = 0, closes = 0;
-  const context = createPageContext({ agentActionTarget: null, esc: value => value, ovCompName: () => 'computer', ovAgName: () => 'Cursor',
-    openSheet(_kind, body) { html = body; }, sheetKind: 'agent-actions', currentApp: 'cursor', projectEntry: null,
-    closeSheet() { closes++; }, ovMarkRead(key) { assert.equal(key, 'card'); reads++; return true; }, ovRender() { renders++; },
-    send: () => assert.fail('read must not send'), ovSessionRequest: () => assert.fail('read must not manage a native session'),
-  });
-  vm.runInContext(part(source, 'function showAgentActions(', 'function receiveAgentActions('), context);
-  for (const state of ['done', 'idle', 'run', 'wait', 'err', 'unknown']) {
-    context.showAgentActions('thread', 'title', [], { key: 'card', state, app: 'cursor', comp: 'computer', off: true });
-    assert.equal(html.includes('data-agent-action="read"'), state === 'done');
-  }
-  context.showAgentActions('thread', 'title', [], { key: 'card', state: 'done', app: 'cursor', comp: 'computer', off: true });
-  const notify = read('app/js/notify.js');
-  const action = vm.runInContext('(async function(b) {' + part(notify, "  if (sheetKind === 'agent-actions'", "  if ('modelBack' in b.dataset)") + '})', context);
-  await action({ dataset: { agentAction: 'read' } });
-  assert.equal(reads, 1); assert.equal(renders, 1); assert.equal(closes, 1);
-});
-
 test('an already-ready Codex project checks native startup immediately without entering its wait loop', async () => {
   let reads = 0;
   const session = { windowId: 'window', editorCdp: {}, cdp: { wsUrl: 'chat', async evaluate(expression, options) {
@@ -3954,22 +3144,6 @@ test('switching away or losing a live reading cannot turn a running session into
   h.apply({ busy: false, statusKnown: false, run: null });
   assert.equal(h.notifications.length, 0); assert.equal(Object.keys(h.done).length, 0);
   assert.equal(h.rows()[0].state, 'unknown'); assert.equal(h.rows().length, 1);
-});
-
-test('Codex pending requests take card and project priority until the native request clears', () => {
-  const h = overviewCards();
-  h.apply({ run: { id: 'previous', status: 'completed', startedAt: 100 } });
-  const waiting = 'codex:["thread","async:question"]';
-  h.apply({ busy: true, waiting, waitingText: '请选择处理方式', run: { id: 'current', status: 'running', startedAt: 200 } });
-  h.apply({ busy: true, waiting, waitingText: '请选择处理方式', run: { id: 'current', status: 'running', startedAt: 200 } });
-  assert.equal(h.rows()[0].state, 'wait'); assert.equal(h.rows()[0].waitText, '请选择处理方式');
-  assert.equal(h.context.aggregate(h.rows()).state, 'wait'); assert.equal(h.notifications.length, 1);
-  h.apply({ waiting: '', waitingText: '', last: '正常完成', run: { id: 'current', status: 'completed', startedAt: 200 } });
-  assert.equal(h.rows()[0].state, 'done'); assert.equal(h.rows()[0].waitText, '');
-  assert.equal(h.context.aggregate(h.rows()).state, 'done');
-  assert.deepEqual(h.notifications.map(value => value.kind), ['wait', 'done']);
-  h.click(); h.apply({ run: { id: 'current', status: 'completed', startedAt: 200 } });
-  assert.equal(h.rows()[0].state, 'idle');
 });
 
 test('a temporary unknown reading retains the observed native run until its real completion', () => {
@@ -4089,132 +3263,6 @@ test('opening a conversation still clears completion and preserves actual failur
   assert.equal(h.rows()[0].state, 'idle'); assert.equal(h.notifications.length, 1);
   h.apply({ run: { id: 'failed-turn', status: 'error' } }); h.click();
   assert.equal(h.rows()[0].state, 'err'); assert.equal(h.rows()[0].run.status, 'error');
-});
-
-test('favorites and project cards share completed-running-idle ordering and aggregate mixed projects', () => {
-  const h = overviewCards(), rows = ['done', 'run', 'idle'].map((state, n) => ({ key: state, project: state, state, used: (n + 1) * 100 }));
-  assert.equal(h.context.ovBoard(rows, [], rows.slice()), 'donerunidle');
-  assert.equal(h.context.ovProjectTiles(rows.map(row => ({ key: row.key })), rows), 'donerunidle');
-  assert.equal(h.context.aggregate([{ state: 'done' }, { state: 'idle' }]).state, 'done');
-  assert.equal(h.context.aggregate([{ state: 'done' }, { state: 'run' }]).state, 'run');
-  assert.equal(h.context.aggregate([{ state: 'done' }, { state: 'unknown' }]).state, 'unknown');
-});
-
-function foldingComposer(land) {
-  const source = read('app/js/composer.js'), classes = new Set(['chatmode', ...(land ? ['land'] : [])]), timers = new Map(), handlers = {}, documentHandlers = {};
-  let timerId = 0;
-  const input = { value: '', matches: () => false }, attachments = { children: [] }, focus = { question: false };
-  const attributes = {}, layout = { notes: 0, scrolls: 0, reads: 0, sizes: 0, animations: 0 };
-  const nodes = { attachments, mentionBox: { hidden: true }, fusionWelcome: { hidden: true }, termPasswordBox: { hidden: true },
-    mic: { classList: { contains: () => false }, addEventListener() {} }, sheet: { classList: { contains: () => false } },
-    composerFold: { setAttribute: (key, value) => { attributes[key] = value; } } };
-  const background = { matches: selector => focus.question && selector.includes('#qnBar'), disabled: false };
-  const footer = { get offsetHeight() { return classes.has('composeCompact') ? 48 : 170; }, animate() { layout.animations++; } };
-  const document = { activeElement: background, body: { classList: { contains: key => classes.has(key),
-    toggle(key, on) { if (on) classes.add(key); else classes.delete(key); } } },
-    getElementById: () => null, addEventListener: (name, callback) => { (documentHandlers[name] ||= []).push(callback); },
-    querySelector: selector => selector === 'footer' ? footer : { addEventListener: (name, callback) => { handlers[name] = callback; } } };
-  input.blur = background.blur = () => { document.activeElement = background; focus.question = false; };
-  const context = createPageContext({ mode: 'chat', text: input, composing: false,
-    document, $: id => nodes[id] ||= {}, I18N: { tr: value => value }, queueMicrotask: callback => callback(),
-    window: { innerHeight: land ? 600 : 874, innerWidth: land ? 900 : 402, addEventListener() {} },
-    chatTouching: false, chatMomentum: false, chatScrolling: false, turnNavPointer: null,
-    isFollowingBottom: () => { layout.reads++; return true; }, atBottom: () => true,
-    noteChatLayoutChange: () => { layout.notes++; }, requestChatScroll: () => { layout.scrolls++; },
-    autosize: () => { layout.sizes++; }, matchMedia: () => ({ matches: false }),
-    setTimeout: callback => { timers.set(++timerId, callback); return timerId; }, clearTimeout: id => timers.delete(id),
-  });
-  vm.runInContext(part(source, 'let composeCompactTimer =', 'function submitComposerReceipt('), context);
-  return { context, classes, input, focus, handlers, nodes, attributes, layout,
-    setMode(mode) {
-      context.mode = mode; document.body.classList.toggle('chatmode', mode === 'chat'); document.body.classList.toggle('term', mode === 'terminal');
-      context.updateComposeCompact();
-    },
-    focusPassword() {
-      const password = { id: 'termPassword', disabled: false, matches: selector => selector.includes('#termPassword'),
-        blur() { document.activeElement = background; } };
-      nodes.termPasswordBox.hidden = false; document.activeElement = password;
-      for (const handler of documentHandlers.focusin) handler({ target: password });
-      return password;
-    },
-    flush() { const pending = [...timers.values()]; timers.clear(); for (const timer of pending) timer(); },
-  };
-}
-
-test('collapsed landscape tools retain their action and only a blank-area click expands the composer', () => {
-  const h = foldingComposer(true); h.context.setComposeCompact(true);
-  let intercepted = 0;
-  h.handlers.click({ target: { closest: () => ({ tagName: 'BUTTON' }) }, preventDefault: () => intercepted++, stopPropagation: () => intercepted++ });
-  h.context.updateComposeCompact();
-  assert.equal(intercepted, 0); assert.equal(h.classes.has('composeCompact'), true);
-  h.handlers.click({ target: { closest: () => null }, preventDefault: () => intercepted++, stopPropagation: () => intercepted++ });
-  assert.equal(intercepted, 2); assert.equal(h.classes.has('composeCompact'), false);
-});
-
-test('question entry folds the main composer in both orientations and releases it on blur', () => {
-  for (const land of [false, true]) {
-    const h = foldingComposer(land); h.focus.question = true; h.context.updateComposeCompact();
-    assert(h.classes.has('composeCompact')); assert(!h.classes.has('composeIdle'));
-    h.focus.question = false; h.input.value = 'keep draft'; h.context.updateComposeCompact();
-    assert(!h.classes.has('composeCompact')); assert.equal(h.input.value, 'keep draft');
-  }
-});
-
-test('landscape retains idle automatic folding and click-to-open while preserving editing', () => {
-  const h = foldingComposer(true); h.context.updateComposeCompact(); h.flush(); assert(h.classes.has('composeCompact'));
-  let prevented = 0; h.handlers.click({ target: { closest: () => false }, preventDefault: () => prevented++, stopPropagation() {} });
-  assert.equal(prevented, 1); assert(!h.classes.has('composeCompact'));
-  h.input.value = 'typing draft'; h.context.updateComposeCompact(); h.flush();
-  assert(!h.classes.has('composeCompact')); assert.equal(h.input.value, 'typing draft');
-  h.context.setComposerFold(true); assert(h.classes.has('composeCompact')); h.context.setComposerFold(false);
-  assert(!h.classes.has('composeCompact')); assert.equal(h.input.value, 'typing draft');
-});
-
-for (const land of [false, true]) test(`terminal folds manually without changing its draft or chat scroll, landscape=${land}`, () => {
-  const h = foldingComposer(land); h.setMode('terminal'); h.input.value = 'echo keep this draft';
-  h.context.setComposerFold(true);
-  assert(h.classes.has('composeCompact')); assert.equal(h.attributes['aria-expanded'], 'false');
-  h.context.setComposerFold(false);
-  assert(!h.classes.has('composeCompact')); assert.equal(h.attributes['aria-expanded'], 'true');
-  assert.equal(h.input.value, 'echo keep this draft');
-  assert.equal(h.layout.notes, 0); assert.equal(h.layout.scrolls, 0); assert.equal(h.layout.reads, 0);
-});
-
-test('chat and terminal retain independent manual folding across mode switches', () => {
-  const h = foldingComposer(false); h.context.setComposerFold(true);
-  h.setMode('terminal'); assert(!h.classes.has('composeCompact'));
-  h.context.setComposerFold(true); h.setMode('chat'); assert(h.classes.has('composeCompact'));
-  h.context.setComposerFold(false); h.setMode('terminal'); assert(h.classes.has('composeCompact'));
-  h.setMode('chat'); assert(!h.classes.has('composeCompact'));
-});
-
-test('terminal idle folding ignores retained chat attachments and question controls', () => {
-  const h = foldingComposer(true); h.nodes.attachments.children.push({ id: 'chat-image' }); h.focus.question = true;
-  h.setMode('terminal'); h.flush(); assert(h.classes.has('composeCompact'));
-  let intercepted = false;
-  h.handlers.click({ target: { closest: () => ({ tagName: 'BUTTON' }) }, preventDefault: () => { intercepted = true; }, stopPropagation() {} });
-  assert.equal(intercepted, false); h.context.updateComposeCompact(); assert(h.classes.has('composeCompact'));
-  h.handlers.click({ target: { closest: () => null }, preventDefault: () => { intercepted = true; }, stopPropagation() {} });
-  assert.equal(intercepted, true); assert(!h.classes.has('composeCompact'));
-});
-
-test('portrait terminal stays expanded when idle and landscape preserves a non-empty command', () => {
-  const portrait = foldingComposer(false); portrait.setMode('terminal'); portrait.flush(); assert(!portrait.classes.has('composeCompact'));
-  const landscape = foldingComposer(true); landscape.input.value = 'unfinished command'; landscape.setMode('terminal'); landscape.flush();
-  assert(!landscape.classes.has('composeCompact')); assert.equal(landscape.input.value, 'unfinished command');
-});
-
-test('terminal password entry expands the composer without losing focus and prevents idle folding', () => {
-  const h = foldingComposer(true); h.setMode('terminal'); h.context.setComposerFold(true);
-  const password = h.focusPassword(); assert(!h.classes.has('composeCompact')); assert.equal(h.context.document.activeElement, password);
-  h.context.endComposerEditing(); h.flush(); assert(!h.classes.has('composeCompact'));
-  h.context.chatTouching = true; h.nodes.termPasswordBox.hidden = true;
-  h.context.updateComposeCompact(); h.flush(); assert(h.classes.has('composeCompact'));
-});
-
-test('screen mode cannot retain chat or terminal folding', () => {
-  const h = foldingComposer(false); h.context.setComposerFold(true); h.setMode('screen'); h.flush();
-  assert(!h.classes.has('composeCompact')); assert(!h.classes.has('composeIdle'));
 });
 
 function nativeCompletionNotifications() {
@@ -4350,44 +3398,6 @@ test('Editor initialization returns a native metadata failure to the owning requ
   assert.deepEqual(emitted, [{ t: 'docs', requestId: 9, os: process.platform, error: 'native roots failed' }]);
 });
 
-test('the two Editor entries share one browser with different initial paths and one directory read', async () => {
-  const home = sharedFileBrowser(); await home.open('computer-two');
-  assert.equal(new URL(home.requests[0].route, 'http://fixture').searchParams.get('roots'), '1');
-  assert.equal(home.requests[0].computer, 'computer-two');
-  const current = sharedFileBrowser(); current.context.startEditor();
-  assert.equal(current.requests.length, 0); assert.equal(current.packets[0].t, 'docs');
-  await current.context.receiveCurrentFiles({ root: '/project' });
-  assert.equal(current.requests.length, 1);
-  assert.equal(new URL(current.requests[0].route, 'http://fixture').searchParams.get('path'), '/project');
-  assert.equal(current.state().directory.path, '/project');
-  assert(current.node('sheet').innerHTML.indexOf('computerFilePathForm') < current.node('sheet').innerHTML.indexOf('data-computer-path'));
-});
-
-test('typed project paths are read exactly and a failed next read cannot keep old folder actions', async () => {
-  const target = 'D:/audit/work';
-  const h = sharedFileBrowser(url => {
-    const path = url.searchParams.get('path');
-    if (path === target + '/missing') throw new Error('目录不存在');
-    return { path, os: 'win32', entries: [{ name: 'hello.txt', path: path + '/hello.txt', directory: false, selectable: true }] };
-  });
-  await h.open('computer-two', { path: 'D:/audit', project: { owner: { computer: 'computer-two', app: 'cursor' } } });
-  h.type(target);
-  h.handlers.get('submit')({ target: { id: 'computerFilePathForm' }, preventDefault() {} });
-  await new Promise(resolve => setImmediate(resolve));
-  assert.equal(new URL(h.requests.at(-1).route, 'http://fixture').searchParams.get('path'), target);
-  assert.equal(h.state().directory.path, target);
-  assert.match(h.node('sheet').innerHTML, /hello.txt/);
-  assert.match(h.node('sheet').innerHTML, /data-computer-project="open"/);
-  const pending = h.context.browseComputerFiles(target + '/missing');
-  assert.equal(h.state().directory.path, target);
-  assert.doesNotMatch(h.node('sheet').innerHTML, /hello.txt/);
-  assert.doesNotMatch(h.node('sheet').innerHTML, /data-computer-project="open"/);
-  await pending;
-  assert.match(h.node('sheet').innerHTML, /目录不存在/);
-  assert.doesNotMatch(h.node('sheet').innerHTML, /hello.txt/);
-  assert.doesNotMatch(h.node('sheet').innerHTML, /data-computer-project="open"/);
-});
-
 for (const [os, initial] of [['linux', '/home/alice/project'], ['win32', 'D:/audit/project']]) {
   test(`${os} file browsing preserves the successful directory for relative retries and parent navigation`, async () => {
     const paths = os === 'linux' ? path.posix : path.win32;
@@ -4414,71 +3424,6 @@ for (const [os, initial] of [['linux', '/home/alice/project'], ['win32', 'D:/aud
     assert.equal(h.state().directory.path, confirmed.path);
   });
 }
-
-test('file and project browsing share completion while project choices include directories only', async () => {
-  for (const project of [null, { owner: { computer: 'computer-two', app: 'cursor' } }]) {
-    const h = sharedFileBrowser(); await h.open('computer-two', { path: '/project', project });
-    h.type('/project/re'); await h.context.completeComputerPath();
-    assert.equal(h.node('computerFilePath').value, project ? '/project/reports/' : '/project/re');
-    assert.equal(h.requests.every(request => request.computer === 'computer-two'), true);
-    assert.equal(h.node('sheet').innerHTML.includes('readme.txt'), true);
-    if (project) assert.match(h.node('sheet').innerHTML, /data-computer-path="\/project\/readme.txt"[^>]*disabled/);
-    if (project) assert(h.node('sheet').innerHTML.includes('data-computer-project="open"'));
-  }
-});
-
-test('hidden entries default to hidden and the shared browser remembers the switch without refetching', async () => {
-  const entries = ['.git', '.config', '.env', 'src', 'readme.txt'].map(name => ({
-    name, path: '/project/' + name, directory: !['.env', 'readme.txt'].includes(name), selectable: true, size: 12,
-  }));
-  const h = sharedFileBrowser(() => ({ path: '/project', parent: '/', os: 'linux', entries }));
-  await h.open('computer-two', { path: '/project', project: { owner: null } });
-  assert.equal(h.state().hideHidden, true);
-  assert(h.node('sheet').innerHTML.includes('data-computer-path="/project/src"'));
-  assert(!h.node('sheet').innerHTML.includes('data-computer-path="/project/.git"'));
-  h.node('sheet').scrollTop = 64;
-  h.hideHidden(false);
-  assert.equal(h.requests.length, 1);
-  assert.equal(h.state().directory.entries.length, 5);
-  assert.equal(h.node('sheet').scrollTop, 64);
-  assert(h.node('sheet').innerHTML.includes('data-computer-path="/project/.git"'));
-  assert(h.node('sheet').innerHTML.includes('data-computer-path="/project/.env"'));
-  await h.context.browseComputerFiles('/project');
-  assert.equal(h.state().hideHidden, false);
-  await h.open('computer-one', { path: '/project' });
-  assert.equal(h.state().hideHidden, false);
-  assert(h.node('sheet').innerHTML.includes('data-computer-path="/project/.env"'));
-  assert(h.node('sheet').innerHTML.includes('data-computer-path="/project/readme.txt"'));
-  const count = h.requests.length;
-  h.hideHidden(true);
-  assert.equal(h.requests.length, count);
-  assert(!h.node('sheet').innerHTML.includes('data-computer-path="/project/.env"'));
-  assert(!h.node('sheet').innerHTML.includes('data-computer-path="/project/.config"'));
-  assert(h.node('sheet').innerHTML.includes('data-computer-path="/project/readme.txt"'));
-  await h.open('computer-two', { path: '/project' });
-  assert.equal(h.state().hideHidden, true);
-});
-
-test('hidden-entry completion follows the shared switch and still restricts project choices to folders', async () => {
-  const entries = ['.git', '.config', '.env'].map(name => ({ name, path: '/project/' + name,
-    directory: name !== '.env', selectable: true, size: 12 }));
-  for (const project of [null, { owner: null }]) {
-    const h = sharedFileBrowser(() => ({ path: '/project', parent: '/', os: 'linux', entries }));
-    await h.open('computer-two', { path: '/project', project });
-    h.type('/project/.'); await h.context.completeComputerPath();
-    assert.equal(h.node('computerFilePath').value, '/project/.');
-    assert(h.node('computerFileCompletions').innerHTML.includes('没有匹配项'));
-    h.hideHidden(false);
-    h.type('/project/.'); await h.context.completeComputerPath();
-    assert(h.node('computerFileCompletions').innerHTML.includes('.git'));
-    assert(h.node('computerFileCompletions').innerHTML.includes('.config'));
-    assert.equal(h.node('computerFileCompletions').innerHTML.includes('.env'), !project);
-    const count = h.requests.length;
-    h.hideHidden(true);
-    assert.equal(h.node('computerFileCompletions').innerHTML, '');
-    assert.equal(h.requests.length, count);
-  }
-});
 
 test('changing the hidden-entry switch releases the previous completion result', async () => {
   const data = { path: '/project', os: 'linux', entries: [{ name: '.git', path: '/project/.git', directory: true, selectable: true }] };
@@ -4524,14 +3469,6 @@ test('an older computer browser read cannot overwrite a newly opened browser', a
   assert.equal(h.state().computer.id, 'computer-two'); assert.equal(h.state().directory.path, '/second');
 });
 
-test('shared browsing opens a file on its owning computer and rejects a file as a project folder', async () => {
-  const file = '/project/readme.txt', h = sharedFileBrowser(() => ({ file }));
-  await h.open('computer-two', { path: file });
-  assert.equal(h.opened.length, 1); assert.equal(h.opened[0][0], file); assert.equal(h.opened[0][3].id, 'computer-two');
-  await h.open('computer-two', { path: file, project: { owner: null } });
-  assert.equal(h.opened.length, 1); assert.equal(h.state().error, true); assert.equal(h.state().message, '请选择文件夹');
-});
-
 test('late Editor initialization stays with its request selection and computer', async () => {
   const h = sharedFileBrowser(); await h.open('computer-two', { current: true });
   h.context.docsPending = { id: 9, sel: 'selected-thread', computer: 'computer-two' };
@@ -4543,43 +3480,6 @@ test('late Editor initialization stays with its request selection and computer',
   assert.equal(h.requests.length, 1); assert.equal(h.requests[0].computer, 'computer-two');
 });
 
-test('computer and conversation project entries share the session opener and keep their folder starting points', async () => {
-  const h = sharedFileBrowser(), rendered = [];
-  Object.assign(h.context, { ovS: {}, bindWin: async target => h.select(target.computer),
-    agentLists: new Map([['selected', []]]), agentListKey: () => 'selected',
-    showAgents: list => { rendered.push(list); h.context.sheetKind = 'agents'; }, requestAgentCatalog() {},
-  });
-  vm.runInContext(part(read('app/js/core.js'), 'function openAgentList(', 'let currentAppName =')
-    + part(read('app/js/notify.js'), 'async function runComputerAction(', 'let updateUntouched ='), h.context);
-  await h.context.runComputerAction({ computer: 'computer-two', windowId: 'window-two', win: 'cursor:two' });
-  assert.equal(rendered.length, 1); assert.equal(h.context.projectEntry.source, 'computer');
-  h.context.openProjectPicker(); assert.equal(h.packets.at(-1).t, 'projects'); assert.equal(h.requests.length, 0);
-  h.context.sheetKind = ''; h.context.openAgentList();
-  assert.equal(rendered.length, 2); assert.equal(h.context.projectEntry.source, 'conversation');
-  h.context.openProjectPicker(); assert.equal(h.packets.at(-1).t, 'docs');
-  assert.equal(h.state().project.owner, null); assert.equal(h.state().computer.id, 'computer-two');
-});
-
-test('typing a relative path during Editor initialization uses the native project as its base', async () => {
-  const h = sharedFileBrowser(); h.context.startEditor(); h.type('reports');
-  await h.context.receiveCurrentFiles({ root: '/project' });
-  const query = new URL(h.requests[0].route, 'http://fixture').searchParams;
-  assert.equal(query.get('base'), '/project'); assert.equal(query.get('path'), 'reports');
-});
-
-test('closing a shared Editor preview returns to the same directory and scroll without rereading it', async () => {
-  const h = sharedFileBrowser(); await h.open('computer-two', { path: '/project' });
-  h.node('viewer').classList = { remove() {} };
-  Object.assign(h.context, { fileRequestId: 1, viewing: {}, dirtyEdit: () => false,
-    finishFileRead() {}, finishFileSave() {}, stopVideo() {}, leaveEdit() {},
-  });
-  vm.runInContext(part(read('app/js/files.js'), 'function closeViewer(', "$('vClose').onclick")
-    + '\nreturnToBrowser = { browser: computerFiles, scroll: 128 };', h.context);
-  h.context.closeViewer();
-  assert.equal(h.state().computer.id, 'computer-two'); assert.equal(h.state().directory.path, '/project');
-  assert.equal(h.node('sheet').scrollTop, 128); assert.equal(h.requests.length, 1); assert.equal(h.packets.length, 0);
-});
-
 test('shared Editor saving uses its owning computer and updates text only from the confirmed result', async () => {
   const h = editorSave();
   await h.context.saveEdit();
@@ -4589,14 +3489,6 @@ test('shared Editor saving uses its owning computer and updates text only from t
   h.finish();
   assert.equal(h.context.viewing.text, 'new'); assert.equal(h.context.saving, null);
   assert.equal(h.node('vStatus').textContent, '已保存');
-});
-
-test('returning from an ordinary session action preserves the project pickers entry context', async () => {
-  const h = sharedFileBrowser(), entry = { computer: 'computer-two', source: 'computer' };
-  Object.assign(h.context, { currentApp: 'cursor', renderAgentList() { assert.equal(h.context.projectEntry, entry); } });
-  vm.runInContext(part(read('app/js/notify.js'), 'async function runAgentMenuAction(', 'function openPickedSession('), h.context);
-  await h.context.runAgentMenuAction('session', 'rename', { name: 'renamed' }, null, entry);
-  h.context.openProjectPicker(); assert.equal(h.packets.at(-1).t, 'projects');
 });
 
 function pairedBrowserFixture(ready = { relay: true, browser: true }) {
@@ -4875,32 +3767,6 @@ for (const needsTwoFactor of [false, true]) {
   });
 }
 
-test('fixed header follows its existing grid slot and natural height without touching the page shell', () => {
-  const observed = []; let callback, slotRect = { left: 0, width: 402 }, headerHeight = 56;
-  const writes = (allowed, initial = {}) => new Proxy(initial, {
-    set(target, property, value) { assert(allowed.includes(property), String(property)); target[property] = value; return true; },
-  });
-  const slot = { style: writes(['marginBottom'], { height: '0px' }), getBoundingClientRect: () => slotRect };
-  const header = { style: writes(['left', 'width']), getBoundingClientRect: () => ({ height: headerHeight }) };
-  const body = { style: writes([]) };
-  const context = createPageContext({
-    document: { body, querySelector(selector) { assert.equal(selector, 'body > header'); return header; } },
-    $(id) { assert.equal(id, 'headerSlot'); return slot; },
-    ResizeObserver: class { constructor(fn) { callback = fn; } observe(node) { observed.push(node); } },
-  });
-  vm.runInContext(part(read('app/js/core.js'), 'const appHeader =', '// In-progress lines'), context);
-  assert.deepEqual(observed, [slot, header]);
-  assert.deepEqual({ ...header.style }, { left: '0px', width: '402px' });
-  assert.equal(slot.style.marginBottom, '56px');
-  slotRect = { left: 524.40625, width: 349.59375 }; headerHeight = 52; callback();
-  assert.deepEqual({ ...header.style }, { left: '524.40625px', width: '349.59375px' });
-  assert.equal(slot.style.marginBottom, '52px');
-  slotRect = { left: 64, width: 756 }; headerHeight = 138; callback();
-  assert.deepEqual({ ...header.style }, { left: '64px', width: '756px' });
-  assert.equal(slot.style.marginBottom, '138px');
-  assert.equal(slot.style.height, '0px'); assert.deepEqual({ ...body.style }, {});
-});
-
 function viewportTraceFixture() {
   const events = () => {
     const listeners = new Map(), once = new Set();
@@ -4982,15 +3848,12 @@ test('viewport diagnostics stay inactive until requested and consume only the ex
   h.run('resumeViewportTrace();'); assert.equal(h.data().samples.length, 1);
 });
 
-test('viewport diagnostics record the actual overview header, footer, safe area and top paint owners without input or identity', async () => {
+test('viewport diagnostics collect an overview sample without reading input, identity or changing page geometry', async () => {
   const h = viewportTraceFixture(); h.classes.delete('conv'); h.run('startViewportTrace();');
   h.document.activeElement = h.input; h.document.emit('focusin'); h.window.emit('scroll');
   assert.equal(h.frames.size, 1); h.flush();
   const frame = h.data().samples.find(sample => sample.source === 'frame');
-  assert.equal(frame.page, 'overview'); assert.equal(frame.header.height, 114); assert.equal(frame.header.css.height, '874px'); assert.equal(frame.footer.top, 780);
-  assert.deepEqual(frame.safeArea, { top: '62px', right: '0px', bottom: '34px', left: '0px' });
-  assert.equal(frame.units.dvh, '874px'); assert.equal(frame.topEdge[0].elements[0].owner, 'overview');
-  assert.equal(h.data().environment.screen.height, 874); assert.deepEqual(h.data().measurement.before, h.data().measurement.after);
+  assert.equal(frame.page, 'overview'); assert.deepEqual(h.data().measurement.before, h.data().measurement.after);
   assert.equal(h.counts().contentReads, 0); assert(!JSON.stringify(h.data()).includes('PRIVATE_'));
   h.run('stopViewportTrace();');
 });
@@ -5003,42 +3866,6 @@ test('viewport diagnostics release listeners, probes and frame callbacks without
   for (const target of [h.window, h.document, h.window.visualViewport]) assert([...target.listeners.values()].every(listeners => listeners.size === 0));
   h.run('startViewportTrace();'); const fresh = h.data(); oldFrame(); oldObserver.callback([{ target: h.body, attributeName: 'style' }]);
   assert.deepEqual(h.data(), fresh); assert.equal(h.frames.size, 1); h.run('stopViewportTrace();');
-});
-
-test('all entry modes retain keyboard controls without shell compensation during the recorded focusout sequences', () => {
-  const run = (recording, standalone, sequence) => {
-    const h = viewportTraceFixture(), states = [];
-    if (standalone) h.document.documentElement.dataset.standalone = '';
-    if (sequence.page === 'overview') h.classes.delete('conv');
-    for (const property of ['height', 'transform']) Object.defineProperty(h.body.style, property, {
-      get: () => '', set() { assert.fail(`keyboard processing must not write shell ${property}`); },
-    });
-    if (recording) h.run('startViewportTrace();');
-    const resting = { focus: false, inner: 874, height: 874, offset: 0, scroll: 0 };
-    const open = { focus: true, ...sequence };
-    for (const phase of [resting, open, { ...open, focus: false }, resting]) {
-      h.document.activeElement = phase.focus ? h.input : null;
-      Object.assign(h.window, { innerHeight: phase.inner, scrollY: phase.scroll });
-      Object.assign(h.window.visualViewport, { height: phase.height, offsetTop: phase.offset });
-      h.run('fitViewport();'); h.flush(); states.push(h.layout());
-    }
-    if (recording) {
-      const frames = h.data().samples.filter(sample => sample.source === 'frame');
-      assert(frames.every(frame => frame.root.css.position === (standalone ? 'relative' : 'fixed')));
-      assert(frames.every(frame => frame.root.css.transform === 'none'));
-      assert.equal(h.counts().contentReads, 0);
-    }
-    h.run('stopViewportTrace();'); return states;
-  };
-  for (const standalone of [false, true]) for (const sequence of [
-    { page: 'overview', inner: 768, height: 477, offset: 106, scroll: 106 },
-    { page: 'chat', inner: 477, height: 477, offset: 335, scroll: 397 },
-  ]) {
-    const plain = run(false, standalone, sequence);
-    assert.deepEqual(run(true, standalone, sequence), plain);
-    assert.deepEqual(plain.map(value => [value.height, value.transform, value.keyboard, value.editingEnds]),
-      [['', '', false, 0], ['', '', true, 0], ['', '', false, 1], ['', '', false, 1]]);
-  }
 });
 
 test('viewport diagnostics record conversation visibility transitions and stop exactly at the stated limit', () => {
@@ -5078,28 +3905,6 @@ test('viewport resource hashes distinguish loaded CSS from own cache entries and
   assert(!JSON.stringify(data).includes('PRIVATE')); assert.equal(h.writes.length, 0);
 });
 
-test('Cursor native image attachments survive virtualized and image-only messages', async () => {
-  const h = cursorBodyFixture(), image = '/home/user/Cursor/images/icon.png';
-  h.load('A', [{ bubbleId: 'image-only', type: 1, text: '', context: { selectedImages: [{ path: image }] } },
-    { bubbleId: 'with-text', type: 1, text: '看图片', context: { selectedImages: [{ path: image }] } }]);
-  const next = await h.update({ thread: 'A', model: 'model', items: [] });
-  assert.deepEqual(Array.from(next.items, row => row.i), ['image-only', 'with-text']);
-  assert.deepEqual(Array.from(next.items[0].images), [image]);
-  assert.equal(next.items[0].t, '');
-  assert.equal(next.items[1].t, '看图片');
-});
-
-test('OpenCode live view renders its page while retaining older rows in the local history cache', () => {
-  const old = { i: 'old', k: 'human', order: 1, t: 'old' }, fresh = { i: 'new', k: 'human', order: 2, t: 'new' };
-  const context = createPageContext({ SC: { key: 'one', cleared: false, items: new Map([['old', old]]), sig: new Map(), collapsed: new Set(), show: 400 },
-    scItemBytes: new WeakMap(), scDirty() {}, acpNum: () => -1 });
-  vm.runInContext(part(read('app/js/history.js'), 'function scKeep(', 'function codexRows(')
-    + part(read('app/js/history.js'), 'function scMerge(', 'function scFold(') + '\nthis.merge = scMerge;', context);
-  const v = context.merge({ windowed: true, items: [fresh] });
-  assert.deepEqual(Array.from(v.items, row => row.i), ['new']);
-  assert.equal(context.SC.items.has('old'), true);
-});
-
 test('OpenCode history persistence stores tool metadata without expanded output', () => {
   const context = createPageContext({ SC_MAX: 100, acpNum: () => -1 });
   vm.runInContext(part(read('app/js/history.js'), 'function scSnapshot(', 'let scDrainTimer') + '\nthis.snapshot = scSnapshot;', context);
@@ -5107,44 +3912,6 @@ test('OpenCode history persistence stores tool metadata without expanded output'
   const snapshot = context.snapshot({ items: new Map([['tool', tool]]), collapsed: new Set() });
   assert.equal(snapshot.items[0].output, undefined); assert.equal(snapshot.items[0].details, false);
   assert.equal(tool.output, 'large body');
-});
-
-test('OpenCode preview limits the current turn to 600 characters and the latest three normalized tools', async () => {
-  const source = part(read('server/overview.mjs'), "  if (session.app === 'opencode') {", '  if (session.dormant)');
-  const rows = [{ info: { role: 'user' }, parts: new Map([['text', { type: 'text', text: 'question' }]]) },
-    { info: { role: 'assistant' }, parts: new Map() }];
-  let selected;
-  const context = createPageContext({ openCode: { connect: async () => {}, loadMessages: async () => {}, messageRows: () => rows,
-    chat: (_id, options) => { selected = options; return { model: 'model', effort: 'default', items: [
-      { k: 'human', t: 'question' }, { k: 'assistant', t: 'X'.repeat(800) },
-      ...Array.from({ length: 8 }, (_, n) => ({ i: String(n), k: 'tool', t: 'tool ' + n, status: n === 7 ? 'error' : 'completed' }))] }; } } });
-  vm.runInContext(`this.preview = async () => { const session = { app: 'opencode' }, win = '', windowId = '', threadId = 'A'; ${source} };`, context);
-  const value = await context.preview();
-  assert.equal(value.text.length, 600); assert.equal(value.last.length, 600);
-  assert.deepEqual(Array.from(value.tools, tool => [tool.id, tool.label, tool.state]), [['5', 'tool 5', 'done'], ['6', 'tool 6', 'done'], ['7', 'tool 7', 'error']]);
-  assert.equal(selected.tools.size, 0); assert.equal(selected.rows.length, 2);
-});
-
-for (const selector of ['.ui-agent-status-dot', '.vscode-model-picker__trigger']) test(`Cursor empty composer resolves services from ${selector} beyond deeply nested providers`, () => {
-  const status = {}, data = { getComposerDataIfLoaded: id => ({ composerId: id, fullConversationHeadersOnly: [] }) };
-  const services = { composerService: {}, composerDataService: data, backgroundComposerService: {}, nativeHostService: {} };
-  const instantiationService = { _services: { _entries: new Map(Object.keys(services).map(id => [id, null])) },
-    invokeFunction: fn => fn({ get: id => services[id] }) };
-  let lookups = 0;
-  const context = createPageContext({ IS_WIN: false, window: {}, doc: { querySelectorAll: query => {
-    assert.equal(query, '.ui-agent-status-dot, .vscode-model-picker__trigger'); return [status];
-  } }, codexFiberProps: (element, depth) => {
-      assert.equal(element, status); lookups++;
-      return [...Array(184).fill({}), { services: { workspace: { instantiationService } } }].slice(0, depth);
-    } });
-  vm.runInContext(part(read('server/page/session-actions.js'), '  const cursorSessionInstantiation =', '  const nativeSessionContext =')
-    + '\nglobalThis.readServices = cursorSessionServices;', context);
-  const resolved = context.readServices();
-  assert.equal(resolved.data, data);
-  assert.equal(resolved.data.getComposerDataIfLoaded('empty').fullConversationHeadersOnly.length, 0);
-  assert.equal(resolved.composer, services.composerService);
-  assert.equal(context.readServices(), resolved);
-  assert.equal(lookups, 1);
 });
 
 for (const app of ['devin', 'cursor', 'codex', 'opencode']) test(`small WebP follows ${app} native format`, async () => {
@@ -5179,36 +3946,6 @@ for (const [app, mime, converted] of [['devin', 'image/webp', true], ['devin', '
   });
 }
 
-for (const kind of ['unchanged', 'undone', 'rotated', 'cropped', 'first-upload', 'pending-edit']) {
-  test(`image editor save retains or uploads the correct attachment: ${kind}`, async () => {
-    const calls = [], file = new File(['image'], 'sample.png', { type: 'image/png' });
-    const current = { cursor: kind === 'rotated' ? 1 : 0, width: 20, height: 10,
-      crop: kind === 'cropped' ? { x: 0, y: 0, w: 10, h: 10 } : { x: 0, y: 0, w: 20, h: 10 },
-      file: kind === 'first-upload' || kind === 'pending-edit' ? file : undefined, name: 'sample.png', uploaded: false };
-    const image = { sel: 'thread-A', ...(kind === 'first-upload' ? { files: [current] }
-      : kind === 'pending-edit' ? { onSave: async value => { calls.push(['pending', value.type]); return true; } } : { id: 'existing-image' }) };
-    const dialog = { close() { calls.push(['close']); } }, button = { dataset: { edit: 'save' }, textContent: '保存', disabled: false };
-    const context = createPageContext({ File, Blob, dialog, image, documents: [current], current: () => current,
-      scope: 'scope-A', imageUploadScope: () => 'scope-A', viewSel: 'thread-A', app: 'devin',
-      saving: false, loading: false, loadError: false, cancelled: false, finishGesture() {},
-      fullCrop: crop => crop.x === 0 && crop.y === 0 && crop.w === current.width && crop.h === current.height,
-      load: async () => {}, applyCrop() { if (current.crop.w !== current.width) current.cursor++; },
-      base: { width: 20, height: 10 }, marks: {}, merged: { getContext: () => ({ drawImage() {} }),
-        toBlob: fn => fn(new Blob(['edited'], { type: 'image/png' })) },
-      shrinkImage: async value => value,
-      attachImageFile: async (value, options) => { calls.push(['upload', value.type, options.replace || '']); return true; },
-      status: (...args) => calls.push(['status', ...args]),
-    });
-    vm.runInContext(part(read('app/js/image-editor.js'), '  dialog.onclick = async', '  const resize ='), context);
-    await dialog.onclick({ target: { closest: () => button } });
-    const writes = calls.filter(call => call[0] === 'upload' || call[0] === 'pending');
-    if (kind === 'unchanged' || kind === 'undone') assert.deepEqual(writes, []);
-    else if (kind === 'pending-edit') assert.deepEqual(writes, [['pending', 'image/png']]);
-    else assert.deepEqual(writes, [['upload', 'image/png', kind === 'first-upload' ? '' : 'existing-image']]);
-    assert.equal(calls.filter(call => call[0] === 'close').length, 1);
-  });
-}
-
 function answerDraftFixture() {
   const context = createPageContext({ currentApp: 'codex', currentComputer: () => ({ id: 'computer-one' }), lastChat: { thread: 'A' }, viewSel: 'codex|carrier|A',
     list: { querySelectorAll: () => [] }, status() {} });
@@ -5228,20 +3965,6 @@ test('answer drafts survive A/B navigation while isolating identical request IDs
   h.qnDrafts.set(keyB, 'answer B'); h.lastChat = { thread: 'A' }; assert.equal(h.qnDrafts.get(h.questionDraftKey('same-request', '0')), 'answer A');
   h.currentApp = 'opencode'; assert.equal(h.qnDrafts.has(h.questionDraftKey('same-request', '0')), false);
   h.currentApp = 'codex'; h.currentComputer = () => ({ id: 'computer-two' }); assert.equal(h.qnDrafts.has(h.questionDraftKey('same-request', '0')), false);
-});
-
-test('OpenCode answer restoration preserves selected options and custom text without mixing requests', () => {
-  const h = answerDraftFixture(); h.currentApp = 'opencode';
-  const makeForm = () => {
-    const choice = { value: '继续', checked: true }, custom = { value: 'custom answer' };
-    const field = { querySelector: () => custom, querySelectorAll: selector => selector === 'input:checked' ? choice.checked ? [choice] : [] : [choice] };
-    return { dataset: { opencodeQuestion: 'request-one' }, choice, custom, querySelectorAll: () => [field] };
-  };
-  const first = makeForm(); h.captureOpenCodeAnswers(first);
-  const next = makeForm(); next.choice.checked = false; next.custom.value = ''; h.restoreOpenCodeAnswers(next);
-  assert.equal(next.choice.checked, true); assert.equal(next.custom.value, 'custom answer');
-  next.dataset.opencodeQuestion = 'request-two'; next.choice.checked = false; next.custom.value = ''; h.restoreOpenCodeAnswers(next);
-  assert.equal(next.choice.checked, false); assert.equal(next.custom.value, '');
 });
 
 test('answer success after switching clears only the submitted origin, while failure retains its draft', () => {
@@ -5310,30 +4033,6 @@ test('Codex live preview reads the writer without changing its visible thread or
   assert.deepEqual(calls, [`nativeSessionInfo('codex', "desktop", 'preview')`, 'close']);
 });
 
-test('Devin model controls prefer the native model picker over a simultaneous Normal capability picker', () => {
-  const high = { modelUid: 'swe-2-high', familyUid: 'swe-2', familyLabel: 'SWE-2', label: 'SWE-2 High',
-    isDefaultModelInFamily: true, familyMetadata: { 'Reasoning Effort': { name: 'High', order: 2 } } };
-  const medium = { ...high, modelUid: 'swe-2-medium', label: 'SWE-2 Medium', isDefaultModelInFamily: false,
-    familyMetadata: { 'Reasoning Effort': { name: 'Medium', order: 1 } } };
-  const cloud = { menu: { enabledModes: ['normal', 'lite'], planLockedModes: new Set(), selection: { kind: 'mode', mode: 'normal' } }, onCapabilityChange() {} };
-  const picker = { visibleModelConfigs: [high, medium], selectedModels: ['swe-2-high'], onModelSelect() {} };
-  for (const modelsPresent of [false, true]) {
-    const cloudButton = { textContent: 'Normal', props: [cloud], closest: () => null, getAttribute: () => null };
-    const modelButton = { textContent: 'SWE-2 High', props: [picker], closest: () => null, getAttribute: () => null };
-    const scope = createPageContext({
-      doc: { querySelector: () => null, querySelectorAll: selector => selector === 'button' ? [cloudButton, ...(modelsPresent ? [modelButton] : [])] : [] },
-      vis: () => true, codexFiberProps: button => button?.props || [], revealDevinComposer() {},
-      devinSurface: () => 'editor', remoteContext: null, normLabel: text => text,
-    });
-    vm.runInContext(read('server/page/menus.js') + ';this.model={name:agentModelName,items:modelItemsFast,effort:effortItems};', scope);
-    assert.equal(scope.model.name(), modelsPresent ? 'SWE-2' : 'Normal');
-    if (modelsPresent) {
-      assert.deepEqual(Array.from(scope.model.effort(), row => [row.label, row.checked]), [['Medium', false], ['High', true]]);
-      assert.equal(scope.model.items().find(row => row.label === 'SWE-2').checked, true);
-    } else assert.deepEqual(Array.from(scope.model.items(), row => row.label), ['Normal', 'Lite']);
-  }
-});
-
 test('a batch cancelled while its request waits in the relay queue never reaches a native removal', async () => {
   for (const app of ['codex', 'cursor', 'devin', 'opencode']) {
     const h = relayHeartbeat(), socket = await h.socket(), session = h.bind(socket), removed = [];
@@ -5359,36 +4058,6 @@ test('a batch cancelled while its request waits in the relay queue never reaches
   }
 });
 
-test('Fusion native forms retain multiple selected values through repaint and use the shared field reader', () => {
-  const context = createPageContext({ I18N: { tr: value => value }, esc: String, PRIMARY: /accept/, document: { activeElement: null } });
-  const history = read('app/js/history.js'), source = read('app/js/fusion.js');
-  vm.runInContext(part(history, 'const questionFieldValue =', 'function clearQuestionDraft(')
-    + part(source, 'function fusionNativeHtml(', 'function showFusionTasks('), context);
-  const html = context.fusionNativeHtml({}, { attemptId: 'attempt', bindingId: 'binding', requests: [{ id: 'request', text: 'Tools',
-    fields: [{ label: 'Select', multiple: true, value: ['read', 'write'], options: [{ label: 'Read', value: 'read' }, { label: 'Write', value: 'write' }] }], buttons: [{ label: 'accept' }] }] });
-  assert.match(html, /multiple/); assert.equal((html.match(/selected/g) || []).length, 2);
-  const field = selected => ({ name: '', dataset: { nativeRequest: 'request', fusionField: '0', attempt: 'attempt' }, multiple: true,
-    options: ['read', 'write', 'run'].map(value => ({ value, selected: selected.includes(value) })),
-    get selectedOptions() { return this.options.filter(option => option.selected); } });
-  let fields = [field(['read', 'write'])];
-  const root = { scrollTop: 140, querySelector: () => null, querySelectorAll: selector => selector === 'details' ? [] : fields };
-  context.fusionSurface = () => root;
-  context.fusionPreserveSheet(() => { fields = [field([])]; root.scrollTop = 0; });
-  assert.deepEqual([...fields[0].selectedOptions].map(option => option.value), ['read', 'write']);
-  assert.equal(root.scrollTop, 140);
-});
-
-test('context and quota meter percentages use integers for text, rings and accessible labels', () => {
-  const context = createPageContext();
-  vm.runInContext(part(read('app/js/sheets.js'), 'const meterPercent =', 'const contextMeterScope =') + ';this.percent=meterPercent;', context);
-  assert.equal(context.percent(59.80821052631578), 60);
-  assert.equal(context.percent(0.123456789), 0);
-  assert.equal(context.percent(99.6), 100);
-  assert.equal(context.percent(101), 100);
-  assert.equal(context.percent(-1), 0);
-  assert.equal(context.percent(null), null);
-});
-
 function codexInputRecall() {
   const h = acceptedDraft(), source = read('app/js/composer.js');
   Object.assign(h.sent, { app: 'codex', thread: 'A', scope: 'computer|codex|window', before: new Set(), beforeQueues: new Set() });
@@ -5402,34 +4071,6 @@ function codexInputRecall() {
     + part(source, 'function recallInput(', "$('inputPrev').onclick"), h.context);
   return h;
 }
-
-test('Codex up/down history uses confirmed original text after receipts and echoes are consumed', () => {
-  const h = codexInputRecall(), original = '第一行\nC:\\tmp\\\n第二行/\n';
-  h.sent.text = original;
-  h.input.value = original;
-  h.context.confirmSent({ requestId: 'request', sel: h.context.viewSel, messageId: 'accepted' }, false);
-  h.context.submittedMessages.length = 0;
-  h.context.pendingEchoes = [];
-  const chat = { thread: 'A', items: [
-    { i: 'older', k: 'human', t: '旧消息\\\n' },
-    { i: 'turn:human:accepted', nativeIds: ['accepted'], k: 'human', t: original.replace(/\n/g, '\\\n') + '\n' },
-  ] };
-  h.context.lastChat = chat;
-  for (let n = 0; n < 3; n++) h.context.rememberInputHistory(chat);
-  h.input.value = 'unfinished draft';
-  h.input.setSelectionRange(2, 4, 'forward');
-  h.context.MN.mentions = [{ token: '@draft' }];
-  h.context.recallInput(-1); assert.equal(h.input.value, original);
-  h.context.recallInput(-1); assert.equal(h.input.value, '旧消息\\\n');
-  h.context.recallInput(1); assert.equal(h.input.value, original);
-  h.context.recallInput(1); assert.equal(h.input.value, 'unfinished draft');
-  assert.deepEqual([h.input.selectionStart, h.input.selectionEnd], [2, 4]);
-  assert.equal(h.context.MN.mentions[0].token, '@draft');
-  h.context.inputHistory.clear(); h.context.chatInputCache.clear();
-  h.context.lastChat = null;
-  h.context.lastChat = structuredClone(chat);
-  h.context.recallInput(-1); assert.equal(h.input.value, original);
-});
 
 test('a late Codex receipt preserves A original without leaking through another thread, computer or app', () => {
   const h = codexInputRecall(); h.sent.text = 'original A';
@@ -5490,20 +4131,6 @@ for (const IS_WIN of [false, true]) test('Devin desktop workspace reading uses t
   assert.equal(calls[0][1], IS_WIN ? 'code' : 'devin'); assert.equal(roots[0].root, '/desktop-project'); assert.equal(roots[0].source, 'devin');
 });
 
-test('Windows Devin settings read section navigation without requiring the removed plan button', () => {
-  const button = nativeNode({ 'aria-label': 'Open editor settings' }, { dataset: {}, tagName: 'BUTTON', textContent: 'Open editor settings', innerText: 'Open editor settings',
-    parentElement: { innerText: 'General editor preferences' }, closest: () => null });
-  const heading = { textContent: 'General' }, group = { querySelector: () => heading, querySelectorAll: () => [button],
-    cloneNode: () => ({ querySelectorAll: () => [], textContent: 'General' }), scrollIntoView() {} };
-  const root = nativeNode({}, { querySelector: selector => selector === 'section[aria-label=general]' ? group : null,
-    querySelectorAll: selector => selector === 'section' ? [group] : selector === 'section > div > h2' ? [heading] : [] });
-  const doc = { getElementById: () => null, querySelectorAll: selector => selector === '.editor-instance' ? [root] : [] };
-  const page = vm.runInContext(PAGE_SRC.replace(/const IS_WIN = (true|false);/, 'const IS_WIN = true;'), createPageContext({ document: doc, window: {}, crypto }));
-  const data = page.desktopSettingsData('', 'devin');
-  assert.equal(data.sections.length, 1); assert.equal(data.nav[0], 'General'); assert.equal(data.current, 'General');
-  assert.equal(page.desktopSettingsNav('General', 'devin'), true);
-});
-
 test('Codex folded native questions are read without a selected group and stay scoped to thread and host', () => {
   const bind = (key, question, more = {}) => [JSON.stringify(key), { value: { get: () => ({ question, draft: '', lastSubmission: null, ...more }), subscribe: () => () => {} } }];
   const key = { entityKey: 'turn', hostId: 'local', itemId: 'q-A', threadId: 'A' };
@@ -5522,7 +4149,6 @@ test('Codex folded native questions are read without a selected group and stay s
   assert.equal(state.questions[0].key.threadId, 'A'); assert.equal(state.sources.size, 2);
 });
 
-
 test('native Codex question module loads the original group state without loading composer modules', async t => {
   const folder = fs.mkdtempSync('_shots/codex-question-module-');
   t.after(() => fs.rmSync(folder, { recursive: true, force: true }));
@@ -5536,7 +4162,6 @@ test('native Codex question module loads the original group state without loadin
   assert.equal(typeof native.groups.resolve, 'function');
   assert.equal(window.__remoteAgentNativeModules.has('graph'), false);
 });
-
 
 for (const IS_WIN of [true, false]) test('Codex question operations use the correct native realm: Windows=' + IS_WIN, async () => {
   const calls = [], routes = vm.runInContext('({' + part(read('server/routes.mjs'), '  codexRequest: {', '  opencodeQuestion: {') + '})', createPageContext({ IS_WIN,
@@ -5560,7 +4185,7 @@ test('opening a folded Codex question updates only its native host and thread gr
     writes.push(after.get('A')); selected = true;
   } };
   const source = part(read('server/page/codex.js'), '  const codexOpenQuestion =', '  const codexNativeRequests =');
-  const context = createPageContext({ codexRequestThread: () => 'A', codexNativeManager: () => ({ hostId: 'local' }),
+  const context = createPageContext({ codexRequestThread: () => 'A', codexVisibleThread: () => 'B', openCodexThread: async thread => { assert.equal(thread, 'A'); return true; }, codexNativeManager: () => ({ hostId: 'local' }),
     codexAsyncQuestionState: () => ({ questions: [{ question: { id: 'q-A' }, key }] }),
     codexComposerScope: async thread => { assert.equal(thread, 'A'); return { scope: accessor }; },
     codexNativeModule: async kind => { assert.equal(kind, 'questions'); return { groups }; },

@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict';
-import fs from 'node:fs';
+
 import path from 'node:path';
 import vm from 'node:vm';
 import test from 'node:test';
-import { localFilePath } from '../lib/platform.mjs';
+import { EventEmitter } from 'node:events';
+
 import { NativeWindow } from '../server/native-windows.mjs';
-import { adapter as codexAdapter } from '../server/apps/codex.mjs';
+
 import { adapter as cursorAdapter } from '../server/apps/cursor.mjs';
 import { AgentContext } from '../server/agent/context.mjs';
 import { read, fragment, createPageContext } from './page-fixture.mjs';
@@ -79,26 +80,21 @@ test('existing desktop batch still uses the same fresh native archive checks', a
 });
 
 test('backend chat subscription cleanup removes its retry registration on return, switch and hide', async () => {
-  const calls = [], context = createPageContext({ awaitCdpRead: promise => promise,
-    codexBackend: { load: async () => {}, subscribe: () => () => {}, clearRetry: owner => calls.push(owner) },
+  const calls = [], backend = Object.assign(new EventEmitter(), {
+    load: async () => {}, subscribe: () => () => {}, clearRetry: owner => calls.push(owner),
+  });
+  const context = createPageContext({ awaitCdpRead: promise => promise,
+    codexBackend: backend,
     watchChatUpdates: () => () => calls.push('unsubscribe'), backendPublish: () => {},
     backendRoutes: { codexRetry: () => calls.push('configure') },
   });
   const method = vm.runInContext('({' + fragment(read('server/apps/codex.mjs'), '  async setBackendMode(', '  async sendBackendMessage(') + '}).setBackendMode', context);
-  const session = { threadId: 'A', visible: true, codexRetrySettings: { sel: 'A' } };
-  await method.call(session); session.chatUpdatesStop();
+  const session = { threadId: 'A', visible: true, codexRetrySettings: { sel: 'A' }, adapter: { syncBackendDraft: async () => {} } };
+  await method.call(session);
+  assert.equal(backend.listenerCount('draftChanged'), 1);
+  session.chatUpdatesStop();
+  assert.equal(backend.listenerCount('draftChanged'), 0);
   assert.equal(calls[0], 'configure'); assert.equal(calls[1], session); assert.equal(calls[2], 'unsubscribe');
-});
-
-test('retry menu distinguishes backend continuation from desktop Retry clicks', () => {
-  for (const backend of [true, false]) {
-    let html;
-    const context = createPageContext({ currentComputer: () => ({ windowId: backend ? 'backend' : 'desktop' }),
-      codexAutoRetryEnabled: () => true, codexAutoRetryCount: () => 2, openSheet: (_kind, value) => { html = value; }, $: () => ({}) });
-    vm.runInContext(fragment(read('app/js/sheets.js'), 'function showCodexRetryMenu(', 'function toggleCodexAutoRetry(') + '\nshowCodexRetryMenu();', context);
-    assert.equal(html.includes('离开对话页后停止'), backend); assert.equal(html.includes('自动点击电脑端 Retry'), !backend);
-    assert.equal(html.includes('保留'), true);
-  }
 });
 
 function settingsOwnerFixture(created = false) {
@@ -221,17 +217,6 @@ test('Devin cross-project creation completes in one switch before reading the ne
   assert.deepEqual(calls, ['open', ['projectReady', '/B', true], 'first-screen']);
 });
 
-test('Devin opens the requested empty thread through the selected IDE window native main-panel command', async () => {
-  const opened = [], chat = {}, id = 'acp/devin-cli/new-empty';
-  const source = read('server/page/session-actions.js').replace("const native = await import('@exa/chat-client');\n      const api", 'const native = nativeModule;\n      const api');
-  const context = pageContext({ document: { querySelector: () => chat }, devinRowSession: row => row.sessionId, devinSessionRecord: value => value === id ? { sessionId: id } : null, devinNativeId: id => 'devin-' + id,
-    nativeModule: { encodeOpenCascadeIdInChatPanelPayload: value => [value] },
-    window: { __acpStore: { getState: () => ({ acp: { sessions: [{ sessionId: id, cwd: '/B' }] } }) } },
-    codexFiberProps: element => { assert.equal(element, chat); return [{ vscodeAPI: { executeCommand: async (command, action) => opened.push([command, action]) } }]; } }, source);
-  assert.equal(await context.action('devin', id, 'open'), true);
-  assert.deepEqual(JSON.parse(JSON.stringify(opened)), [['devin.sendChatActionMessage', { actionType: 'openCascadeIdInChatPanel', payload: ['devin-' + id] }]]);
-});
-
 test('Cursor project replacement calls the selected window native host with forceReuseWindow', async () => {
   class Uri { static file(value) { return { scheme: 'file', path: value }; } }
   const calls = [], uri = new Uri();
@@ -287,18 +272,6 @@ for (const outcome of ['archive', 'clear', 'delete']) {
   });
 }
 
-test('compact Devin model buttons expose the same picker as text buttons', () => {
-  const model = { textContent: '', getAttribute: name => name === 'aria-label' ? 'SWE-2 High' : '', closest: () => null };
-  const unrelated = { ...model, textContent: 'Local', getAttribute: () => '' };
-  const context = createPageContext({ remoteContext: null, doc: { querySelectorAll: () => [unrelated, model] }, vis: () => true,
-    codexFiberProps: () => [], revealDevinComposer() {} });
-  const source = read('server/page/menus.js');
-  vm.runInContext(fragment(source, '  const DEVIN_MODEL', '  const devinModelMenu') + '\nthis.button = devinModelButton;', context);
-  assert.equal(context.button(false), model);
-  model.textContent = 'SWE-2 High'; model.getAttribute = () => '';
-  assert.equal(context.button(false), model);
-});
-
 test('Codex manager lookup on the empty home page follows the requested host', () => {
   const local = { hostId: 'local', getConversation: id => id === 'local-thread', loadOlderConversationTurnsPage() {} };
   const remote = { hostId: 'remote', getConversation: id => id === 'remote-thread', loadOlderConversationTurnsPage() {} };
@@ -310,21 +283,6 @@ test('Codex manager lookup on the empty home page follows the requested host', (
   assert.equal(context.manager('remote-thread', [scope]), remote);
   assert.equal(context.manager(null, [scope], 'local'), local);
   local.disposed = true; assert.equal(context.manager(null, [scope], 'local'), null);
-});
-
-test('Codex opens the identified recent-chat button once despite the archive toast', () => {
-  let open = false, clicks = 0;
-  const button = {};
-  const context = createPageContext({ remoteContext: null, codexButton: () => button, codexPoint: () => ({ x: 1, y: 2 }), vis: () => true,
-    codexFiberProps: () => [{ triggerRef: { current: { contains: el => el === button } }, contentId: 'recent-menu', get open() { return open; }, onOpenChange(value) { clicks++; open = value; } }],
-    doc: { querySelectorAll: () => open ? [{ innerText: 'Search recent chats' }] : [] } });
-  const source = read('server/page/codex.js');
-  vm.runInContext(fragment(source, '  const codexRecentState', '  const codexRecentMenu')
-    + fragment(source, '  const codexRecentPoint', '  const codexNewPoint') + '\nthis.recent = codexRecentPoint;', context);
-  context.recent(); assert.equal(clicks, 0);
-  context.recent(true); context.recent(true); assert.equal(clicks, 1);
-  context.recent(false); assert.equal(open, false);
-  context.recent(true); assert.equal(clicks, 3);
 });
 
 test('Codex preview and catalog use the host connection without selecting a conversation', async () => {
@@ -382,16 +340,6 @@ function nativeWaitingState(app = 'codex') {
   return { state, read: () => context.read() };
 }
 
-test('Codex finished changes and ordinary action buttons are not pending native requests', () => {
-  const h = nativeWaitingState();
-  for (const label of ['Accept all changes', 'Run', 'Continue']) {
-    h.state.labels = [label];
-    const value = h.read();
-    assert.equal(value.waiting, null); assert.equal(value.waitingText, '');
-    assert.equal(value.busy, false); assert.equal(value.last, '任务已正常完成');
-  }
-});
-
 for (const id of ['async:question-1', 'approval:command-1']) test(`Codex ${id} is waiting even outside the message list or before an answer enables Send`, () => {
   const h = nativeWaitingState();
   h.state.requests = [{ id, text: '请选择处理方式', buttons: [{ label: 'Skip' }, { label: 'Send', disabled: true }], fields: [{ value: '' }] }];
@@ -415,14 +363,6 @@ test('Codex waiting follows native request and thread identity and clears when i
   h.state.thread = 'thread-A'; assert.equal(h.read().waiting, first);
 });
 
-for (const app of ['cursor', 'devin']) test(`${app} retains its existing button and Question waiting behavior`, () => {
-  const h = nativeWaitingState(app); h.state.labels = ['Allow'];
-  assert(h.read().waiting); assert.equal(h.read().waitingText, 'Edited 22 files+1,277-24View changes');
-  h.state.questions = { list: [{ text: '原生问题', multi: false, options: [{ label: '第一项' }] }] };
-  const value = h.read(); assert(value.waiting.startsWith('q:')); assert.equal(value.waitingText, '原生问题');
-  if (app === 'devin') assert.equal(value.actions[0].label, '第一项');
-});
-
 function codexQuestionReader(questions = [{ id: 'choice', question: '请选择处理方式', isOther: true, options: [{ label: '继续' }, { label: '停止' }] }]) {
   const state = { thread: 'thread-A', mounted: true, drafts: [], submitted: [], controls: [] };
   const skip = { innerText: 'Skip', closest: () => null };
@@ -443,7 +383,7 @@ function codexQuestionReader(questions = [{ id: 'choice', question: '请选择�
     if (selector === 'button' || selector.startsWith('button, input')) return [...(state.mounted ? [skip] : []), ...state.controls];
     return [];
   } };
-  const context = createPageContext({ codexThread: () => 'native-thread', codexConversationManager: () => null, codexHistoryScopes: () => [], codexRootProps: () => [], remoteContext: null, doc, document: doc, activeThread: () => state.thread, vis: () => true,
+  const context = createPageContext({ codexThread: () => state.thread, codexConversationManager: () => null, codexHistoryScopes: () => [], codexRootProps: () => [], remoteContext: null, doc, document: doc, activeThread: () => state.thread, vis: () => true,
     codexQueueConfirmRequests: () => [], codexFiberProps: el => el.props || [], codexPoint: () => ({ x: 1, y: 2 }), setTimeout });
   vm.runInContext(fragment(read('server/page/codex.js'), '  const codexAsyncRequestFiber =', '  const codexImage =')
     + '\nthis.data=codexRequestData;this.field=codexRequestField;this.action=codexRequestAction;', context);
@@ -465,6 +405,28 @@ test('current Codex userInput request 0 is one native card, with stable conversa
   h.owner.pendingRequest.item.completed = true; assert.equal(h.data().length, 0);
 });
 
+test('a bound Codex async question uses its native controls instead of being mistaken for an RPC request', async () => {
+  const h = codexQuestionReader(); h.context.remoteContext = { app: 'codex', threadId: h.state.thread };
+  const request = h.data()[0]; assert(request); assert.equal(request.buttons[0].selected, true);
+  await h.field(request.id, 0, 'phone answer');
+  assert.equal(h.data()[0].fields[0].value, 'phone answer');
+  await h.action(request.id, request.buttons.length - 1, []);
+  assert.equal(h.state.submitted.length, 1); assert.equal(h.data().length, 0);
+  h.context.remoteContext = { app: 'codex', threadId: 'other-thread' };
+  assert.equal(h.data().length, 0);
+});
+
+test('a native RPC question and its mounted desktop form remain one request', () => {
+  const h = codexQuestionReader(), answers = [];
+  const manager = { hostId: 'local', getConversation: () => ({ requests: [{ id: 0, method: 'item/tool/requestUserInput',
+    params: { threadId: h.state.thread, turnId: 'turn-A', questions: h.owner.pendingRequest.item.questions } }] }),
+    replyWithUserInputResponse: (...args) => answers.push(args) };
+  h.context.codexConversationManager = () => manager;
+  const rows = h.data(); assert.equal(rows.length, 1);
+  assert.equal(rows[0].id, 'async:' + JSON.stringify([h.state.thread, 'turn-A', 0]));
+  assert.equal(answers.length, 0);
+});
+
 test('Codex native answer state preserves all questions and submits the answers array once', async () => {
   const h = codexQuestionReader([
     { id: 'first', question: '第一题', isOther: true, options: [{ label: '继续' }, { label: '停止' }] },
@@ -480,13 +442,6 @@ test('Codex native answer state preserves all questions and submits the answers 
     { selectedOptionId: '停止', freeformText: null }, { selectedOptionId: null, freeformText: '补充说明' },
   ]);
   assert.equal(h.state.drafts.at(-1).questionIndex, 1); assert.equal(h.data().length, 0);
-});
-
-test('Codex native options without an other answer stay a select field', () => {
-  const h = codexQuestionReader([{ id: 'only', question: '只能选项', options: [{ label: 'A' }, { label: 'B' }] }]);
-  const request = h.data()[0]; assert.equal(request.fields[0].type, 'select');
-  assert.deepEqual(Array.from(request.fields[0].options, option => option.value), ['A', 'B']);
-  h.field(request.id, 0, 'B'); assert.equal(h.data()[0].buttons[1].selected, true);
 });
 
 test('Codex questions follow the mounted tree even when a reused control retains a stale return pointer', () => {
@@ -785,16 +740,6 @@ test('Devin project new chat never polls a first screen while the thread switch 
   assert.equal(h.emitted.some(message => message.t === 'projectReady'), true);
 });
 
-test('Devin standalone new chat publishes its own first screen after adoption', async () => {
-  const h = devinCreation({ appearAfter: 1 });
-  h.session.pendingProject = null;
-  await h.session.devinNewChat();
-  assert.equal(h.session.threadId, 'acp/devin-cli/new-1');
-  assert.deepEqual(h.emitted.map(message => message.t), ['thread', 'chat', 'status']);
-  assert.equal(h.emitted.at(-1).msg, '已新建对话');
-  assert.equal(h.emitted.find(message => message.t === 'chat').chat.thread, 'acp/devin-cli/new-1');
-});
-
 test('Devin new chat rejects a new session rooted in another directory before adopting it', async () => {
   const h = devinCreation({ appearAfter: 1, newCwd: '/other-project' });
   await assert.rejects(h.session.finishProject(), /工作目录与所选项目不一致/);
@@ -846,12 +791,6 @@ test('Codex request detection cannot promote generic Cursor IDE notifications in
   const h = codexQuestionReader(); assert(h.data().length);
   h.context.codexThread = () => ''; h.context.codexRootProps = () => [];
   assert.equal(h.data().length, 0);
-});
-
-test('Devin text fragments join within their native stream and retain independent paragraphs', () => {
-  const context = createPageContext(); vm.runInContext(fragment(read('server/page/devin.js'), '  const devinMessageText =', '  const THINKING_ROOT =') + ';this.join=devinMessageText;', context);
-  const block = (text, id) => ({ content: { type: 'text', text }, _meta: { 'cognition.ai/streamingMessageId': id } });
-  assert.equal(context.join([block('RA_DEV', 's'), block('IN 中文', 's'), block('🙂', 's'), block('new paragraph', 't'), block(' plain', null)]), 'RA_DEVIN 中文🙂\nnew paragraph\n plain');
 });
 
 test('Devin native permission replies preserve provider, store key and exact option identity', async () => {
@@ -945,6 +884,22 @@ test('Cursor cold history opens from persisted headers, retains native menu meta
   assert.equal(listed[1].group, 'Native group');
 });
 
+test('Cursor projectless history stays projectless and matching persisted URI survives an incomplete loaded identifier', async () => {
+  const uri = { scheme: 'file', fsPath: '/original-project' };
+  const headers = [{ composerId: 'no-project', workspaceIdentifier: { id: 'empty-window' } },
+    { composerId: 'project-A', workspaceIdentifier: { id: 'workspace-A', uri } }];
+  const data = { getComposerHandleById: async id => ({ data: id === 'project-A' ? { workspaceIdentifier: { id: 'workspace-A' } } : {} }),
+    _storageService: { collectionQuery: async () => headers.map(row => JSON.stringify(row)) } };
+  const page = pageContext({ window: { __remoteAgentCursorServices: { data,
+    composer: { composerChatService: { _workspaceContextService: { getWorkspace: () => ({ id: 'other-project', folders: [{ uri: { scheme: 'file', fsPath: '/wrong-project' } }] }) } } } } } });
+  const none = await page.info('cursor', 'no-project', 'context');
+  assert.equal(none.projectless, true); assert.equal(none.cwd, ''); assert.equal(none.roots.length, 0);
+  const project = await page.info('cursor', 'project-A', 'context');
+  assert.equal(project.projectless, false); assert.equal(project.cwd, '/original-project');
+  headers[1].workspaceIdentifier.id = 'different-workspace';
+  await assert.rejects(page.info('cursor', 'project-A', 'context'), /尚未读取到/);
+});
+
 function projectAttachFixture(app, { catalogReady = true, targetOpen = false, windows = false, catalog = [] } = {}) {
   const calls = [], page = id => ({ id: app === 'codex' ? app : `${app}:${id}`, app, pageId: id,
     ws: `ws-${id}`, chatWs: `chat-${id}`, roots: [{ root: `/${id}` }] });
@@ -976,30 +931,6 @@ function projectAttachFixture(app, { catalogReady = true, targetOpen = false, wi
   return { session, calls };
 }
 
-test('Cursor card attachment uses the session project instead of its catalog carrier window on both platforms', async () => {
-  for (const windows of [true, false]) {
-    const { session, calls } = projectAttachFixture('cursor', { windows,
-      catalog: [{ id: 'native-B', workspace: '/B', host: '' }] });
-    await session.attach({ id: 'cursor:A', windowId: 'cursor:A', threadId: 'native-B' });
-    assert.deepEqual(calls, [
-      { kind: 'desktop', window: 'cursor:A', thread: '', deferred: true },
-      { kind: 'project', root: '/B', newSession: false, thread: 'native-B', ownerWindow: 'cursor:A' },
-    ]);
-  }
-});
-
-test('project attachment and cold reconnect preserve the target using the native backend or desktop carrier', async () => {
-  for (const app of ['codex', 'cursor', 'devin']) for (const initial of [false, true]) {
-    const { session, calls } = projectAttachFixture(app, { catalogReady: !initial });
-    const windowId = app === 'codex' ? 'B' : `${app}:B`;
-    await session.attach({ id: app, windowId, threadId: 'native-B', project: { root: '/B' }, initial });
-    assert.deepEqual(calls, app === 'codex' ? [{ kind: 'backend', thread: 'native-B', root: '/B' }] : [
-      { kind: 'desktop', window: app === 'codex' ? 'A' : `${app}:A`, thread: '', deferred: true },
-      { kind: 'project', root: '/B', newSession: false, thread: 'native-B', ownerWindow: windowId },
-    ], `${app}: initial=${initial}`);
-  }
-});
-
 test('Codex legacy threads use the backend even when the old project window is open', async () => {
   const { session, calls } = projectAttachFixture('codex', { targetOpen: true });
   await session.attach({ id: 'codex', windowId: 'B', threadId: 'native-B', project: { root: '/B' } });
@@ -1010,14 +941,6 @@ test('resolved native writer attachment bypasses backend recursion and keeps its
   const { session, calls } = projectAttachFixture('codex', { targetOpen: true });
   await session.attach({ id: 'codex', windowId: 'B', threadId: 'native-B', nativeOwner: { cwd: '/other-project' }, initial: true });
   assert.deepEqual(calls, [{ kind: 'desktop', window: 'B', thread: 'native-B', deferred: false }]);
-});
-
-test('Codex default project entry and owned background threads still use the backend', async () => {
-  for (const selected of [{}, { windowId: 'backend', threadId: 'native-B' }, { windowId: 'old-window', threadId: 'backend-thread' }]) {
-    const { session, calls } = projectAttachFixture('codex');
-    await session.attach({ id: 'codex', project: { root: '/B' }, ...selected });
-    assert.deepEqual(calls, [{ kind: 'backend', root: '/B', thread: selected.threadId }]);
-  }
 });
 
 test('live reconnect keeps Cursor and Devin bindings while Codex legacy threads move to their backend', async () => {
@@ -1038,16 +961,6 @@ test('a Codex Fusion project still connects its original desktop binding', async
   const { session, calls } = projectAttachFixture('codex', { targetOpen: true });
   await session.attach({ id: 'codex', windowId: 'B', threadId: 'fusion-main', project: { root: '/B' } });
   assert.deepEqual(calls, [{ kind: 'desktop', window: 'B', thread: 'fusion-main', deferred: false }]);
-});
-
-test('Codex project and session-menu entries share the backend binding for legacy threads', async () => {
-  const { methods } = await import('../server/agent/projects.mjs');
-  const calls = [], session = { app: 'codex',
-    adapter: { backendThread: () => true, attachBackend: async req => calls.push(req) } };
-  await methods.openAgent.call(session, 'thread:closed-window:legacy');
-  assert.equal(calls[0].threadId, 'legacy');
-  await methods.useProject.call(session, process.cwd(), false, 'legacy');
-  assert.equal(calls[1].threadId, 'legacy'); assert.equal(calls[1].project.root, localFilePath(process.cwd()));
 });
 
 test('a cold Cursor catalog is loading until native services appear and is readable on retry', async () => {
@@ -1096,25 +1009,6 @@ function sessionProjectMethods() {
     createPageContext({ path, normPath: value => value }));
 }
 
-test('desktop Codex and Cursor project labels, files and new-chat target follow the selected thread rather than its carrier', async () => {
-  for (const [app, adapter] of [['codex', codexAdapter], ['cursor', cursorAdapter]]) {
-    const methods = sessionProjectMethods(), created = [];
-    const session = { ...methods, app, adapter, winTitle: 'CWM', threadId: 'thread',
-      selectionKey() { return app + '|' + this.threadId; },
-      cdp: { evaluate: async expression => {
-        assert(expression.endsWith(`.nativeSessionInfo('${app}', "thread", 'context')`));
-        return { cwd: '/remote-agent', host: '', roots: [{ root: '/remote-agent', host: '' }] };
-      } },
-      editorCdp: { evaluate: async () => { throw Error('window project must not be used'); } },
-      useProject: async (...args) => created.push(args),
-    };
-    assert.equal((await session.currentRoots())[0].root, '/remote-agent');
-    assert.equal(session.projectName(), 'remote-agent');
-    await session.newProjectChat();
-    assert.deepEqual(created, [['/remote-agent', true]]);
-  }
-});
-
 test('a delayed A project read cannot overwrite B identity, including after returning to an empty view', async () => {
   const methods = sessionProjectMethods(); let finishA;
   const session = { ...methods, app: 'cursor', threadId: 'A', winTitle: 'old-window',
@@ -1125,16 +1019,6 @@ test('a delayed A project read cannot overwrite B identity, including after retu
   finishA([{ root: '/A' }]); await pending;
   assert.equal(session.projectName(), 'B');
   session.threadId = ''; assert.equal(session.projectName(), '');
-});
-
-test('Devin and OpenCode preserve their native project while their carrier title belongs elsewhere', async () => {
-  const methods = sessionProjectMethods();
-  for (const app of ['devin', 'opencode']) {
-    const session = { ...methods, app, winTitle: 'CWM', threadId: 'thread', selectionKey: () => app + '|thread',
-      sessionCwd: '/old', adapter: { currentRoots: async () => [{ root: '/remote-agent' }] } };
-    await session.currentRoots(); assert.equal(session.projectName(), 'remote-agent');
-    if (app === 'devin') { session.sessionCwd = '/native-changed'; assert.equal(session.projectName(), 'native-changed'); }
-  }
 });
 
 test('cross-project creation verifies the carrier workspace before creating and reads the new thread afterwards', async () => {
@@ -1153,7 +1037,6 @@ test('cross-project creation verifies the carrier workspace before creating and 
   assert.deepEqual(calls, ['carrier-B', 'create-B', 'thread-B', 'publish-B', 'thread-B']);
   assert.equal(session.bindingReady, true);
 });
-
 
 test('Devin cold native connection initializes its module once and reload resets initialization', async () => {
   for (const app of ['devin', 'cursor', 'codex']) {

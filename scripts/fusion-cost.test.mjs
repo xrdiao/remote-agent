@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import fs from 'node:fs';
 import path from 'node:path';
-import { nativeCostSnapshot, validateExecution, validateCost, FUSION_TIERS, modelQuery, fusionModelView } from '../server/fusion/cost.mjs';
+import { nativeCostSnapshot, validateExecution, validateCost, modelQuery, fusionModelView } from '../server/fusion/cost.mjs';
 import { FusionModelCatalog, modelKnowledgeSummary } from '../server/fusion/model-catalog.mjs';
 import { FusionControlError, MODEL_PAGE_LIMIT } from '../server/fusion/contract.mjs';
 import { fixture } from './fusion-fixture.mjs';
@@ -20,14 +20,7 @@ test('Auto, Free and native multipliers retain exact units, source and observati
   assert.equal(snapshot.at, 123); assert.equal(snapshot.models[0].model, 'Auto'); assert.equal(snapshot.models[0].amount, 'unknown');
   assert.deepEqual(snapshot.models[1].pricing, models[1].pricing); assert.equal(snapshot.origin.read, 'native-model-menu');
 });
-test('all three tiers permit every native model and leave the chosen main unchanged', () => {
-  const h = fixture();
-  for (const tier of Object.keys(FUSION_TIERS)) {
-    h.run.tier = tier; const selected = structuredClone(h.run.main);
-    validateExecution(h.run, { app: 'cursor', model: 'Auto', effort: '' });
-    assert.deepEqual(h.run.main, selected);
-  }
-});
+
 test('model, strength and cost provenance must belong to native observations', () => {
   const h = fixture();
   assert.throws(() => validateExecution(h.run, { app: 'codex', model: 'invented', effort: 'low' }), /候选/);

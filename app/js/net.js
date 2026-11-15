@@ -228,7 +228,7 @@ function applySelection(m, clearChat = true) {
   if (changed) { mirroredDraft = ''; restoreDraft(); renderAttachments([]); if (!m.home) send({ t: 'attachments' }); }
   const cachedAgents = agentLists.get(agentListKey());
   if (cachedAgents && m.threadId) setAgentList(agentListKey(), cachedAgents.map(a => ({ ...a, current: agentThreadKey(a) === agentThreadKey({ id: m.threadId }) })));
-  if (m.project) currentProject = m.project;
+  if (m.project != null) currentProject = m.project;
   if (fusionChanged) paintFusionRun(null);
   updateTitle();
   if (clearChat && changed) renderChat(null, false, true);
@@ -1396,7 +1396,7 @@ async function connect(resumeLink = null) {
       $('dot').className = 'ok';
       status(mode === 'chat' ? navigationPending?.message || '正在加载对话…' : '已连接');
       $('titleText').textContent = m.app === 'fusion' ? 'Fusion' : m.app === 'devin' ? 'Devin agent' : m.app === 'codex' ? 'Codex' : m.app === 'opencode' ? 'OpenCode' : winLabel(m.title).name;
-      currentProject = m.app === 'fusion' ? '' : (m.project || winLabel(m.title).name);
+      currentProject = m.app === 'fusion' ? '' : (m.project ?? winLabel(m.title).name);
       updateAppText(); updateTitle();
       if (selectionReady) confirmNavigation();
       else renderChat(null, false, true);

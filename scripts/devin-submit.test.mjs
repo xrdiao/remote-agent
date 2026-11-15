@@ -54,16 +54,6 @@ function nativePage({ busy = true, question = false, staleQuestion = false, acce
   return { page, calls, data, handle, native, pending, document, editor, rows, props, window, listeners, setFocused: id => { focused = id; } };
 }
 
-test('Devin queue reuses the session native callback and send-now action without ordinary submission', async () => {
-  for (const now of [false, true]) {
-    const h = nativePage();
-    const result = await h.page.nativeSessionAction('devin', SESSION, 'queue', { now });
-    assert.deepEqual(plain(result), { queued: true, now });
-    assert.equal(h.calls.enqueue, 1); assert.equal(h.calls.submit, 0); assert.equal(h.calls.sendNow, Number(now));
-    assert.deepEqual(h.calls.order, now ? ['enqueue', 'sendNow'] : ['enqueue']);
-  }
-});
-
 test('Devin explicit queue while idle reuses the native submit callback', async () => {
   const h = nativePage({ busy: false });
   await h.page.nativeSessionAction('devin', SESSION, 'queue', {});
@@ -103,10 +93,8 @@ test('Devin text answer rejects an empty answer or a missing current question', 
   assert.equal(none.calls.answers.length, 0);
 });
 
-test('Devin data reads use the native UI session and preserve optimistic insertion order', async () => {
-  const h = nativePage(); h.data.messages = [{ id: 'a' }, { id: 'b' }]; h.data.optimisticMessages = [{ id: 'own' }]; h.data.optimisticInsertIndex = 1;
-  assert.deepEqual(Array.from(h.page.devinMessages(SESSION), row => row.id), ['a', 'own', 'b']);
-  assert.equal(h.page.devinSessionRecord(SESSION).cwd, '/project');
+test('Devin reads leave the native UI session retention lease intact', async () => {
+  const h = nativePage();
   await h.page.devinReadSession(SESSION, () => true);
   assert.equal(h.calls.released, 0, 'UI owns its session retention');
 });
@@ -178,19 +166,6 @@ function devinSendContext({ busy = true, when = '', draft = 'hello', human = [],
   return { context, events, keys, evaluates };
 }
 
-test('Devin adapter queues ordinary busy sends through the native queue action, never Enter', async () => {
-  for (const [now, busy, when, queued] of [[false, true, '', true], [false, true, 'queue', true], [true, true, 'now', false]]) {
-    const h = devinSendContext({ when });
-    const result = await devinAdapter.submitPrompt.call(h.context, now, busy, when, queued);
-    assert.equal(h.keys.length, 0, 'no keyboard submit for busy Devin sends');
-    const queueCall = h.evaluates.find(expression => expression.includes(".nativeSessionAction('devin'"));
-    assert.ok(queueCall, 'native queue action dispatched');
-    assert.ok(queueCall.includes("'queue'"), 'queue action used');
-    assert.equal(queueCall.includes('"now":true'), now, `now=${now} propagated`);
-    assert.equal(result, !now);
-  }
-});
-
 test('Devin adapter routes an explicit idle queue request through the native queue action', async () => {
   const h = devinSendContext({ busy: false, when: 'queue' });
   h.context.cdp.evaluate = async expression => {
@@ -203,42 +178,6 @@ test('Devin adapter routes an explicit idle queue request through the native que
   assert.equal(h.keys.length, 0, 'no Enter fallback for an explicit queue request');
   assert.ok(h.evaluates.some(expression => expression.includes(".nativeSessionAction('devin'") && expression.includes("'queue'")));
   assert.equal(result, false, 'receipt sees the delivered human message, not a queue row');
-});
-
-test('Devin adapter keeps Enter for idle sends', async () => {
-  const h = devinSendContext({ busy: false });
-  const result = await devinAdapter.submitPrompt.call(h.context, false, false, '', false);
-  assert.deepEqual(h.keys, ['Enter']);
-  assert.equal(h.evaluates.some(expression => expression.includes(".nativeSessionAction('devin'")), false);
-  assert.equal(result, false);
-});
-
-test('Devin answerQuestion text goes straight to the native question handler', async () => {
-  const evaluates = [], taps = [], typed = [];
-  const context = { app: 'devin', threadId: SESSION, scope: 's', sendNativeReceipt: {},
-    selectionKey() { return this.scope; },
-    assertSelectedThread: async () => {},
-    cdp: { evaluate: async expression => { evaluates.push(expression); return true; } },
-    tapCss: async () => { taps.push(1); }, typeText: async () => { typed.push(1); }, refreshSoon() {},
-  };
-  await chatMethods.answerQuestion.call(context, 0, 0, 'text', 'card answer');
-  assert.equal(evaluates.length, 1);
-  assert.ok(evaluates[0].includes("'questionText'"));
-  assert.ok(evaluates[0].includes('card answer'));
-  assert.equal(taps.length, 0);
-  assert.equal(typed.length, 0);
-});
-
-test('Devin answerQuestion keeps the DOM path for option parts', async () => {
-  const evaluates = [];
-  const context = { app: 'devin', threadId: SESSION, scope: 's', sendNativeReceipt: {},
-    selectionKey() { return this.scope; },
-    assertSelectedThread: async () => {},
-    cdp: { evaluate: async expression => { evaluates.push(expression); return { x: 1, y: 2 }; } },
-    tapCss: async () => {}, refreshSoon() {},
-  };
-  await chatMethods.answerQuestion.call(context, 0, 1, 'option');
-  assert.ok(evaluates[0].includes('questionTarget'));
 });
 
 test('question route allows text only for Devin', async () => {

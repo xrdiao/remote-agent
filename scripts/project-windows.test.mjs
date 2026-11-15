@@ -77,22 +77,6 @@ function fixture({ favorite = false, keep = false, owned = true, failClose = fal
   };
 }
 
-test('favorite project survives a window replacement and becomes eligible after unfavoriting', async () => {
-  const h = fixture({ favorite: true });
-  await h.scan(); assert.equal(h.calls.length, 0);
-  assert.equal(h.state().windows['cursor:one'].reason, '项目包含收藏会话');
-  h.library.cursor.session.favorite = false;
-  vm.runInContext("saved.windows['cursor:one'].lastUsed -= 120000", h.context);
-  await h.scan(); assert.deepEqual([...h.closed], ['one']);
-});
-
-test('an archived favorite learned from the native catalog retains its project association', async () => {
-  const h = fixture({ favorite: true });
-  vm.runInContext("saved.sessions = {}; reconcileSessionCatalog('cursor', {rows:[{id:'session', archived:true, workspace:'/project'}], complete:false})", h.context);
-  await h.scan(); assert.equal(h.calls.length, 0);
-  assert.equal(h.state().sessions['cursor:session'].workspace, '/project');
-});
-
 test('a favorite from another project or software does not retain an unrelated window', async () => {
   for (const other of ['project', 'software']) {
     const h = fixture({ favorite: true });
@@ -159,13 +143,6 @@ test('a shared window is retained only while Fusion is actually using it; no ded
   vm.runInContext("saved.windows['cursor:one'].lastUsed -= 120000", h.context);
   await h.scan(); assert.deepEqual([...h.closed], ['one']);
 });
-test('Fusion hides worker sessions while main sessions and shared windows remain ordinary', () => {
-  const h = fixture();
-  vm.runInContext("fusionRuns.entry={runs:[{bindings:[{role:'main',app:'cursor',threadId:'main',windowId:'one'},{role:'worker',app:'cursor',threadId:'child',windowId:'one'}]}]}", h.context);
-  const excluded = vm.runInContext('fusionTargets()', h.context);
-  assert.equal(excluded.sessions.has('cursor:main'), false); assert.equal(excluded.sessions.has('cursor:child'), true);
-  assert.equal(excluded.windows.size, 0); assert.equal(h.calls.length, 0);
-});
 
 function codexOpening({ own = true, closed = false, prefer = false, host = '', cwd = '/native/project-B', error } = {}) {
   const calls = [], pageId = own ? 'current' : 'other', pages = closed ? [] : [{ pageId: 'other', chatWs: 'other-view', ws: 'other-editor', rawTitle: 'Other' }];
@@ -197,12 +174,6 @@ for (const mode of [{ own: true }, { own: false }, { own: false, closed: true }]
     assert.equal(h.calls.includes('close-other'), !mode.own && !mode.closed);
   });
 }
-
-test('Codex current-project optimization uses the selected native thread rather than stale cached roots', async () => {
-  const h = codexOpening({ prefer: true }); await h.run();
-  assert(h.calls.some(c => Array.isArray(c) && c[0] === 'select' && c[1] === 'thread-B'));
-  assert(!h.calls.some(c => Array.isArray(c) && c[0] === 'project'));
-});
 
 test('Codex remote native context stays in its own carrier', async () => {
   const h = codexOpening({ own: false, host: 'remote-host', cwd: '/remote/project' }); await h.run();

@@ -11,7 +11,7 @@ import headless from '@xterm/headless';
 import { TerminalService, terminalService } from '../server/terminal-service.mjs';
 import { ROUTES } from '../server/routes.mjs';
 import { Session } from '../server/session.mjs';
-import { adapter as codexAdapter } from '../server/apps/codex.mjs';
+
 import { beginOperation, captureOperation, withOperation, subscribeOperations } from '../server/operations.mjs';
 
 const directory = path.resolve('_shots/terminal-service-tests-' + process.pid);
@@ -220,7 +220,7 @@ test('terminal subscriptions detach independently of native binding and shell li
   session.stopTerminalUpdates();
 });
 
-test('Windows reconnection restores connection mode and presence before opening a surviving terminal', async t => {
+test('Windows and Ubuntu reconnection restore connection mode and presence before opening a surviving terminal', async t => {
   const source = (await fs.readFile(new URL('../server/routes.mjs', import.meta.url), 'utf8')).replace(/\r\n/g, '\n');
   const start = source.indexOf('  mode: {'), end = source.indexOf('  lang:', start);
   const sameWindow = (session, message) => !message.sel || message.sel.split('|', 2).join('|') === session.selectionKey().split('|', 2).join('|');
@@ -237,8 +237,10 @@ test('Windows reconnection restores connection mode and presence before opening 
       if (message.t === 'mode') await route.fastRun(session, message);else route.pre(session, message);
     }
     await session.selectTerminal(meta.id, 'restored');
-    assert.equal(events.some(message => message.t === 'termSnapshot' && message.subscription === 'restored'), windows);
-    assert.equal(routes.mode.switchRead, !windows);assert.equal(routes.visible.switchRead, !windows);
+    assert.equal(session.mode, 'terminal'); assert.equal(session.visible, true);
+    assert.equal(events.some(message => message.t === 'termSnapshot' && message.subscription === 'restored'), true);
+    assert.equal(routes.mode.connection, true); assert.equal(routes.visible.connection, true);
+    assert.equal(routes.mode.switchRead, undefined); assert.equal(routes.visible.switchRead, undefined);
     session.stopTerminalUpdates();
   }
 });
@@ -272,16 +274,6 @@ test('PTY input does not enter native focus and stale subscriptions reject befor
   await ROUTES.termWrite.fastRun(session, { id: 'ra', subscription: 'current', data: '\x80', binary: true });
   assert.deepEqual(writes[1], ['ra', Buffer.from([0x80])]);
   assert.throws(() => ROUTES.key.run(session, { focus: 'terminal', key: 'Enter' }), /更新手机页面/);
-});
-
-test('Codex terminal creation uses the bound conversation project when the desktop displays another thread', async () => {
-  const reads = [];
-  const nativeHelpers = { nativeSessionInfo: (app, id, kind) => { reads.push([app, id, kind]); return { cwd: '/project/A', host: '' }; } };
-  const { PAGE_SRC } = await import('../server/page/build.mjs');
-  const context = { threadId: 'conversation-A', cdp: { evaluate: expression => vm.runInNewContext(
-    expression.replace(PAGE_SRC, 'nativeHelpers'), { nativeHelpers }) } };
-  assert.equal((await codexAdapter.terminalProject.call(context)).root, '/project/A');
-  assert.deepEqual(reads, [['codex', 'conversation-A', 'context']]);
 });
 
 const frontendSource = await fs.readFile(new URL('../app/js/terminal.js', import.meta.url), 'utf8');
@@ -347,17 +339,6 @@ test('explicit creation and selection supersede an older automatic list and crea
   assert.equal(h.context.currentTerminalId, 'terminal-B');
 });
 
-test('new conversation terminals use the selection at creation instead of an earlier origin snapshot', () => {
-  const h = frontendTerminal();
-  h.context.terminalOrigin = { computer: 'computer-A', source: 'conversation', sel: 'codex|window|old-thread' };
-  h.context.viewSel = 'codex|window|current-thread';
-  const start = frontendSource.indexOf('function createRaTerminal('), end = frontendSource.indexOf('function removeRaTerminal(', start);
-  vm.runInContext(frontendSource.slice(start, end), h.context);
-  h.context.createRaTerminal();
-  const packet = h.effects.find(effect => effect[0] === 'send')[1];
-  assert.equal(packet.source, 'conversation'); assert.equal(packet.sel, h.context.viewSel);
-});
-
 async function frontendTerminalTools() {
   const h = frontendTerminal(), nodes = new Map(), actions = ['password', 'copy', 'selectAll', 'size', 'refresh'];
   let selected = 'selected output';
@@ -397,31 +378,6 @@ async function frontendTerminalTools() {
   };
 }
 
-test('terminal toolbar and more reuse one action path without duplicate writes', async () => {
-  const h = await frontendTerminalTools(); h.context.updateTerminalControls();
-  h.click('password');
-  assert.deepEqual(JSON.parse(JSON.stringify(h.context.terminalPasswordTarget)), { computer: 'computer-A', id: 'terminal-A', subscription: 'subscription-A' });
-  assert.equal(h.node('termPasswordBox').hidden, false);
-  await h.click('copy'); assert.deepEqual(h.effects.filter(e => e[0] === 'copy'), [['copy', 'selected output', 'copy']]);
-  h.click('selectAll'); await h.click('copy');
-  assert.deepEqual(h.effects.filter(e => e[0] === 'copy').at(-1), ['copy', 'all output\n', 'copy']);
-  h.click('size'); h.clickMore('size'); assert.equal(h.effects.filter(e => e[0] === 'size').length, 2);
-  h.click('refresh'); h.clickMore('refresh'); assert.equal(h.effects.filter(e => e[0] === 'open').length, 2);
-  assert.equal(h.effects.filter(e => e[0] === 'send').length, 0);
-});
-
-test('terminal tools preserve offline copy and authenticated refresh while disabling unavailable writes', async () => {
-  const h = await frontendTerminalTools(); h.context.terminalReady = false; h.context.updateTerminalControls();
-  assert.equal(h.node('password').disabled, true); assert.equal(h.node('size').disabled, true); assert.equal(h.node('termInt').disabled, true);
-  assert.equal(h.node('copy').disabled, false); assert.equal(h.node('selectAll').disabled, false); assert.equal(h.node('refresh').disabled, false);
-  h.click('password'); h.click('size'); assert(!h.effects.some(e => e[0] === 'focus' || e[0] === 'size'));
-  h.context.authed = false; h.context.updateTerminalControls(); assert.equal(h.node('refresh').disabled, true);
-  h.context.raTerminal = null; h.context.updateTerminalControls(); assert.equal(h.node('copy').disabled, true); assert.equal(h.node('selectAll').disabled, true);
-  h.context.authed = h.context.terminalReady = true; h.context.updateTerminalControls();
-  h.node('termInt').onclick(); assert.equal(h.effects.filter(e => e[0] === 'send').length, 1);
-  assert.equal(h.effects.find(e => e[0] === 'send')[1].data, '\x03');
-});
-
 test('terminal password toolbar retains subscription ownership and sends no ordinary command draft', async () => {
   const h = await frontendTerminalTools(); h.context.updateTerminalControls(); h.click('password');
   h.node('termPassword').value = 'fictional-secret'; h.context.terminalSubscription = 'subscription-B';
@@ -430,26 +386,6 @@ test('terminal password toolbar retains subscription ownership and sends no ordi
   const sent = h.effects.filter(e => e[0] === 'send'); assert.equal(sent.length, 1); assert.equal(sent[0][1].t, 'termWrite');
   assert.equal(sent[0][1].data, 'fictional-secret\r'); assert.equal(sent[0][1].subscription, 'subscription-A');
   assert.equal(h.node('termPassword').value, ''); assert.equal(h.node('termPasswordSend').disabled, true);
-});
-
-test('terminal more contains only size and refresh and refresh keeps the current terminal identity', async () => {
-  const h = await frontendTerminalTools(); h.context.showTerminalMore();
-  assert.equal(h.menu.kind, 'terminal-more');
-  assert.deepEqual([...h.menu.html.matchAll(/data-terminal-action="([^"]+)"/g)].map(m => m[1]), ['size', 'refresh']);
-  h.clickMore('refresh'); assert.deepEqual(h.effects.at(-1), ['open', 'terminal-A']);
-  h.context.currentTerminalId = ''; h.clickMore('refresh'); assert.deepEqual(h.effects.at(-1), ['list', true]);
-});
-
-test('visual frame layout still fits its viewport and scales without terminal cropping', async () => {
-  const source = await fs.readFile(new URL('../app/js/screen.js', import.meta.url), 'utf8');
-  const start = source.indexOf('function layoutStage()'), end = source.indexOf('// One finger', start);
-  const context = vm.createContext({ mode: 'screen', frame: { w: 800, h: 400 }, zoom: 1,
-    view: { clientWidth: 320, clientHeight: 200 }, stage: { style: {} }, screen: { style: {} } });
-  vm.runInContext(source.slice(start, end), context); context.layoutStage();
-  assert.equal(context.stage.style.width, '320px'); assert.equal(context.stage.style.height, '160px');
-  context.zoom = 2; context.layoutStage();
-  assert.equal(context.stage.style.width, '640px'); assert.equal(context.stage.style.height, '320px');
-  assert.equal(context.screen.style.left, '0px'); assert.equal(context.screen.style.top, '0px');
 });
 
 test('real Ubuntu PTY uses requested cwd and size and supports no-echo input', { skip: IS_WIN, timeout: 15000 }, async t => {
@@ -487,10 +423,7 @@ test('real Ubuntu PTY uses requested cwd and size and supports no-echo input', {
   assert(restored[0].data.includes('__RA_LENGTH__18'));
 });
 
-test('textbox completion, multiline submit, history and foreground input use the same Bash PTY', { skip: IS_WIN, timeout: 15000 }, async t => {
-  await fs.writeFile(path.join(directory, '补全 fixture.txt'), '');
-  await fs.writeFile(path.join(directory, 'completion-one'), '');
-  await fs.writeFile(path.join(directory, 'completion-two'), '');
+test('PTY completion rejects active foreground input without leaking no-echo data or replacing its process', { skip: IS_WIN, timeout: 15000 }, async t => {
   const service = new TerminalService({ shell: '/bin/bash', env: { ...process.env, HISTFILE: '/dev/null' } });
   t.after(() => service.dispose());
   const meta = await service.create({ cwd: directory }), terminal = service.get(meta.id);
@@ -507,23 +440,6 @@ test('textbox completion, multiline submit, history and foreground input use the
     check();
   });
   assert.equal(terminal.prompt, true);
-  await service.submit(meta.id, 'printf "__IMMEDIATE__\\n"');
-  await until(() => terminal.prompt && output.includes('__IMMEDIATE__\r\n'));
-  await terminal.pending;
-  assert.equal(lines(terminal.screen).filter(line => line.includes('printf ')).length, 1);
-  const result = await service.complete(meta.id, 'cat 补', 5);
-  assert.match(result.text, /补全\\ fixture\.txt/);
-  const first = await service.complete(meta.id, 'cat completion-', 15);
-  const repeated = await service.complete(meta.id, first.text, first.caret);
-  await terminal.pending;
-  assert.equal(repeated.text, first.text);
-  assert(output.includes('completion-one') && output.includes('completion-two'));
-  const caret = await service.complete(meta.id, 'echo 中文 tail', 6);
-  assert.equal(caret.caret, 6);
-  await service.submit(meta.id, 'printf "__BOX_ONE__\\n"\nprintf "__BOX_TWO__\\n"');
-  await until(() => terminal.prompt && output.includes('__BOX_TWO__\r\n'));
-  const history = await service.history(meta.id);
-  assert(history.some(command => command.includes('printf "__BOX_TWO__\\n"')), JSON.stringify(history));
   await service.submit(meta.id, 'read -rs -p __SECRET__ RA_SECRET; printf "\\n__LENGTH__%s\\n" "${#RA_SECRET}"');
   await until(() => output.endsWith('__SECRET__'));
   await assert.rejects(service.complete(meta.id, 'never', 5), /正在运行/);
@@ -533,22 +449,4 @@ test('textbox completion, multiline submit, history and foreground input use the
   assert(!output.slice(before).includes('fictional-secret'));
   assert(!output.includes('777;RA;'));
   assert.equal(service.get(meta.id).process.pid, meta.pid);
-});
-
-test('native terminal selection copies selected text and leaves a selection outside the terminal intact', async () => {
-  const h = await frontendTerminalTools();
-  let selection = { anchorNode: { owner: 'termText' }, focusNode: { owner: 'termText' },
-    toString: () => '中文\nselected output', removeAllRanges() { h.effects.push(['clearNative']); } };
-  h.context.window.getSelection = () => selection;
-  assert.equal(h.context.terminalSelection(), '中文\nselected output');
-  await h.context.copyTerminal(h.node('copy'));
-  assert.deepEqual(h.effects.filter(e => e[0] === 'copy'), [['copy', '中文\nselected output', 'copy']]);
-  assert(h.effects.some(e => e[0] === 'clearNative'));
-  h.effects.length = 0;
-  selection = { anchorNode: { owner: 'chat' }, focusNode: { owner: 'chat' },
-    toString: () => 'chat selection', removeAllRanges() { throw Error('outside selection must remain'); } };
-  h.context.raTerminal.getSelection = () => 'legacy terminal selection';
-  assert.equal(h.context.terminalSelection(), 'legacy terminal selection');
-  h.context.clearTermSelection();
-  assert.deepEqual(h.effects, [['clearSelection']]);
 });

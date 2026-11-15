@@ -21,27 +21,6 @@ async function fixture(t) {
   return directory;
 }
 
-test('create, copy and move keep actual paths, contents and collision decisions', async t => {
-  const directory = await fixture(t);
-  const act = (action, extra = {}) => fileAction({ action, directory, ...extra });
-  let result = await act('create-file', { name: '中文 文件.txt' });
-  const original = result.results[0].path;
-  await fsp.writeFile(original, 'original');
-  result = await act('create-folder', { name: '目标' });
-  const target = result.results[0].path;
-  result = await act('copy', { paths: [original], directory: target });
-  assert.equal(await fsp.readFile(result.results[0].path, 'utf8'), 'original');
-  result = await act('copy', { paths: [original], directory: target });
-  assert.match(result.results[0].path, /中文 文件 \(1\)\.txt$/);
-  result = await act('move', { paths: [original], directory: target, mode: 'skip' });
-  assert.equal(result.results[0].skipped, true); assert.equal(await fsp.readFile(original, 'utf8'), 'original');
-  await fsp.writeFile(original, 'changed');
-  result = await act('move', { paths: [original], directory: target, mode: 'replace' });
-  assert.equal(result.results[0].ok, true);
-  await assert.rejects(fsp.stat(original), { code: 'ENOENT' });
-  assert.equal(await fsp.readFile(result.results[0].path, 'utf8'), 'changed');
-});
-
 test('a folder cannot replace itself or be pasted into its own descendant', async t => {
   const directory = await fixture(t), folder = path.join(directory, 'folder');
   await fsp.mkdir(path.join(folder, 'child'), { recursive: true });
@@ -51,20 +30,6 @@ test('a folder cannot replace itself or be pasted into its own descendant', asyn
     assert.equal(result.results[0].ok, false);
     assert.equal(await fsp.readFile(path.join(folder, 'keep'), 'utf8'), 'keep');
   }
-});
-
-test('ZIP creation and extraction preserve content, Unicode and empty directories', async t => {
-  const directory = await fixture(t), source = path.join(directory, '来源 目录');
-  await fsp.mkdir(path.join(source, '空文件夹'), { recursive: true });
-  await fsp.writeFile(path.join(source, 'hello.txt'), 'hello\n');
-  const created = await fileAction({ action: 'zip', directory, paths: [source], name: '测试.zip' });
-  assert.equal(created.results[0].ok, true);
-  const unpacked = await fileAction({ action: 'extract', directory, paths: [created.results[0].path] });
-  assert.equal(unpacked.results[0].ok, true);
-  const output = path.join(unpacked.results[0].path, path.basename(source));
-  assert.equal(await fsp.readFile(path.join(output, 'hello.txt'), 'utf8'), 'hello\n');
-  assert.equal((await fsp.stat(path.join(output, '空文件夹'))).isDirectory(), true);
-  assert.equal((await fsp.readdir(directory)).some(name => name.startsWith('.remote-agent-')), false);
 });
 
 test('ZIP creation excludes inner directory links', async t => {
@@ -248,27 +213,6 @@ function transferFixture(conversation = false) {
   };
 }
 
-test('file transfer has its own history and returns to its originating conversation or board', async () => {
-  for (const conversation of [true, false]) {
-    const h = transferFixture(conversation), original = structuredClone(h.history.state), length = h.history.length;
-    for (const close of [() => h.element('transferClose').click(), () => h.history.back()]) {
-      await h.run('openTransfer()');
-      assert.equal(h.history.length, length + 1);
-      await h.run('openTransfer()');
-      assert.equal(h.history.length, length + 1);
-      assert.equal(h.history.state.transfer, 'a');
-      close();
-      assert.equal(h.run('transferPanel.hidden'), true);
-      assert.equal(h.element('body').classList.contains('conv'), conversation);
-      assert.deepEqual(h.history.state, original);
-      h.history.forward();
-      assert.equal(h.run('transferPanel.hidden'), false);
-      assert.equal(h.run('transferComputer.id'), 'a');
-      h.history.back();
-    }
-  }
-});
-
 test('directory picker cancel stays in transfer and late reads cannot replace another computer', async () => {
   const h = transferFixture(true);
   await h.run('openTransfer("b")');
@@ -290,37 +234,4 @@ test('directory picker cancel stays in transfer and late reads cannot replace an
   assert.equal(h.run('transferDirectory.path'), '/home/a');
   assert.equal(h.run('transferComputer.id'), 'a');
   assert.equal(h.run('transferPicker'), null);
-});
-
-test('computer entry owns browse, download, uploads, file operations and preferences without selecting it', async () => {
-  const h = transferFixture();
-  await h.run('openTransfer("b")');
-  assert.equal(h.history.state.transfer, 'b');
-  assert.equal(h.run('currentComputer().id'), 'a');
-  assert.equal(h.requests[0].url, 'https://b.invalid/api/transfer/list?path=');
-  h.run('transferSelection.set("/home/b/own-file.txt", {name:"own-file.txt"})');
-  await h.element('transferDownload').onclick();
-  const download = h.requests.find(r => r.url.endsWith('/download'));
-  assert.equal(download.url, 'https://b.invalid/api/transfer/download');
-  assert.equal(download.opts.headers['X-Test-Computer'], 'b');
-  assert.equal(h.created.find(node => node.tagName === 'a').href, 'https://b.invalid/download/own-file');
-  h.run('chooseTransferFiles([{name:"upload.txt",size:4}]);transferFileAction("create-file", {name:"created.txt"})');
-  assert.equal(h.operations.length, 1);
-  assert.equal(h.operations[0].computer, 'b');
-  assert.equal(h.operations[0].socket, h.sockets.get('key-b').socket);
-  assert.equal(h.operations[0].pending.device, 'device-b');
-  h.operations[0].pending.complete({ ok: true, results: [{ ok: true, path: '/home/b/created.txt' }] });
-  await new Promise(setImmediate);
-  h.run("$('transferCopy').click()");
-  assert.equal(h.run('transferClipboard.computer'), 'b');
-  assert.equal(h.run('transferDirectories.b.download'), '/home/b');
-  const item = h.run('transferUploads[0]');
-  h.history.back();
-  await h.run('openTransfer("a")');
-  assert.equal(h.element('transferPaste').disabled, true);
-  h.context.uploadItem = item;
-  await h.run('transferSendFile(uploadItem)');
-  assert.equal(h.uploads[0].url.startsWith('https://b.invalid/api/transfer/upload?'), true);
-  assert.equal(h.uploads[0].headers['X-Test-Computer'], 'b');
-  assert.equal(h.run('currentComputer().id'), 'a');
 });

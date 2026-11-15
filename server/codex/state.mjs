@@ -7,6 +7,7 @@ import { DATA_DIR } from '../../lib/auth.mjs';
 import { cdpRead } from '../cdp.mjs';
 import { withOperation } from '../operations.mjs';
 import { elicitationFields } from '../../lib/shared-rules.mjs';
+import { codexFileDiff } from '../../lib/codex-diff.mjs';
 
 export const CODEX_BACKEND = 'backend';
 const textInput = input => input.filter(part => part.type === 'text').map(part => part.text).join('\n');
@@ -436,10 +437,9 @@ export class CodexState extends EventEmitter {
         ...(!tools || tools.has(item.id) ? { cmd: item.command, output: item.aggregatedOutput || '' } : {}), status: item.status, exitCode: item.exitCode });
       else if (item.type === 'fileChange') {
         const details = !tools || tools.has(item.id);
-        const diff = details ? item.changes.flatMap(row => [['…', row.path], ...(row.diff || '').split('\n').map(line =>
-          /^(--- |\+\+\+ |@@)/.test(line) ? ['…', line] : /^[+-]/.test(line) ? [line[0], line.slice(1)] : [' ', line.replace(/^ /, '')])]) : [];
+        const diff = details ? codexFileDiff(item.changes) : null;
         items.push({ ...base, k: 'tool', src: 'codex', kind: 'edit', t: item.changes.map(row => row.path).join(', ').slice(0, 240), f: item.changes[0]?.path,
-          ...(details ? { diff, add: diff.filter(([type]) => type === '+').length, del: diff.filter(([type]) => type === '-').length } : {}), status: item.status });
+          ...(details ? diff : {}), status: item.status });
       } else if (item.type === 'mcpToolCall') items.push({ ...base, k: 'tool', src: 'codex', kind: 'command', t: `${item.server} · ${item.tool}`.slice(0, 240),
         ...(!tools || tools.has(item.id) ? { output: JSON.stringify(item.result || item.error || '') } : {}), status: item.status });
     }

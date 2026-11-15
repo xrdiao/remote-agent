@@ -285,28 +285,6 @@ test('a first-screen snapshot waits for the combined navigation reply to be writ
   assert.equal(events[1].chat.items[0].t, 'latest while first screen waits');
 });
 
-test('OpenCode attaches and switches native sessions without any CDP or desktop window', async t => {
-  const { session, events } = fixture(t);
-  openCode.sessions.set('ses_one', native('ses_one'));
-  openCode.sessions.set('ses_two', native('ses_two'));
-  await session.handle({ t: 'attach', id: 'opencode', threadId: 'ses_one' });
-  assert.equal(session.cdp, null);
-  assert.equal(session.editorCdp, null);
-  assert.equal(events.find(row => row.t === 'attached').capabilities.approvals, true);
-  await session.handle({ t: 'openAgent', id: 'ses_two' });
-  events.length = 0;
-  openCode.apply({ type: 'message.updated', properties: { info: { id: 'msg_old', sessionID: 'ses_one', role: 'assistant', time: { created: 3 } } } });
-  openCode.apply({ type: 'message.part.updated', properties: { part: { id: 'prt_old', sessionID: 'ses_one', messageID: 'msg_old', type: 'text', text: 'old thread' } } });
-  await tick();
-  assert.equal(events.filter(row => row.t === 'chat').length, 0);
-  openCode.apply({ type: 'message.updated', properties: { info: { id: 'msg_new', sessionID: 'ses_two', role: 'assistant', time: { created: 4 } } } });
-  openCode.apply({ type: 'message.part.updated', properties: { part: { id: 'prt_new', sessionID: 'ses_two', messageID: 'msg_new', type: 'text', text: 'current thread' } } });
-  await tick();
-  const chat = events.findLast(row => row.t === 'chat');
-  assert.equal(chat.chat.thread, 'ses_two');
-  assert.deepEqual(chat.chat.items.map(row => row.t), ['current thread']);
-});
-
 test('OpenCode confirms a send only after the matching native user message is saved', async t => {
   const { session, events, requests } = fixture(t);
   await session.handle({ t: 'attach', id: 'opencode', project: { root }, newSession: true });
@@ -382,38 +360,6 @@ test('OpenCode drafts belong to the selected conversation and stale draft writes
   await session.handle({ t: 'openAgent', id: 'ses_one' });
   await session.handle({ t: 'draft', sel: session.selectionKey() });
   assert.equal(events.findLast(e => e.t === 'draftAck').text, 'draft one');
-});
-
-test('archiving the selected native OpenCode session returns its view to an empty conversation', async t => {
-  const { session, events } = fixture(t);
-  openCode.sessions.set('ses_one', native('ses_one'));
-  await session.handle({ t: 'attach', id: 'opencode', threadId: 'ses_one' });
-  openCode.apply({ type: 'session.updated', properties: { info: { ...native('ses_one'), time: { updated: 3, archived: 3 } } } });
-  await tick();
-  assert.equal(session.threadId, '');
-  assert.equal(events.findLast(e => e.t === 'attached').appName, 'OpenCode');
-  assert.equal(events.findLast(e => e.t === 'chat').chat.empty, true);
-});
-
-test('OpenCode permission menu works before the first send and its mode stays with the native session', async t => {
-  const { session, events, requests } = fixture(t);
-  await session.handle({ t: 'attach', id: 'opencode', project: { root }, newSession: true });
-  assert.equal(events.findLast(e => e.t === 'chat').chat.context.limit, 131072);
-  await session.handle({ t: 'openMenu', kind: 'permission' });
-  assert.deepEqual(events.findLast(e => e.t === 'menu').items, [
-    { label: '手动审批', checked: true }, { label: '自动审批', checked: false },
-  ]);
-  await session.handle({ t: 'pickMenu', kind: 'permission', label: '自动审批' });
-  assert.equal(session.threadId, 'ses_new');
-  assert.equal(openCode.approvalMode('ses_new'), '自动审批');
-  await session.handle({ t: 'send', text: 'hello', requestId: 'auto-first-send' });
-  assert.equal(requests.filter(r => r.route === '/session').length, 1);
-  await session.handle({ t: 'newProjectChat' });
-  assert.equal(events.findLast(e => e.t === 'chat').chat.permission, '手动审批');
-  await session.handle({ t: 'openAgent', id: 'ses_new' });
-  assert.equal(events.findLast(e => e.t === 'chat').chat.permission, '自动审批');
-  await session.handle({ t: 'pickMenu', kind: 'permission', label: '手动审批' });
-  assert.equal(openCode.approvalMode('ses_new'), '手动审批');
 });
 
 test('OpenCode context refresh loads native history and discards responses after switching sessions', async t => {

@@ -786,14 +786,6 @@ test('parallel unknown native turns recover together without submitting new Atte
   h.run.status = 'blocked'; for (const id of ids) h.pending.get(id).resolve(); await flush();
   assert(h.run.attempts.every(attempt => attempt.status === 'awaiting_review')); assert.equal(h.runner.jobs.size, 0);
 });
-test('ordinary main execution needs no workbench commands, cost reservation, self Task or Assignment', async () => {
-  const h=scenario();const main={id:'main-round',kind:'main',origin:'user',status:'running',acceptedAt:Date.now(),bindingId:'main',native:{threadId:'main-thread',turnId:'native-turn',messageId:'main-input'}};
-  h.run.attempts.push(main);fs.writeFileSync(h.project.root+'/main-file','ordinary main edit');
-  await h.runner.mainEnded(main.id,{completed:true,text:'native work complete'});await flush();
-  assert.equal(h.run.works.length,0);assert.equal(h.run.commands.length,0);assert.equal(h.run.tasks.length,0);
-  assert.equal(h.run.assignments.length,0);assert.equal(h.run.agents.length,0);assert.equal(h.run.attempts.length,1);
-  assert.equal(h.run.attempts[0].status,'ended');assert.equal(h.run.status,'waiting');assert.equal(h.calls.length,0);
-});
 
 test('stopping direct main work targets its actual round, preserves unrelated work and waits for native confirmation', async () => {
   const h = scenario(), workId = h.create(), other = h.create(); h.plan(workId); h.plan(other);

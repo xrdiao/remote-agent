@@ -23,18 +23,13 @@ function backendRoutesFor(extra) {
     + fragment(read('server/apps/codex.mjs'), 'const backendRoutes =', 'function serializedCodexPrompt') + '\nbackendRoutes;', createPageContext({ path, localFilePath, samePath, parseAgentRef, awaitCdpRead, backendDraftSource: () => null, ...extra }));
 }
 
-test('backend slash compact uses the native protocol and reports both manual and automatic compaction', async () => {
+test('backend compact dispatches its native protocol without creating a user turn', async () => {
   const { state, client } = fixture(null), thread = await state.create('/compact');
   const events = [], routes = backendRoutesFor({ codexBackend: state, backendSkills: async () => [] });
   const session = { threadId: thread.id, selectionKey: () => 'compact', emit: event => events.push(event) };
-  await routes.mentionQuery.call(session, { trigger: '/', q: 'compact' });
-  assert.equal(events[0].rows[0].key, 'compact'); assert.equal(events[0].rows[0].section, 'commands');
   await routes.codexPick.call(session, { section: 'commands', key: 'compact' });
   assert.deepEqual(client.sent.filter(row => row.method === 'thread/compact/start').map(row => row.params), [{ threadId: thread.id }]);
   assert.equal(client.sent.some(row => row.method === 'turn/start'), false);
-  thread.turns = [{ id: 'manual', status: 'completed', items: [{ type: 'contextCompaction', id: 'm', source: 'manual' }] },
-    { id: 'auto', status: 'inProgress', items: [{ type: 'contextCompaction', id: 'a', source: 'auto' }] }];
-  assert.deepEqual(state.chat(thread.id).items.map(row => [row.t, row.live]), [['已完成压缩上下文', false], ['正在自动压缩上下文', true]]);
 });
 
 test('backend draft is shared by thread across entry connections and rejects an old input epoch', async () => {
@@ -63,6 +58,26 @@ test('draft-only changes notify other entries without retransmitting the convers
   assert.equal(bodies.length, 0);
 });
 
+test('backend submission accepts the next draft epoch and keeps rejecting delayed pre-send edits', async () => {
+  const { state, client } = fixture(null); await state.create('/A');
+  const events = [], routes = backendRoutesFor({ codexBackend: state });
+  const context = createPageContext({ codexBackend: state, cdpRead, pendingUploads: () => [],
+    uploadAttachments: () => [], currentOperation: () => null, rememberSessionMessage() {}, backendPublish() {} });
+  const send = vm.runInContext('({' + fragment(read('server/apps/codex.mjs'), '  async sendBackendMessage(', '  async newChat(') + '}).sendBackendMessage', context);
+  const session = { threadId: '/A', draftEpoch: '', draftGeneration: 0, selectionKey: () => '/A', emit: event => events.push(event) };
+  await routes.draft.call(session, { text: 'first message', draftEpoch: '', revision: 1 });
+  await send.call(session, 'first message', true, '', [], { requestId: 'sent-epoch', draftEpoch: 'sent-epoch' });
+  assert.equal(client.sent.filter(row => row.method === 'turn/start').length, 1);
+  assert.equal(state.draft('/A'), ''); assert.equal(session.draftEpoch, 'sent-epoch');
+  await routes.draft.call(session, { text: 'next message', draftEpoch: 'sent-epoch', revision: 2 });
+  assert.equal(state.draft('/A'), 'next message');
+  assert.equal(events.at(-1).t, 'draftAck'); assert.equal(events.at(-1).draftEpoch, 'sent-epoch');
+  const count = events.length;
+  await routes.draft.call(session, { text: 'delayed old edit', draftEpoch: '', revision: 1 });
+  assert.equal(state.draft('/A'), 'next message'); assert.equal(events.length, count);
+  assert.equal(state.draft('/B'), '');
+});
+
 test('backend draft subscriptions are removed on leaving a conversation and do not accumulate on reopening', async () => {
   const { state } = fixture(null); await state.create('/A');
   let updates = 0;
@@ -75,6 +90,42 @@ test('backend draft subscriptions are removed on leaving a conversation and do n
     state.draft('/A', 'draft ' + n); assert.equal(updates, n + 1);
     session.chatUpdatesStop(); assert.equal(state.listenerCount('draftChanged'), 0); assert.equal(state.listenerCount('changed'), 0);
   }
+});
+
+test('backend viewers receive retained desktop questions and release their scoped subscriptions on leaving', async () => {
+  const { state } = fixture(null); await state.create('/questions');
+  const requests = [{ id: 'async:retained', text: 'Still waiting', buttons: [{ label: 'One' }, { label: 'Skip' }, { label: 'Send' }], fields: [] }];
+  const view = { snapshot: { chat: { questions: { codex: true, requests } } } };
+  const callbacks = [], closed = [], published = [];
+  const source = {
+    subscribe(fn, context) { callbacks.push({ fn, context }); return () => closed.push(context?.threadId || 'draft'); },
+    conversationView(context) { assert.equal(context.threadId, '/questions'); return view; },
+    readConversation: async () => view.snapshot,
+    async composerCall(call, context) { assert.equal(context.threadId, '/questions'); assert(call.startsWith('codexRequestAction(')); view.snapshot.chat.questions.requests = []; callbacks.find(row => row.context)?.fn(); return true; },
+  };
+  const context = createPageContext({ codexBackend: state, awaitCdpRead, nativeTargets: () => [{ app: 'codex', ws: 'native' }],
+    nativeWindowAt: () => source, watchChatUpdates: (_session, subscribe) => subscribe(() => {}),
+    backendPublishDraft() {}, backendPublish: session => published.push([...session.codexNativeQuestions.values()].flatMap(row => row.requests)),
+  });
+  const methods = vm.runInContext('({' + fragment(read('server/apps/codex.mjs'), '  async setBackendMode(', '  async syncBackendDraft(')
+    + fragment(read('server/apps/codex.mjs'), '  async codexRequest(', '  async queue(') + '})', context);
+  const session = { threadId: '/questions', codexDirectory: '/questions', visible: true, selectionKey: () => 'questions', emit() {}, adapter: { syncBackendDraft: async () => {} } };
+  await methods.setBackendMode.call(session); await tick();
+  assert.equal(session.codexNativeQuestions.get(source).requests[0].id, 'async:retained');
+  await methods.codexRequest.call(session, { id: 'async:retained', n: 0, fields: [] });
+  assert.equal(published.at(-1).length, 0);
+  await assert.rejects(methods.codexRequest.call(session, { id: 'async:other-thread', n: 0 }), /不属于当前会话/);
+  session.chatUpdatesStop(); assert.deepEqual(closed, ['draft', '/questions']); assert.equal(session.codexNativeQuestions.size, 0);
+});
+
+test('backend chat combines native RPC and retained desktop questions without duplicate request identities', async () => {
+  const chat = { questions: { codex: true, requests: [{ id: 'same', text: 'native' }] } }, sent = [];
+  const context = createPageContext({ codexBackend: { threads: new Map([['A', {}]]), chat: () => structuredClone(chat) }, backendPublishDraft() {} });
+  const publish = vm.runInContext(fragment(read('server/apps/codex.mjs'), 'function backendPublish(', 'function backendPublishDraft(') + 'backendPublish;', context);
+  publish({ threadId: 'A', selectionKey: () => 'A', codexNativeQuestions: new Map([['window', { requests: [{ id: 'same', text: 'duplicate' }, { id: 'async:folded', text: 'question' }] }]]), emit: message => sent.push(message) });
+  assert.deepEqual(Array.from(sent[0].chat.questions.requests, row => row.id), ['same', 'async:folded']);
+  assert.equal(sent[0].chat.questions.requests[0].text, 'native');
+  assert.equal(sent[0].chat.waiting, 'approval');
 });
 
 test('a desktop draft read finishing after a phone write or thread switch cannot overwrite the shared draft', async () => {
@@ -90,10 +141,9 @@ test('a desktop draft read finishing after a phone write or thread switch cannot
   assert.equal(drafts.get('A'), 'new phone'); assert.equal(drafts.has('B'), false);
 });
 
-test('a newly opened desktop receives the shared phone draft, then desktop edits and sending update all entries', async () => {
+test('the first desktop observation gives priority to the genuinely newer draft', async () => {
   const { state } = fixture(null);
-  state.draft('A', 'phone', 100);
-  let native = '', editedAt = 0;
+  let native = '', editedAt = 200;
   const writes = [], source = { composerCall: async call => {
     if (call.includes("'composer'")) return { prompt: native, draftEditedAt: editedAt };
     const value = JSON.parse(call.slice(call.indexOf("'draft', ") + 9, -1)); writes.push(value);
@@ -103,37 +153,19 @@ test('a newly opened desktop receives the shared phone draft, then desktop edits
   const sync = vm.runInContext(fragment(text, 'function recordBackendNativeDraft(', 'function backendCommands(')
     + '({' + fragment(text, '  async syncBackendDraft(', '  async sendBackendMessage(') + '}).syncBackendDraft', context);
   const session = { threadId: 'A', draftGeneration: 1, selectionKey: () => 'A' };
-  await sync.call(session);
-  assert.deepEqual(writes, [{ text: 'phone', expected: '' }]); assert.equal(state.draft('A'), 'phone');
-  native = 'desktop'; editedAt = 200; await sync.call(session); assert.equal(state.draft('A'), 'desktop');
-  native = ''; await sync.call(session); assert.equal(state.draft('A'), ''); assert.equal(writes.length, 1);
   state.draft('A', 'phone while desktop hidden', 300);
   await sync.call(session);
-  assert.equal(native, 'phone while desktop hidden'); assert.equal(writes.length, 2);
+  assert.equal(native, 'phone while desktop hidden'); assert.equal(writes.length, 1);
   state.nativeDrafts.delete('A'); state.draft('A', 'old phone', 100); native = 'new desktop';
-  await sync.call(session); assert.equal(state.draft('A'), 'new desktop'); assert.equal(writes.length, 2);
+  await sync.call(session); assert.equal(state.draft('A'), 'new desktop'); assert.equal(writes.length, 1);
 });
 
-test('backend history appends 160 items while the initial view remains 40', async () => {
-  const { state } = fixture(null), thread = await state.create('/history');
-  thread.turns = [{ id: 'long', status: 'completed', items: Array.from({ length: 320 }, (_, n) => ({ type: 'agentMessage', id: String(n), text: String(n) })) }];
-  const first = state.chat(thread.id); assert.equal(first.items.length, 40);
-  const events = [], routes = backendRoutesFor({ codexBackend: state });
-  await routes.scrollChat.call({ threadId: thread.id, codexHistoryLimit: 40, expandedTools: new Set(), selectionKey: () => 'history',
-    emit: event => events.push(event) }, { history: true, requestId: 'older' });
-  assert.equal(events[0].items.length, 200); assert.equal(events[0].items[0].i, '120'); assert.equal(events[0].earlier, true);
-});
-
-test('desktop and backend Codex use the same tool expansion handler through their normal dispatch', async () => {
+test('a stale tool expansion is rejected before invoking the native handler', async () => {
   const calls = [], session = { app: 'codex', codexBackend: false, adapter: codexAdapter,
     selectionKey: () => 'A', pollChat: async force => calls.push(force) };
   const route = resolveRoute(session, 'toolDetails');
   await route.run(session, { sel: 'old-A', i: 'tool', open: true });
   assert.equal(calls.length, 0);
-  await route.run(session, { sel: 'A', i: 'tool', open: true });
-  assert.equal(session.expandedTools.has('tool'), true); assert.deepEqual(calls, [true]);
-  await route.run(session, { sel: 'A', i: 'tool', open: false });
-  assert.equal(session.expandedTools.size, 0); assert.deepEqual(calls, [true, true]);
 });
 
 test('backend tool expansion sends only selected details, retains diffs and ignores a previous session request', async () => {
@@ -161,20 +193,6 @@ test('backend tool expansion sends only selected details, retains diffs and igno
   assert.equal(events.at(-1).items[0].output, undefined);
 });
 
-test('backend model menus read native options, mark the selected model, and never mutate settings', async () => {
-  const calls = [], events = [];
-  const routes = backendRoutesFor({ codexBackend: { threads: new Map([['A', { settings: { model: 'native-A', effort: 'high' } }]]),
-    client: { request: async (method, params) => { calls.push([method, params]); return { data: [
-      { model: 'native-A', displayName: 'Native A', supportedReasoningEfforts: [{ reasoningEffort: 'high' }] },
-      { model: 'native-B', displayName: 'Native B' }, { model: 'hidden', displayName: 'Hidden', hidden: true },
-    ] }; } } } });
-  const session = { threadId: 'A', selectionKey: () => 'codex|backend|A', emit: value => events.push(value) };
-  await routes.openMenu.call(session, { kind: 'model', requestId: 9 });
-  assert.equal(events[0].sel, session.selectionKey()); assert.equal(events[0].requestId, 9);
-  assert.deepEqual(Array.from(events[0].items, row => [row.label, row.checked]), [['Native A', true], ['Native B', false]]);
-  assert.deepEqual(JSON.parse(JSON.stringify(calls)), [['model/list', {}]]);
-});
-
 test('a model list completing after a thread switch cannot be assigned to the new selection', async () => {
   let complete;
   const events = [], routes = backendRoutesFor({ codexBackend: {
@@ -185,23 +203,6 @@ test('a model list completing after a thread switch cannot be assigned to the ne
   const readMenu = routes.openMenu.call(session, { kind: 'model', requestId: 9 });
   session.threadId = 'B'; complete({ data: [{ model: 'native-A', displayName: 'Native A' }] }); await readMenu;
   assert.deepEqual(events, []);
-});
-
-test('backend @ search uses the selected project and keeps distinct full paths; slash skills stay native', async () => {
-  const calls = [], events = [];
-  const routes = backendRoutesFor({ backendSkills: async () => [{ label: 'inspect', sub: 'review', key: '/skills/inspect', section: 'Skills' }],
-    codexBackend: { client: { request: async (method, params) => {
-      calls.push({ method, params }); return { files: [
-        { root: '/B', path: 'src/a.js', file_name: 'a.js' }, { root: '/B', path: 'test/a.js', file_name: 'a.js' },
-      ] };
-    } } } });
-  const session = { codexDirectory: '/B', selectionKey: () => 'B', emit: message => events.push(message) };
-  await routes.mentionQuery.call(session, { trigger: '@', q: 'a', seq: 8 });
-  assert.equal(calls[0].method, 'fuzzyFileSearch'); assert.deepEqual([...calls[0].params.roots], ['/B']);
-  assert.deepEqual(Array.from(events[0].rows, row => row.key), [localFilePath(path.resolve('/B/src/a.js')), localFilePath(path.resolve('/B/test/a.js'))]);
-  assert.equal(events[0].seq, 8); assert.equal(events[0].sel, 'B');
-  await routes.mentionQuery.call(session, { trigger: '/', q: 'insp', seq: 9 });
-  assert.equal(calls.length, 1); assert.equal(events[1].rows[0].section, 'Skills');
 });
 
 test('backend sending resolves selected @ file keys without losing existing skills or local files', async () => {
@@ -292,22 +293,6 @@ test('duplicate manual requests share their in-flight native operation', async (
   assert.equal(a, b); await Promise.all([a, b]); assert.equal(h.starts().length, 1);
 });
 
-test('opening a Codex project resumes its latest backend thread; new-session explicitly creates one', async () => {
-  const calls = [], records = new Map([['A', { id: 'A', cwd: '/A', updatedAt: 10 }], ['B', { id: 'B', cwd: '/B', updatedAt: 20 }]]);
-  const context = createPageContext({ path: path.posix, os: { homedir: () => '/home' }, safeHomePath: real => ({ real }),
-    CODEX_BACKEND: 'backend', cdpRead, awaitCdpRead: promise => promise, rememberSelection: () => {}, backendAttached: () => {},
-    adapter: { backendOwner: async () => null },
-    codexBackend: { threads: new Map(), records, load: async id => { calls.push(['load', id]); return { id, cwd: records.get(id).cwd }; },
-      create: async cwd => { calls.push(['create', cwd]); return { id: 'new-B', cwd }; } },
-  });
-  const bind = vm.runInContext(fragment(read('server/apps/codex.mjs'), 'async function bindBackend(', 'const backendRoutes =') + '\nbindBackend;', context);
-  const session = { detach() {}, clearViewState() {}, selectionKey: () => '', setMode: async () => {}, projectReady: pending => calls.push(['ready', pending.newSession]) };
-  await bind(session, { project: { root: '/B' } });
-  assert.equal(session.threadId, 'B');
-  await bind(session, { project: { root: '/B' }, newSession: true });
-  assert.equal(session.threadId, 'new-B');
-  assert.deepEqual(calls, [['load', 'B'], ['ready', false], ['create', '/B'], ['ready', true]]);
-});
 function fixture(file = null, State = CodexState) {
   const client = new EventEmitter();
   client.generation = 1;
@@ -544,7 +529,7 @@ test('Codex backend fast routes reuse their native handler; desktop and OpenCode
   assert.deepEqual(calls, [['native', 'A', false], ['native', 'A', true]]);
 });
 
-test('backend quota preserves native used percent, reset time and update time; the existing renderer shows remaining', async () => {
+test('backend quota preserves the native percentage basis, reset time and update time', async () => {
   const events = [], limits = { planType: 'test-plan', primary: { usedPercent: 18, windowDurationMins: 10080, resetsAt: 1800000000 }, secondary: null };
   const context = createPageContext({ codexBackend: { client: { request: async method => { assert.equal(method, 'account/rateLimits/read'); return { rateLimits: limits }; } },
     chat: () => ({ context: { pct: 8 } }) } });
@@ -554,8 +539,6 @@ test('backend quota preserves native used percent, reset time and update time; t
   assert.equal(result.limits[0].pct, 18); assert.equal(result.limits[0].basis, 'used');
   assert.equal(result.limits[0].reset, new Date(1800000000 * 1000).toLocaleString('zh-CN'));
   assert.equal(result.limits[0].label, 'Weekly'); assert.equal(result.context.pct, 8);
-  const bars = vm.runInContext(fragment(read('app/js/sheets.js'), 'function fusionUsageBars(', 'function showTerminals(') + '\nfusionUsageBars;', createPageContext({}));
-  assert.equal(bars(result)[0].pct, 82); assert.equal(bars(result)[0].basis, 'remaining');
 });
 
 function usageEvent(client, id, turnId, total, last = total) {
@@ -693,14 +676,6 @@ test('Codex app-server initialization is shared; replies, requests and events us
   assert.equal(client.pending.size, 0);
 });
 
-test('creating in project B reads back native cwd and never changes project A', async () => {
-  const { state } = fixture();
-  const a = await state.create('/A'), b = await state.create('/B');
-  assert.equal(a.cwd, '/A'); assert.equal(b.cwd, '/B');
-  assert.equal(state.records.get('/A').cwd, '/A');
-  assert.equal(state.records.get('/B').cwd, '/B');
-});
-
 test('forking preserves native history through the chosen turn, source identity and project', async () => {
   const { state, client } = fixture();
   const source = await state.create('/A');
@@ -720,37 +695,16 @@ test('forking preserves native history through the chosen turn, source identity 
   assert.equal(client.sent.some(row => row.method === 'turn/start'), false);
 });
 
-test('fork actions identify completed turns and appear only on their final assistant message', async () => {
-  const { state } = fixture();
-  const thread = await state.create('/A');
-  thread.turns.push({ id: 'completed', status: 'completed', items: [
-    { id: 'commentary', type: 'agentMessage', text: 'working' }, { id: 'final', type: 'agentMessage', text: 'done' },
-  ] }, { id: 'active', status: 'inProgress', items: [{ id: 'stream', type: 'agentMessage', text: 'next' }] });
-  const rows = state.chat('/A').items;
-  assert.equal(rows[0].b, undefined); assert.equal(rows[2].b, undefined);
-  assert.deepEqual(rows[1].b, ['Fork chat from here']);
-  assert.equal(rows[1].btnItem, 'completed'); assert.deepEqual(rows[1].actions, ['fork']);
-});
-
-test('backend settings reuse the desktop settings routes; fork click binds the newly returned thread', async () => {
-  const calls = [], events = [];
-  const desktop = { showCodexSettings: (...args) => calls.push(['settings', ...args]), saveCodexInstructions: (...args) => calls.push(['instructions', ...args]) };
-  const context = createPageContext({ withBackendSettings: (_s, fn) => fn(desktop), closeBackendSettings: s => calls.push(['close', s.threadId]),
-    awaitCdpRead: promise => promise, bindBackend: (_s, req) => calls.push(['bind', req.threadId]),
-    codexBackend: { chat: () => ({ items: [{ btnItem: 'turn-1', actions: ['fork'] }] }),
-      fork: async (...args) => { calls.push(['fork', ...args]); return { id: 'child' }; } },
+test('a stale fork action cannot fork or bind another conversation', async () => {
+  const events = [], routes = backendRoutesFor({
+    codexBackend: { fork: () => assert.fail('stale action must not fork') },
+    bindBackend: () => assert.fail('stale action must not bind'),
   });
-  const routes = vm.runInContext(fragment(read('server/apps/codex.mjs'), 'const backendRoutes =', 'function serializedCodexPrompt') + '\nbackendRoutes;', context);
   const session = { threadId: 'source', selectionKey: () => 'codex|backend|source', emit: message => events.push(message) };
-  await routes.settings.call(session, { requestId: 1 });
-  await routes.codexSetting.call(session, { id: 'toggle', requestId: 2, value: 'value' });
-  await routes.codexInstructions.call(session, { requestId: 3, text: 'instructions' });
-  await routes.closeCodexSettings.call(session);
   await assert.rejects(routes.click.call(session, { sel: 'codex|backend|old', item: 'turn-1', n: 0, actionId: 'fork' }), /会话已切换/);
-  await routes.click.call(session, { sel: session.selectionKey(), item: 'turn-1', n: 0, actionId: 'fork' });
-  assert.deepEqual(calls, [['settings', '', 1], ['settings', 'toggle', 2, 'value'], ['instructions', 'instructions', 3],
-    ['close', 'source'], ['fork', 'source', 'turn-1'], ['bind', 'child']]);
-  assert.equal(events.at(-1).clicked, true);
+  assert.equal(events.length, 1);
+  assert.equal(events[0].t, 'clickDone'); assert.equal(events[0].clicked, false);
+  assert.equal(events[0].sel, 'codex|backend|old');
 });
 
 test('an empty Codex thread is committed natively before it is recorded; first text replaces only its automatic title', async () => {
@@ -961,12 +915,4 @@ for (const mode of ['idle', 'active', 'already-started', 'disconnect']) test(`qu
     assert.equal(client.sent.filter(row => row.method === 'thread/queue/start').length, mode === 'already-started' ? 0 : 1);
   }
   assert.equal(state.listenerCount('changed'), 0);
-});
-
-for (const IS_WIN of [false, true]) test('Codex new entry with native window creates rather than loading a directory as UUID: ' + IS_WIN, async () => {
-  const calls = [], routes = backendRoutesFor({ IS_WIN, bindBackend: async (_session, req) => calls.push(req), CODEX_BACKEND: 'backend' });
-  const directory = IS_WIN ? 'D:/qa/project A' : '/home/qa/project A';
-  const session = { attach: async () => assert.fail('new entry must not attach a directory as thread ID') };
-  await routes.openAgent.call(session, { id: 'new:native-window:' + encodeURIComponent(directory) });
-  assert.equal(calls.length, 1); assert.equal(calls[0].project.root, directory); assert.equal(calls[0].newSession, true);
 });

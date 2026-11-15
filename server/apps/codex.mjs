@@ -46,7 +46,14 @@ function backendAttached(s, initial = false) {
 
 function backendPublish(s, sent) {
   if (!codexBackend.threads.has(s.threadId)) return false;
-  s.emit({ t: 'chat', sel: s.selectionKey(), chat: codexBackend.chat(s.threadId, s.codexHistoryLimit || 40, undefined, s.expandedTools || new Set()) }, sent);
+  const chat = codexBackend.chat(s.threadId, s.codexHistoryLimit || 40, undefined, s.expandedTools || new Set());
+  const requests = new Map(chat.questions.requests.map(row => [row.id, row]));
+  for (const value of s.codexNativeQuestions?.values() || [])
+    for (const row of value.requests) if (!requests.has(row.id)) requests.set(row.id, row);
+  chat.questions.requests = [...requests.values()];
+  chat.waiting = requests.size ? 'approval' : '';
+  chat.waitingText = chat.questions.requests[0]?.text || '';
+  s.emit({ t: 'chat', sel: s.selectionKey(), chat }, sent);
   backendPublishDraft(s);
   return true;
 }
@@ -329,9 +336,18 @@ const backendRoutes = {
     if (m.kind === 'fast') this.emit({ t: 'fastState', sel: this.selectionKey(), fast: { on: update.serviceTier === 'fast' } });
     codexBackend.changed(this.threadId);
   },
-  codexRequest(m) {
-    if (m.field != null) return;
-    codexBackend.answer(this.threadId, m.id, m.n, m.fields);
+  async codexRequest(m) {
+    if (codexBackend.requestRows(this.threadId).some(row => row.id === m.id)) {
+      if (m.field == null) codexBackend.answer(this.threadId, m.id, m.n, m.fields);
+      return;
+    }
+    const [source, value] = [...this.codexNativeQuestions || []].find(([, value]) => value.requests.some(row => row.id === m.id)) || [];
+    if (!source) throw new Error('这条请求已处理或不属于当前会话');
+    const call = m.field != null ? `codexRequestField(${JSON.stringify(m.id)}, ${Number(m.field)}, ${JSON.stringify(m.value || '')})`
+      : `codexRequestAction(${JSON.stringify(m.id)}, ${Number(m.n)}, ${JSON.stringify(m.fields || [])}, ${m.advance === true})`;
+    if (!await source.composerCall(call, value.context)) throw new Error('原生问题操作未完成');
+    await source.readConversation(value.context, true);
+    backendPublish(this);
   },
   async queue(m) {
     const id = this.threadId, row = codexBackend.queues.get(id)?.find(row => row.id === m.id);
@@ -502,6 +518,7 @@ export const adapter = {
   attachBackend(req) { return bindBackend(this, req); },
   async setBackendMode() {
     await awaitCdpRead(codexBackend.load(this.threadId));
+    const questionSources = this.codexNativeQuestions = new Map();
     if (!this.visible) { backendPublish(this); return; }
     const stop = watchChatUpdates(this, refresh => {
       const stops = [codexBackend.subscribe(this.threadId, error => {
@@ -511,11 +528,21 @@ export const adapter = {
       for (const win of nativeTargets().filter(win => win.app === 'codex')) stops.push(nativeWindowAt(win.ws).subscribe(() => {
         this.adapter.syncBackendDraft.call(this).catch(error => this.emit({ t: 'status', ok: false, msg: error.message }));
       }));
+      for (const win of nativeTargets().filter(win => win.app === 'codex')) {
+        const source = nativeWindowAt(win.ws), context = { app: 'codex', threadId: this.threadId, host: '', cwd: this.codexDirectory };
+        const changed = error => {
+          if (error) { this.emit({ t: 'status', ok: false, msg: error.message }); return; }
+          const requests = source.conversationView(context).snapshot?.chat?.questions?.requests || [];
+          questionSources.set(source, { context, requests }); refresh();
+        };
+        stops.push(source.subscribe(changed, context));
+        source.readConversation(context).then(() => changed(), changed);
+      }
       return () => { for (const stop of stops) stop(); };
     }, sent => backendPublish(this, sent));
     const draftChanged = id => { if (id === this.threadId) backendPublishDraft(this); };
     codexBackend.on('draftChanged', draftChanged);
-    this.chatUpdatesStop = () => { codexBackend.off('draftChanged', draftChanged); codexBackend.clearRetry(this); stop(); };
+    this.chatUpdatesStop = () => { codexBackend.off('draftChanged', draftChanged); codexBackend.clearRetry(this); stop(); questionSources.clear(); };
     if (this.codexRetrySettings) backendRoutes.codexRetry.call(this, this.codexRetrySettings);
     await this.adapter.syncBackendDraft.call(this);
     backendPublish(this);
@@ -538,6 +565,7 @@ export const adapter = {
   },
   async sendBackendMessage(text, submit, when, mentions, receipt) {
     if (!submit) return backendRoutes.draft.call(this, { text, draftEpoch: receipt?.draftEpoch });
+    if (receipt) this.draftEpoch = receipt.draftEpoch || '';
     const id = this.threadId, sel = this.selectionKey(), files = pendingUploads(sel);
     const input = text.trim() ? [{ type: 'text', text }] : [];
     for (const [, file] of files) {

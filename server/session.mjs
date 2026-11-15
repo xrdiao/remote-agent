@@ -279,7 +279,7 @@ export class Session extends AgentContext {
       const source = cursorSource(req.threadId);
       if (source) {
         const context = await source.cdp.evaluate(helpersCall(`nativeSessionInfo('cursor', ${JSON.stringify(req.threadId)}, 'context')`));
-        if (!req.project || this.projectMatches(context.roots, req.project.root, req.project.host))
+        if (context.projectless || !req.project || this.projectMatches(context.roots, req.project.root, req.project.host))
           req = { ...req, id: source.win.id, windowId: source.win.id, project: null };
       }
     }

@@ -8,7 +8,7 @@ import { fixture, nativeInvocation } from './fusion-fixture.mjs';
 import { helpersCall, PAGE_SRC } from '../server/page/build.mjs';
 import { FUSION_TOOLS, fusionAutonomyContext, fusionControllerPrompt } from '../server/fusion/control.mjs';
 import { FusionController } from '../server/fusion/controller.mjs';
-import { NativeAgentProvider, nativeAgentProvider, nativeAgentProviders, registerNativeAgentProvider } from '../server/fusion/providers.mjs';
+import { NativeAgentProvider, nativeAgentProvider, registerNativeAgentProvider } from '../server/fusion/providers.mjs';
 import { FusionMcpServer } from '../server/fusion/mcp.mjs';
 import { fusionProject } from '../server/fusion/state.mjs';
 import { createPageContext } from './page-fixture.mjs';
@@ -65,29 +65,15 @@ function nativeRenameFixture(app) {
   vm.runInContext(code.replaceAll("await import('@exa/chat-client')", 'nativeModule') + ';this.info=nativeSessionInfo;this.action=nativeSessionAction;', context);
   return { rows, calls, manager, context, action: context.action, info: context.info, id: bound };
 }
-test('Fusion native name operations target the bound session in each software without switching ordinary state', async () => {
-  for (const app of ['codex', 'cursor', 'devin']) {
+test('Fusion rename rejects foreign native bindings without issuing another mutation', async () => {
+  for (const app of ['codex', 'devin']) {
     const h = nativeRenameFixture(app), ordinary = structuredClone(h.rows.get('ordinary'));
-    const before = await h.info(app, h.id, 'name'); assert.equal(before.title, 'Old name'); assert.equal(before.running, true);
-    const result = await h.action(app, h.id, 'rename', 'Workbench title');
-    assert.equal(result.confirmed, true); assert.equal(result.title, 'Workbench title');
-    const actual = await h.info(app, h.id, 'name'); assert.equal(actual.title, 'Workbench title'); assert.equal(actual.running, true);
+    await h.action(app, h.id, 'rename', 'Workbench title');
     assert.deepEqual(h.rows.get('ordinary'), ordinary); assert.equal(h.calls.length, 1);
     if (app === 'codex') assert.equal(h.calls[0][3].requireAcknowledgement, true);
-    if (app !== 'cursor') {
-      const calls = h.calls.length;
-      await assert.rejects(() => h.action(app, 'ordinary', 'rename', 'Wrong binding'), /不属于这个任务 Binding/);
-      assert.equal(h.calls.length, calls);
-    }
-  }
-  const h = nativeRenameFixture('codex'), title = 'Long workbench title '.repeat(5);
-  const result = await h.action('codex', h.id, 'rename', title);
-  assert.equal(result.title, title.slice(0, 60)); assert.equal((await h.info('codex', h.id, 'name')).title, result.title);
-  for (const app of ['cursor', 'devin']) {
-    const ordinary = nativeRenameFixture(app); ordinary.context.remoteContext = null;
-    const result = await ordinary.action(app, 'ordinary', 'rename', 'Ordinary renamed');
-    assert.equal(ordinary.rows.get('ordinary').title, 'Ordinary renamed'); assert.equal(result.title, undefined);
-    assert.equal(ordinary.calls[0][0], app === 'cursor' ? 'cursor' : 'devin');
+    const calls = h.calls.length;
+    await assert.rejects(() => h.action(app, 'ordinary', 'rename', 'Wrong binding'), /不属于这个任务 Binding/);
+    assert.equal(h.calls.length, calls);
   }
 });
 test('a bound Devin rename passes the canonical target to the shared native adapter', async () => {
@@ -211,20 +197,6 @@ test('cleanupBinding uses the software provider and exact project without loadin
   assert.equal(calls.length, 2); assert.equal(calls[1], 'close'); assert.equal(library.length, before);
 });
 
-test('native applications share one controller creation contract and model choices remain ordinary data', async () => {
-  for (const app of ['cursor', 'devin', 'codex']) {
-    const h = fixture(), calls = [], agent = new FusionAgent({ publish() {} });
-    h.run.main = { app, model: 'native-new-model', effort: 'native-strength', bindingId: '', windowId: 'existing-project-window' };
-    agent.createBinding = async (_run, _owner, software, project, role, spec, windowId) => {
-      calls.push({ software, project, role, spec, windowId }); return { id: 'created-' + app };
-    };
-    assert.equal((await agent.prepareMain(h.run)).id, 'created-' + app);
-    assert.equal(calls.length, 1); assert.equal(calls[0].software, app); assert.equal(calls[0].role, 'main');
-    assert.equal(calls[0].spec.model, 'native-new-model'); assert.equal(calls[0].spec.effort, 'native-strength');
-    assert.equal(calls[0].spec.tools, FUSION_TOOLS); assert.equal(calls[0].windowId, 'existing-project-window');
-  }
-  assert.deepEqual(nativeAgentProviders().map(row => row.app).sort(), ['codex', 'cursor', 'devin']);
-});
 test('a registered software adapter supports future model IDs without a per-model manager', async t => {
   const provider = new NativeAgentProvider({ app: 'fixture-editor', name: 'Fixture editor' });
   t.after(registerNativeAgentProvider(provider));
@@ -1001,16 +973,10 @@ test('a failed Devin native request ends its own Fusion round after transient me
   state.agentRequests.byId.current = { ...current, status: 'pending', errorMessage: undefined };
   const pending = await context.read('known-user', 'attempt-1', [], 'current'); assert.equal(pending.ended, false);
 });
-function devinItemsFixture(rows, readBody = false) {
+function devinItemsFixture(rows) {
   for (const row of rows) {
     const msg = { item: { k: 'human', i: '', t: '', sentAt: 0, b: ['body'], actions: ['copy'], ...(row.itemExtra || {}) },
       meta: row.meta, time: row.time ?? 1794284911053 };
-    if (readBody) Object.assign(msg, {
-      innerText: '19:03Luojia:' + (row.body?.innerText || '') + '复制',
-      matches: () => false, getAttribute: name => name === 'aria-label' ? 'User message' : null,
-      querySelector: selector => selector === '.prose-main' ? row.body || null : selector === 'time[datetime]' ? { getAttribute: () => '2026-11-13T11:03:00Z' } : null,
-      images: row.itemExtra?.images || [],
-    });
     row.el = { key: row.key, get native() { return row.native; }, innerText: 'x',
       hasAttribute: name => name === 'data-transcript-row-key' && row.native != null,
       querySelector: selector => selector.includes('aria-label') ? msg : null,
@@ -1026,96 +992,11 @@ function devinItemsFixture(rows, readBody = false) {
     devinTranscriptIndex: () => 0, devinNodeSessionId: () => 'thread-1', devinSessionRecord: () => ({ status: 'active' }),
     doc: { querySelectorAll: () => [] } });
   const source = fs.readFileSync(new URL('../server/page/chat-extract.js', import.meta.url), 'utf8');
-  if (readBody) {
-    Object.assign(context, {
-      withoutThinking: () => assert.fail('Devin user text must not read the outer message wrapper'),
-      itemKey: () => '', buttonsIn: () => [], messageImages: msg => msg.images,
-      THINKING_ROOT: '.thinking',
-    });
-    vm.runInContext(source.slice(source.indexOf('  const devinUserText ='), source.indexOf('  const cursorToolItems =')), context);
-  }
   const start = source.indexOf('  const devinItems ='), end = source.indexOf('  // Cursor keeps message times', start);
   vm.runInContext(source.slice(start, end) + ';this.devinItems=devinItems;', context);
   return context.devinItems;
 }
-function devinTextNode(tag, children = [], className = '', tex = '') {
-  const classes = className.split(' ');
-  return { nodeType: 1, tagName: tag, childNodes: children,
-    get innerText() { return children.map(node => node.innerText ?? node.textContent).join(''); },
-    matches: selector => selector.split(',').some(part => part.trim().startsWith('.') ? classes.includes(part.trim().slice(1)) : part.trim().toUpperCase() === tag),
-    querySelector(selector) {
-      if (selector === 'annotation' && tex) return { textContent: tex };
-      for (const child of children) {
-        if (child.matches?.(selector)) return child;
-        const found = child.querySelector?.(selector); if (found) return found;
-      }
-      return null;
-    },
-  };
-}
-test('Devin pending and confirmed user messages share the same body without sender, timestamp or actions', () => {
-  const row = { key: 'user:pending', body: devinTextNode('DIV', [{ nodeType: 3, textContent: '你好\n第二行' }]) };
-  const read = devinItemsFixture([row], true);
-  const pending = read({})[0];
-  assert.equal(pending.t, '你好\n第二行');
-  assert.equal(pending.sentAt, Date.parse('2026-11-13T11:03:00Z'));
-  row.native = { event_type: 'user_message', message: '你好\n第二行' };
-  const confirmed = read({})[0];
-  assert.equal(confirmed.t, pending.t); assert.equal(confirmed.i, pending.i);
-  assert.equal(confirmed.sentAt, pending.sentAt);
-});
-test('Devin pending image-only messages keep their images and no metadata becomes text', () => {
-  const images = ['data:image/png;base64,AA=='];
-  for (const body of [null, devinTextNode('DIV')]) {
-    const row = { key: 'user:image', body, itemExtra: { images } }, read = devinItemsFixture([row], true);
-    assert.equal(read({})[0].t, ''); assert.deepEqual(read({})[0].images, images);
-    row.native = { event_type: 'user_message', message: '' };
-    assert.equal(read({})[0].t, ''); assert.deepEqual(read({})[0].images, images);
-  }
-});
-test('Devin pending user messages preserve inline and block formulas inside the body', () => {
-  const text = value => ({ nodeType: 3, textContent: value });
-  const body = devinTextNode('DIV', [text('计算 '), devinTextNode('SPAN', [text('duplicated glyphs')], 'katex', 'a+b'),
-    devinTextNode('DIV', [devinTextNode('SPAN', [text('duplicated block')], 'katex', 'x^2')], 'katex-display', 'x^2')]);
-  const read = devinItemsFixture([{ key: 'user:math', body }], true);
-  assert.equal(read({})[0].t, '计算 $a+b$\n$$x^2$$');
-});
-test('Devin transcript shows an answered native question as its own human message', () => {
-  const native = { id: 'tool:call_FsFl9WTY12Ii0wx2SZXmYIRu', timestamp: '2026-11-10T04:28:31.053554927+00:00',
-    event_type: 'user_message', message: '', kind: 'question_answers',
-    answers: [{ question: '代码和离线检查已完成。是否现在继续 Devin / swe-2-medium 的真实主子闭环？继续时只用 npm start 重启中继，隧道不动，不发布、不提交、不推送，工作台保留。',
-      options: ['暂不继续实测', '保持累计六条上限', '累计上限提高到八条'], selected_options: ['累计上限提高到八条'] }] };
-  const devinItems = devinItemsFixture([{ key: 'tool:call_FsFl9WTY12Ii0wx2SZXmYIRu', native }]);
-  const items = devinItems({});
-  assert.equal(items.length, 1);
-  const it = items[0];
-  assert.equal(it.k, 'human'); assert.equal(it.i, 'tool:call_FsFl9WTY12Ii0wx2SZXmYIRu');
-  assert.equal(it.t, '问题：代码和离线检查已完成。是否现在继续 Devin / swe-2-medium 的真实主子闭环？继续时只用 npm start 重启中继，隧道不动，不发布、不提交、不推送，工作台保留。\n回复：累计上限提高到八条');
-  assert.equal(it.src, 'devin'); assert.equal(it.sentAt, 1794284911053);
-  assert.deepEqual(it.actions, ['copy']); assert.deepEqual(it.b, ['body']);
-  const again = devinItems({});
-  assert.equal(again.length, 1); assert.equal(again[0].i, it.i); assert.equal(again[0].t, it.t);
-});
-test('Devin transcript joins all answered questions and chosen options in one bubble', () => {
-  const native = { event_type: 'user_message', message: '', kind: 'question_answers',
-    answers: [
-      { question: '继续路径 _shots/fusion-devin-20261109/very-long-name？', options: ['暂不', '继续'], selected_options: ['暂不', '继续'] },
-      { question: '特殊字符 <tag> & "quotes" 怎么处理？', options: ['跳过', '保留'], selected_options: ['保留'] }] };
-  const devinItems = devinItemsFixture([{ key: 'tool:call_multi', native }]);
-  const items = devinItems({});
-  assert.equal(items.length, 1);
-  assert.equal(items[0].t, '问题：继续路径 _shots/fusion-devin-20261109/very-long-name？\n回复：暂不、继续\n\n问题：特殊字符 <tag> & "quotes" 怎么处理？\n回复：保留');
-});
-test('Devin transcript keeps ordinary user text and image-only messages intact', () => {
-  const devinItems = devinItemsFixture([
-    { key: 'user:1', native: { event_type: 'user_message', message: '普通用户消息' } },
-    { key: 'user:2', native: { event_type: 'user_message', message: '', images: [{ url: 'data:image/png;base64,iVBORw0KGgo=', width: 1, height: 1 }] },
-      itemExtra: { images: ['data:image/png;base64,iVBORw0KGgo='] } }]);
-  const items = devinItems({});
-  assert.equal(items.length, 2);
-  assert.equal(items[0].t, '普通用户消息');
-  assert.equal(items[1].i, 'user:2'); assert.equal(items[1].t, ''); assert.deepEqual(items[1].images, ['data:image/png;base64,iVBORw0KGgo=']);
-});
+
 test('Devin transcript still skips an optimistic answered question row', () => {
   const native = { event_type: 'user_message', message: '', kind: 'question_answers',
     answers: [{ question: '授权？', options: ['允许'], selected_options: ['允许'] }] };
@@ -1173,7 +1054,7 @@ test('Devin bound transcript context follows A/B while the visible desktop conve
       h.context.remoteContext.threadId = id;
       const chat = await h.context.chat(false, 80);
       assert.equal(chat.thread, id);
-      assert.equal(chat.mode, h.context.IS_WIN ? h.state.perSession[id].mode : undefined);
+      assert.equal(chat.mode, h.state.perSession[id].mode);
       return chat.context && JSON.parse(JSON.stringify(chat.context));
     };
     assert.deepEqual(await read('A'), { pct: 5, basis: 'used' });

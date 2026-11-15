@@ -625,11 +625,9 @@
           ...(item.approvalRequestId != null || ['failed', 'declined'].includes(item.executionStatus) || (item.output?.exitCode != null && item.output.exitCode !== 0) ? { keep: true } : {}) });
       } else if (item.type === 'patch') {
         const files = Object.keys(item.changes || {}), details = tools.has(id);
-        const diff = details ? files.flatMap(file => [['…', file], ...(item.changes[file].diff || '').split('\n')
-          .map(line => /^(--- |\+\+\+ |@@)/.test(line) ? ['…', line] : /^[+-]/.test(line) ? [line[0], line.slice(1)] : [' ', line.startsWith(' ') ? line.slice(1) : line])])
-          : [];
+        const diff = details ? codexFileDiff(files.map(path => ({ ...item.changes[path], path, change: item.changes[path] }))) : null;
         out.push({ i: id, k: 'tool', src: 'codex', kind: 'edit', t: `修改 ${files.join(', ')}`.slice(0, 240), f: files[0],
-          lazy: true, details, ...(details ? { diff, add: diff.filter(([type]) => type === '+').length, del: diff.filter(([type]) => type === '-').length } : {}),
+          lazy: true, details, ...(details ? diff : {}),
           status: item.executionStatus, done: finished });
       } else if (item.type === 'todo-list') {
         const steps = Array.isArray(item.plan) ? item.plan : (Array.isArray(item.items) ? item.items : []);
