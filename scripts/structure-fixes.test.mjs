@@ -999,11 +999,13 @@ test('ordinary Cursor data subscriptions follow the active thread and release th
 
 test('native window snapshots await Cursor text before publishing and keep the other app extract paths', async () => {
   for (const app of ['cursor', 'codex', 'devin']) {
-    const calls = [], chat = { thread: 'A', items: [{ i: 'latest', k: 'assistant', t: '已完成读取' }] };
+    const calls = [], saved = [], chat = { thread: 'A', items: [{ i: 'latest', k: 'assistant', t: '已完成读取' }] };
+    const state = { thread: 'A', busy: false, run: { id: 'turn-A', status: 'completed' } };
     const helper = { extract(...args) { calls.push(args); return app === 'cursor' ? Promise.resolve(chat) : chat; },
-      activeChatTab: () => '', agentStates: () => [], devinSurface: () => null, agentList: () => [], nativeSessionInfo: async () => [], codexChatRows: () => [] };
-    const context = { cdpRead, awaitCdpRead, AbortController, IS_WIN: false, windows: new Map(), PAGE_SRC: 'helper', helpersCall: call => call,
-      refreshSessionCatalog: async () => {}, publishCatalog() {}, withOperation: (_operation, action) => action() };
+      activeChatTab: () => '', agentStates: () => [state], devinSurface: () => null, agentList: () => [], nativeSessionInfo: async () => [], codexChatRows: () => [] };
+    const context = createPageContext({ cdpRead, awaitCdpRead, AbortController, IS_WIN: false, windows: new Map(), PAGE_SRC: 'helper', helpersCall: call => call,
+      rememberSessionStatuses: rows => saved.push(...rows),
+      refreshSessionCatalog: async () => {}, publishCatalog() {}, withOperation: (_operation, action) => action() });
     const methods = vm.runInNewContext('({' + part(read('server/native-windows.mjs'), '  async read(fresh = false)', '  interval()').replace('\n  readCatalog()', ',\n  readCatalog()') + '})', context);
     const source = { revision: 1, win: { app }, runStates: new Map(), listeners: new Set(), connect: async () => {}, retryCapacity() {},
       cdp: { evaluate: expression => expression === 'sessionPickerRows(true)' ? [] : vm.runInNewContext(expression, { helper, ...helper }) } };
@@ -1013,15 +1015,16 @@ test('native window snapshots await Cursor text before publishing and keep the o
     assert.equal(source.snapshot.chat.items[0].t, '已完成读取');
     assert.equal(calls[0][0], false);
     assert.equal(calls[0][1].length, 0);
-    assert.equal(calls[0][2], app === 'codex' ? 80 : 0);
+    assert.equal(calls[0][2], app === 'codex' ? 120 : 0);
     assert.equal(calls[0][3], app === 'cursor');
+    assert.deepEqual(JSON.parse(JSON.stringify(saved)), [{ ...state, app, threadId: 'A' }]);
   }
 });
 
 function readingWindow() {
   const calls = [];
-  const context = { cdpRead, awaitCdpRead, AbortController, IS_WIN: false, windows: new Map(), PAGE_SRC: '{}', helpersCall: call => call,
-    refreshSessionCatalog: async () => {}, publishCatalog() {}, withOperation: (_operation, action) => action() };
+  const context = createPageContext({ cdpRead, awaitCdpRead, AbortController, IS_WIN: false, windows: new Map(), PAGE_SRC: '{}', helpersCall: call => call,
+    refreshSessionCatalog: async () => {}, publishCatalog() {}, withOperation: (_operation, action) => action() });
   const methods = vm.runInNewContext('({' + part(read('server/native-windows.mjs'), '  async read(fresh = false)', '  interval()').replace('\n  readCatalog()', ',\n  readCatalog()') + '})', context);
   const source = { revision: 1, readRevision: 0, snapshot: null, catalogKey: null,
     win: { app: 'codex' }, runStates: new Map(), listeners: new Set(), connect: async () => {}, retryCapacity() {}, interval: () => 1800,
@@ -3983,16 +3986,19 @@ test('answer success after switching clears only the submitted origin, while fai
 test('Codex card preview keeps only the current turn tools across repeated turns', async () => {
   const items = [{ k: 'human', t: 'old user' }, { k: 'tool', i: 'old', t: 'old command', status: 'completed' },
     { k: 'human', t: 'current user' }, { k: 'assistant', t: 'current answer without tools' }];
+  const saved = [], run = { id: 'current-turn', status: 'completed' };
   const scope = createPageContext({ CODEX_BACKEND: 'backend',
     overviewSession: () => ({ session: { app: 'codex' } }),
-    codexAdapter: { backendOwner: async () => null },
-    codexBackend: { readChat: async () => ({ items, model: 'native', effort: 'high' }) } });
+    codexAdapter: { backendOwner: async () => null, backendQuestionState: id => { assert.equal(id, 'qa'); return { waiting: 'approval' }; } },
+    rememberSessionStatuses: rows => saved.push(...rows),
+    codexBackend: { readChat: async () => ({ items, model: 'native', effort: 'high', busy: false, run }) } });
   vm.runInContext(read('server/overview.mjs').slice(read('server/overview.mjs').indexOf('export async function overviewPreview'))
     .replace('export async function', 'async function') + ';this.preview=overviewPreview;', scope);
   const target = { win: 'codex', windowId: 'backend', threadId: 'qa' };
   const first = await scope.preview('qa', target);
   assert.equal(first.tools.length, 0); assert.equal(first.text, 'current user\n\ncurrent answer without tools');
   assert.equal(first.last, 'current answer without tools'); assert.equal(first.model, 'native'); assert.equal(first.effort, 'high');
+  assert.deepEqual(JSON.parse(JSON.stringify(saved)), [{ app: 'codex', threadId: 'qa', busy: false, waiting: 'approval', run }]);
   items.push(...['completed', 'completed', 'failed', 'inProgress'].map((status, n) => ({ k: 'tool', i: 'new-' + n, t: 'command-' + n, status })));
   const next = await scope.preview('qa', target);
   assert.deepEqual([...next.tools].map(row => [row.id, row.state]), [['new-1', 'done'], ['new-2', 'error'], ['new-3', 'run']]);
@@ -4004,16 +4010,18 @@ test('Codex card preview keeps only the current turn tools across repeated turns
 });
 
 test('legacy Codex card preview reads native backend content after its project window closes', async () => {
-  const calls = [], scope = createPageContext({ CODEX_BACKEND: 'backend',
+  const calls = [], saved = [], scope = createPageContext({ CODEX_BACKEND: 'backend',
     overviewSession: () => ({ session: { app: 'codex', host: '', dormant: true } }),
-    codexAdapter: { backendThread: () => true, backendOwner: async () => null },
+    codexAdapter: { backendThread: () => true, backendOwner: async () => null, backendQuestionState: id => { assert.equal(id, 'legacy'); return { waiting: '' }; } },
+    rememberSessionStatuses: rows => saved.push(...rows),
     codexBackend: { readChat: async id => { calls.push(id); return { items: [{ k: 'human', t: 'old question' },
-      { k: 'assistant', t: 'old answer' }], model: 'native', effort: 'high' }; } } });
+      { k: 'assistant', t: 'old answer' }], model: 'native', effort: 'high', busy: false, run: { id: 'old-turn', status: 'stopped' } }; } } });
   vm.runInContext(read('server/overview.mjs').slice(read('server/overview.mjs').indexOf('export async function overviewPreview'))
     .replace('export async function', 'async function') + ';this.preview=overviewPreview;', scope);
   const preview = await scope.preview('device', { win: 'codex', windowId: 'closed', threadId: 'legacy' });
   assert.deepEqual(calls, ['legacy']); assert.equal(preview.available, true);
   assert.equal(preview.threadId, 'legacy'); assert.equal(preview.last, 'old answer');
+  assert.equal(saved[0].threadId, 'legacy'); assert.equal(saved[0].run.status, 'stopped');
 });
 
 test('Codex live preview reads the writer without changing its visible thread or claiming ownership', async () => {

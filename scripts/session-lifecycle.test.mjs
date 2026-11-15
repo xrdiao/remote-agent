@@ -301,8 +301,10 @@ test('Codex preview and catalog use the host connection without selecting a conv
     codexConversationManager: (_thread, _scopes, host) => { assert.equal(host, 'local'); return manager; },
     codexStoredTurn: () => null, codexTurnItems: () => [], codexUserText: () => '',
   });
+  vm.runInContext(fragment(read('server/page/agents.js'), '  const agentRun =', '  const agentStates ='), context);
   const preview = await context.info('codex', 'background', 'preview');
   assert.equal(preview.text, 'BACKGROUND_OK');
+  assert.equal(preview.status.threadId, 'background'); assert.equal(preview.status.statusKnown, false);
   assert.equal(requests[0].args.threadId, 'background');
   const catalog = await context.info('codex', [], true);
   assert.equal(catalog.ready, true); assert.equal(catalog.rows[0].id, 'background');

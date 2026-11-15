@@ -460,28 +460,28 @@ const pageRows = (from, to) => Array.from({ length: to - from }, (_, i) => {
   return { info: { id, sessionID: 'ses_one', role: 'user', time: { created: n + 1 } },
     parts: [{ id: 'part_' + n, type: 'text', text: String(n) }] };
 });
-test('OpenCode first view is 20 native messages, pages cached rows first, and reopening resets only the view', async t => {
+test('OpenCode first view is 30 native messages, pages cached rows first, and reopening resets only the view', async t => {
   const { session, events } = fixture(t);
   openCode.sessions.set('ses_one', native('ses_one'));
   const cursors = [];
   t.mock.method(openCode.client, 'messages', async (_id, _directory, before) => {
-    cursors.push(before); return { rows: before ? pageRows(0, 20) : pageRows(20, 100), before: before ? null : 'older' };
+    cursors.push(before); return { rows: before ? pageRows(0, 20) : pageRows(20, 110), before: before ? null : 'older' };
   });
   await session.handle({ t: 'attach', id: 'opencode', threadId: 'ses_one' });
-  assert.deepEqual(events.findLast(row => row.t === 'chat').chat.items.map(row => row.t), Array.from({ length: 20 }, (_, n) => String(n + 80)));
-  assert.equal(openCode.messages.get('ses_one').size, 80);
+  assert.deepEqual(events.findLast(row => row.t === 'chat').chat.items.map(row => row.t), Array.from({ length: 30 }, (_, n) => String(n + 80)));
+  assert.equal(openCode.messages.get('ses_one').size, 90);
   await session.handle({ t: 'scrollChat', history: true, requestId: 'cached-60' });
   assert.deepEqual(cursors, [undefined]);
   assert.equal(events.filter(row => row.t === 'historyPage').flatMap(row => row.items).length, 60);
   await session.handle({ t: 'scrollChat', history: true, requestId: 'native' });
   assert.deepEqual(cursors, [undefined, 'older']);
   assert.equal(events.findLast(row => row.t === 'historyDone').earlier, false);
-  assert.equal(openCode.messages.get('ses_one').size, 100);
+  assert.equal(openCode.messages.get('ses_one').size, 110);
   await session.handle({ t: 'refresh' });
-  assert.equal(events.findLast(row => row.t === 'chat').chat.items.length, 100);
+  assert.equal(events.findLast(row => row.t === 'chat').chat.items.length, 110);
   await session.handle({ t: 'attach', id: 'opencode', threadId: 'ses_one' });
-  assert.equal(events.findLast(row => row.t === 'chat').chat.items.length, 20);
-  assert.equal(openCode.messages.get('ses_one').size, 100);
+  assert.equal(events.findLast(row => row.t === 'chat').chat.items.length, 30);
+  assert.equal(openCode.messages.get('ses_one').size, 110);
   for (let n = 0; n < 4; n++) await session.handle({ t: 'scrollChat', history: true, requestId: 'reopen-' + n });
   assert.deepEqual(cursors, [undefined, 'older', undefined, undefined]);
   assert.equal(events.findLast(row => row.t === 'historyDone').earlier, false);
