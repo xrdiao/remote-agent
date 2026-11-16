@@ -35,7 +35,7 @@ export class CodexClient extends EventEmitter {
     if (this.connecting) return this.connecting;
     this.connecting = (async () => {
       const binary = await this.binary();
-      const child = this.child = this.spawnProcess(binary, ['app-server', '--stdio'], {
+      const child = this.child = this.spawnProcess(binary, ['-c', 'thread_unload_delay_secs=0', 'app-server', '--stdio'], {
         stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true,
       });
       this.generation++;

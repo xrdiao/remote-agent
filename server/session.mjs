@@ -649,10 +649,12 @@ export class Session extends AgentContext {
 
   async followCodexOwner(msg) {
     if (this.codexBackend) {
-      const owner = await this.adapter.backendOwner(this.threadId);
+      const thread = this.threadId;
+      const owner = await this.adapter.backendOwner(thread);
+      if (this.app !== 'codex' || this.threadId !== thread) throw new Error('会话已切换，操作未执行');
       if (owner) {
         const previous = this.selectionKey(), files = pendingUploads(previous);
-        await this.attach({ id: 'codex', windowId: owner.pageId, threadId: this.threadId, nativeOwner: { cwd: owner.cwd } });
+        await this.attach({ id: 'codex', windowId: owner.pageId, threadId: thread, nativeOwner: { cwd: owner.cwd } });
         for (const [, file] of files) updateUpload(file, { sel: this.selectionKey() });
         if (msg.sel === previous) return { ...msg, sel: this.selectionKey() };
       }
@@ -665,7 +667,7 @@ export class Session extends AgentContext {
       && !(msg.t === 'send' && msg.submit === false) && !(msg.t === 'queue' && msg.action === 'read');
     if (!command) return this.handleSelected(msg);
     const thread = this.threadId;
-    return codexBackend.runCommand(thread || this.windowId, () => {
+    return codexBackend.runCommand(thread || this, () => {
       cdpRead.getStore()?.throwIfAborted();
       if (this.app !== 'codex' || this.threadId !== thread) throw new Error('会话已切换，请在当前会话重新操作');
       return this.handleSelected(msg);
@@ -673,8 +675,12 @@ export class Session extends AgentContext {
   }
 
   async handleSelected(msg) {
+    const app = this.app, thread = this.threadId;
+    if (['send', 'pickMenu', 'queue', 'question', 'codexRequest', 'codexPlan', 'codexPick', 'stop'].includes(msg.t)
+        && msg.sel && msg.sel !== this.selectionKey()) throw new Error('会话已切换，操作未执行');
     if (['send', 'pickMenu', 'queue', 'codexRequest', 'codexPlan', 'codexPick', 'stop'].includes(msg.t))
       msg = await this.followCodexOwner(msg);
+    if (this.app !== app || this.threadId !== thread) throw new Error('会话已切换，操作未执行');
     const route = resolveRoute(this, msg.t);
     if (route?.native && this.app !== 'opencode') return this.dispatch(msg, route);
     const target = /^(?:project|thread):/.test(msg.id || '') ? parseAgentRef(msg.id).windowId : this.windowId;

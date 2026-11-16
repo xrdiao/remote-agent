@@ -6,7 +6,6 @@ import { listWindows } from '../windows.mjs';
 import { Cdp, cdpRead, awaitCdpRead } from '../cdp.mjs';
 import { PAGE_SRC, helpersCall } from '../page/build.mjs';
 import { FOCUS_COMPOSER } from '../agent/context.mjs';
-import { activateQueuedAction } from '../agent/queued-action.mjs';
 
 // Shared across phone sessions: thread|start → end ms (null while the turn is still running).
 const devinTurnEnds = new Map();
@@ -22,7 +21,7 @@ export const capabilities = {
 
 export const adapter = {
   async answerRequest(message) {
-    await this.cdp.evaluate(helpersCall(`nativeSessionAction('devin', ${JSON.stringify(this.threadId)}, 'permission', ${JSON.stringify({ id: message.id, n: message.n })})`));
+    await this.cdp.evaluate(helpersCall(`nativeSessionAction('devin', ${JSON.stringify(this.threadId)}, 'question', ${JSON.stringify({ id: message.id, n: message.n, fields: message.fields })})`));
   },
   async newChat() {
     return this.devinNewChat();
@@ -310,12 +309,11 @@ mergeDevinHistory(chat, prepend = false) {
 },
 
 
-// Devin queue rows: hover the row (buttons appear on hover), then tap Send now / Remove from queue.
-// Edit and reorder are not offered. "Clear all" is a bar-level button.
 async devinQueueAction(id, action) {
   if (!['send', 'remove'].includes(action)) throw new Error('不支持的排队操作');
-  const n = /^dq(\d+)$/.exec(String(id))?.[1];
-  return activateQueuedAction(this, a => n == null ? null : this.cdp.evaluate(helpersCall(`devinQueueTarget(${n}${a ? `, ${JSON.stringify(a)}` : ''})`)), action);
+  if (!await this.cdp.evaluate(helpersCall(`devinQueueTarget(${JSON.stringify(String(id))}, ${JSON.stringify(action)})`)))
+    throw new Error('这条排队消息已执行或当前不可操作');
+  this.pollChat(true).catch(() => {});
 },
 
 

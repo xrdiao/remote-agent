@@ -1,3 +1,15 @@
+# 当前检查范围
+
+2026-11-16：按用户确认，删除全部 32 个旧测试套件、浏览器执行器模拟测试及 page/Fusion/Office 共用夹具。功能验收只保留配对浏览器场景，精确时序或协议验证仅允许本轮 `_shots/` 临时夹具，用后删除。语法、协议及 page exports 属于静态检查，继续保留。`npm test` 指向配对浏览器，旧的全量和 Codex 单套入口已移除。
+
+Office 场景使用 `--targets` 运行时文档，缺少文档记为 blocked。浏览器通过不等于手机或另一平台通过。删除清单和本轮证据见 `_shots/locks-permissions-20261116/`。
+
+v483 会话管理定向场景增加：`sessions.native-created`（空会话原生目录）、`sessions.id-read`（Devin 未展开会话按 ID 读取）、`sessions.archive`（Codex/OpenCode 原生归档）、`models.codex-permissions`（三种权限实际回读）。`composer.codex-writer` 覆盖桌面写入者三种权限、完全访问原生确认、重命名和归档收尾。Devin 队列检查使用原生消息 ID，涵盖取回、自然执行、立即发送和停止。执行结果与未验平台见 `VALIDATION.md` 和 `_shots/session-management-20261116/`。
+
+下文为历史审计记录，提到的“保留套件／夹具”已由上述规则取代，不再是可执行检查入口。
+
+---
+
 # 浏览器与关键回归的分工／本轮精简记录
 
 基线：2026-11-15，HEAD `51452bd`，保留开始时已有的测试文件未提交修改。浏览器目录负责真实界面操作；现有关键测试负责竞态、原生协议、持久化与失败边界。`qa:browser -- --list` 只检查场景目录加载，不替代任何行为验收。

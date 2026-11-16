@@ -6,6 +6,7 @@ import { Cdp } from '../../../server/cdp.mjs';
 import { codexWindows } from '../../../server/windows.mjs';
 import { CODEX_CDP_URL } from '../../../server/config.mjs';
 import { PAGE_SRC, helpersCall } from '../../../server/page/build.mjs';
+import { CodexClient } from '../../../server/codex/client.mjs';
 
 export default [
   { id: 'composer.codex-writer', title: '桌面进程持有会话时手机使用同一写入者发送', refs: ['F06', 'F16', 'F17'], mode: 'generate', apps: ['codex'], async run(c, app) {
@@ -28,10 +29,73 @@ export default [
       c.equal(receipt.pending, 0, '桌面持有时手机收到确定发送回执');
       c.equal(receipt.draftLength, 0, '发送成功清空手机草稿');
       c.check(await c.b.read(`lastChat.items.some(item=>item.k==='assistant'&&item.t?.includes(${attr(marker)}))`), '同一原生会话返回真实回复');
+      const permissions = await c.menu('permission'), originalPermission = permissions.find(row => row.checked);
+      c.check(!!originalPermission, '桌面原生权限菜单有当前选项');
+      for (const label of ['Ask for approval', 'Approve for me', 'Full access', originalPermission.label]) {
+        await c.b.click(`#sheet [data-kind="permission"]${by('data-label', label)}`);
+        await c.b.wait('!menuPending', '桌面权限变更回执');
+        if (label === 'Full access') {
+          const request = await c.b.wait("lastChat.questions?.requests?.find(request=>request.id.startsWith('dialog:')&&/Full Access|完全访问/.test(request.text))", '原生完全访问确认卡片');
+          const confirm = request.buttons.findIndex(button => /^(Confirm|确认)$/.test(button.label));
+          c.check(confirm >= 0, '原生完全访问确认操作可见');
+          await c.b.click(`#qnBar [data-request=${attr(request.id)}][data-action="${confirm}"]`);
+          await c.b.wait(`!questionSubmissions.size&&!lastChat.questions?.requests?.some(row=>row.id===${attr(request.id)})`, '完全访问原生确认回执');
+        }
+        const actual = await c.menu('permission');
+        c.check(actual.some(row => row.label === label && row.checked), '桌面写入者权限可切换：' + label);
+      }
+      await c.b.dismiss();
+      const title = c.marker + '-DESKTOP-WRITER', card = await c.reveal(target);
+      await c.b.hold(`${card} .ov-title`);
+      await c.b.dialog(title, () => c.b.click('#sheet [data-agent-action="rename"]'));
+      await c.b.wait(`ovRecs().some(row=>row.app==='codex'&&row.threadId===${attr(target.thread)}&&row.title===${attr(title)})`, '桌面写入者重命名回执');
+      c.check((await c.overview()).sessions.some(row => row.threadId === target.thread && row.title === title), '重命名到达实际桌面写入者');
       return { thread: target.thread, nativeLoaded: owner.loaded, role: owner.role };
     } finally {
       if (original && await native.evaluate(helpersCall('codexThread()')) !== original) await native.evaluate(helpersCall(`openCodexThread(${attr(original)})`));
       native.close();
+    }
+  } },
+  { id: 'composer.codex-release', title: '父子会话完成后释放写入权，退出 RA 后可被另一原生进程接管', refs: ['F06', 'F08', 'F17', 'S06'], mode: 'generate', apps: ['codex'], async run(c, app) {
+    const target = await c.target(app, 'release', true); await c.open(target);
+    await c.send(target, '这是会话释放验收。请用 spawn_agent 创建一个子 Agent，让它只回复 CHILD_DONE，不运行命令或修改文件；用 wait 等待它完成，不调用 close_agent；你最后只回复 PARENT_DONE。');
+    const probe = new CodexClient();
+    let owned, timer;
+    try {
+      await probe.connect();
+      const { thread } = await probe.request('thread/read', { threadId: target.thread, includeTurns: true });
+      const children = [...new Set(thread.turns.flatMap(turn => turn.items).filter(item => item.type === 'collabAgentToolCall').flatMap(item => item.receiverThreadIds))];
+      c.check(children.length > 0, '实际生成了原生子 Agent');
+      c.check(!thread.turns.some(turn => turn.status === 'inProgress'), '父会话已完成');
+      await c.b.home();
+      const releasedAfterMs = {};
+      for (const id of [...children, target.thread]) {
+        const started = Date.now(), deadline = started + c.options.timeout;
+        let resumed;
+        while (!resumed) {
+          try { resumed = await probe.request('thread/resume', { threadId: id }); }
+          catch (error) {
+            if (!/already has an active writer/.test(error.message) || Date.now() >= deadline) throw error;
+            await new Promise(resolve => setTimeout(resolve, 100));
+          }
+        }
+        owned = id; releasedAfterMs[id] = Date.now() - started;
+        c.equal(resumed.thread.id, id, '另一原生进程实际取得写入权：' + id);
+        const closed = new Promise((resolve, reject) => {
+          const changed = packet => { if (packet.method === 'thread/closed' && packet.params.threadId === id) { probe.off('notification', changed); resolve(); } };
+          probe.on('notification', changed);
+          timer = setTimeout(() => { probe.off('notification', changed); reject(new Error('接管验收进程未收到原生关闭确认')); }, c.options.timeout);
+        });
+        await probe.request('thread/unsubscribe', { threadId: id }); await closed; clearTimeout(timer); owned = null;
+      }
+      await c.open(target);
+      const choices = await c.menu('permission');
+      c.check(choices.length === 3, '接管并释放后，RA 权限菜单仍完整'); await c.b.dismiss();
+      return { thread: target.thread, children, writerReleased: true, releasedAfterMs };
+    } finally {
+      clearTimeout(timer);
+      if (owned) await probe.request('thread/unsubscribe', { threadId: owned });
+      probe.close();
     }
   } },
   { id: 'composer.drafts', title: '正文和卡片草稿、A/B 隔离', refs: ['F06'], mode: 'write', apps: true, async run(c, app) {
@@ -129,7 +193,7 @@ export default [
       await c.b.wait(`!lastChat.queued?.some(q=>q.id===${attr(queued.id)})`, '队列删除确认');
     }
     if (draft) await c.draft('');
-    await c.b.dismiss(); await c.b.wait('!lastChat.busy', '原执行结束', c.options.generationTimeout);
+    await c.b.dismiss(); await c.finishGeneration(target, '原执行结束');
     c.check(await c.b.read(`!lastChat.items.some(i=>i.k==='human'&&i.t?.includes(${attr(marker)}))`), '删除或取回的队列未误执行');
     return { queue: queued.id, action: app === 'devin' ? 'take-out' : 'edit-remove' };
   } },

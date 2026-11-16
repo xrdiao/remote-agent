@@ -114,6 +114,13 @@ export class OpenCodeState {
     if (this.automaticSessions.delete(id)) this.saveApprovals([...this.automaticSessions]);
   }
 
+  forgetSession(id) {
+    for (const values of [this.sessions, this.childSessions, this.messages, this.historyPages, this.selections, this.todos, this.statuses]) values.delete(id);
+    for (const values of [this.permissions, this.questions]) for (const [key, request] of values)
+      if (request.sessionID === id) { values.delete(key); this.approvalErrors.delete(key); }
+    this.forgetAutomatic(id);
+  }
+
   approveAutomatically(id) {
     const request = this.permissions.get(id);
     if (!request || !this.automaticSessions.has(request.sessionID) || this.autoReplies.has(id)) return;
@@ -149,12 +156,10 @@ export class OpenCodeState {
     switch (event.type) {
       case 'session.created': case 'session.updated':
         if (!p.info.time.archived) (p.info.parentID ? this.childSessions : this.sessions).set(p.info.id, { ...p.info, directory: localFilePath(p.info.directory) });
-        else { this.sessions.delete(p.info.id); this.childSessions.delete(p.info.id); this.forgetAutomatic(p.info.id); }
+        else this.forgetSession(p.info.id);
         break;
       case 'session.deleted':
-        this.sessions.delete(p.info.id); this.messages.delete(p.info.id); this.historyPages.delete(p.info.id); this.selections.delete(p.info.id);
-        this.childSessions.delete(p.info.id); this.todos.delete(p.info.id);
-        this.forgetAutomatic(p.info.id);
+        this.forgetSession(p.info.id);
         break;
       case 'session.status': this.statuses.set(p.sessionID, p.status); break;
       case 'session.idle': this.statuses.set(p.sessionID, { type: 'idle' }); break;
@@ -239,7 +244,15 @@ export class OpenCodeState {
 
   async loadTasks(id, signal = cdpRead.getStore()) {
     const revision = this.revision, directory = (this.sessions.get(id) || this.childSessions.get(id)).directory;
-    const items = await this.client.request(`/session/${id}/todo`, { directory, signal });
+    let items;
+    try { items = await this.client.request(`/session/${id}/todo`, { directory, signal }); }
+    catch {
+      signal?.throwIfAborted();
+      // Tasks are supplementary: a failed task read must not discard the transcript
+      // or overwrite a newer todo.updated event with an empty snapshot.
+      if ((this.todos.get(id)?.revision || 0) <= revision) this.todos.delete(id);
+      return;
+    }
     if ((this.todos.get(id)?.revision || 0) <= revision) this.todos.set(id, { items, revision });
   }
 

@@ -16,6 +16,7 @@ export default [
   { id: 'execution.queue-delivery', title: '排队后按顺序自然发送', refs: ['F06'], mode: 'generate', apps: ['codex', 'cursor', 'devin'], async run(c, app) {
     const target = await generating(c, app), marker = c.marker + '-QUEUE-NATURAL'; await enqueue(c, marker);
     c.check(await c.b.read('lastChat.queued.length>0'), '真实队列含待发送消息');
+    await c.finishGeneration(target, '排队执行完成');
     await c.b.wait(`!lastChat.busy&&!lastChat.queued?.length&&lastChat.items.some(i=>i.k==='human'&&i.t?.includes(${attr(marker)}))`, '排队后自动执行', c.options.generationTimeout);
     const count = await c.b.read(`lastChat.items.filter(i=>i.k==='human'&&i.t?.includes(${attr(marker)})).length`);
     c.equal(count, 1, '排队原文只提交一次'); c.equal(await c.b.read('text.value'), '', '排队后草稿清空'); return { thread: target.thread };
@@ -26,10 +27,12 @@ export default [
     if (!await c.b.has(button)) await c.b.click('#queueBar [data-qfold]'); await c.b.click(button); await c.b.click('#askOk');
     await c.b.wait(`!lastChat.queued?.some(q=>q.id===${attr(queued.id)})&&lastChat.items.some(i=>i.k==='human'&&i.t?.includes(${attr(marker)}))`, '立即发送原生回执');
     c.check(await c.b.read(`!lastChat.queued?.some(q=>q.id===${attr(queued.id)})`), '立即发送从队列移除');
-    await c.b.wait('!lastChat.busy', '立即发送后生成完成', c.options.generationTimeout); return { thread: target.thread, queue: queued.id };
+    await c.finishGeneration(target, '立即发送后生成完成'); return { thread: target.thread, queue: queued.id };
   } },
   { id: 'execution.stop', title: '原生生成中停止并恢复可编辑', refs: ['F06', 'F17'], mode: 'generate', apps: true, async run(c, app) {
-    const target = await generating(c, app); await c.b.click('#stop');
+    const target = await generating(c, app);
+    if (await c.b.read("document.getElementById('composerFold').getAttribute('aria-expanded')==='false'")) await c.b.click('#composerFold');
+    await c.b.click('#stop');
     await c.b.wait("!!document.querySelector('#askOk')", '停止确认');
     await c.b.click('#askOk');
     await c.b.wait('!lastChat.busy', '原生停止', c.options.generationTimeout);
@@ -43,7 +46,7 @@ export default [
     const result = await c.open(b); c.equal(result.thread, b.thread, 'A 生成未阻塞 B 导航');
     c.check(await c.b.read('!lastChat.busy'), '空白 B 没有沿用 A 的生成状态');
     await c.open(a); c.equal(await c.b.read('lastChat.thread'), a.thread, '回到生成中的 A');
-    await c.b.wait('!lastChat.busy', 'A 结束并同步正文', c.options.generationTimeout);
+    await c.finishGeneration(a, 'A 结束并同步正文');
     c.check(await c.b.read('lastChat.items.length>0'), '最终原生消息仍能加载'); return { a: a.thread, b: b.thread, openBMs: result.elapsedMs };
   } },
   { id: 'execution.live-stats', title: '生成时统计模型、计数及速度数据', refs: ['F08', 'F16', 'R11'], mode: 'generate', apps: true, async run(c, app) {

@@ -18,6 +18,9 @@ const capacityFailure = turn => turn?.status === 'failed' && !turn.nativeRetryin
 const requestKey = row => (row.method === 'item/tool/requestUserInput' ? 'async:' : 'approval:')
   + JSON.stringify([row.params.threadId, row.params.turnId, row.id]);
 const threadSettings = ({ thread, sandbox, reasoningEffort, ...settings }) => ({ ...settings, sandboxPolicy: sandbox, effort: reasoningEffort });
+const reasoningText = item => (item.summary?.length ? item.summary : item.content || []).join('\n');
+const chatTypes = new Set(['userMessage', 'todo-list', 'imageGeneration', 'imageView', 'contextCompaction',
+  'commandExecution', 'fileChange', 'collabAgentToolCall', 'mcpToolCall']);
 
 export class CodexState extends EventEmitter {
   constructor({ client = new CodexClient(), file = path.join(DATA_DIR, 'codex-backend.json') } = {}) {
@@ -37,6 +40,7 @@ export class CodexState extends EventEmitter {
     this.loading = new Map();
     this.commands = new Map();
     this.writers = new Set();
+    this.childParents = new Map();
     this.releasing = new Map();
     this.using = new Map();
     this.reading = new Map();
@@ -49,11 +53,13 @@ export class CodexState extends EventEmitter {
     client.on('request', packet => this.request(packet));
     client.on('disconnected', error => {
       this.writers.clear();
+      this.childParents.clear();
       for (const release of this.releasing.values()) release.reject(error);
       this.releasing.clear();
       for (const thread of this.threads.values()) thread.disconnected = error.message;
       this.requests.clear();
       this.queues.clear();
+      this.childChats.clear();
       this.manualCompactions.clear();
       this.retryAttempts.clear();
       for (const id of this.statistics.keys()) if (!this.owns(id)) this.statistics.delete(id);
@@ -85,10 +91,19 @@ export class CodexState extends EventEmitter {
       await this.releaseIdle(id);
     }
   }
-  releaseIdle(id) {
+  async releaseIdle(id) {
     if (this.releasing.has(id)) return this.releasing.get(id).promise;
     if (!this.writers.has(id) || this.using.has(id) || busyTurn(this.threads.get(id)) || this.queues.get(id)?.length
       || this.manualCompactions.has(id) || this.retrying.has(id) || [...this.requests.values()].some(row => row.params.threadId === id)) return Promise.resolve();
+    const parent = this.childParents.get(id);
+    if (parent && this.hasWriter(parent) && busyTurn(this.threads.get(parent))) return;
+    const children = [...this.childParents].filter(([, parent]) => parent === id).map(([child]) => child);
+    if (children.length) {
+      await Promise.all(children.map(child => this.releaseIdle(child)));
+      if (children.some(child => this.hasWriter(child))) return;
+      if (this.releasing.has(id)) return this.releasing.get(id).promise;
+      if (this.using.has(id) || busyTurn(this.threads.get(id))) return;
+    }
     let resolve, reject;
     const promise = new Promise((yes, no) => { resolve = yes; reject = no; });
     this.releasing.set(id, { promise, resolve, reject });
@@ -96,6 +111,16 @@ export class CodexState extends EventEmitter {
       if (result.status === 'notLoaded') { this.writers.delete(id); this.releasing.delete(id); resolve(); }
     }, error => { this.releasing.delete(id); reject(error); });
     return promise;
+  }
+  async trackChild(parent, id) {
+    if (this.childParents.has(id)) return;
+    this.childParents.set(id, parent);
+    this.threads.set(id, { id, cwd: this.threads.get(parent).cwd, turns: [], settings: {} });
+    this.writers.add(id);
+    return this.withWriter(id, async () => {
+      const thread = await this.refresh(id);
+      if (thread.parentThreadId !== parent) throw new Error('原生子会话的父会话与创建回执不一致');
+    });
   }
   draft(id, text, at = Date.now()) {
     if (text !== undefined) {
@@ -163,6 +188,7 @@ export class CodexState extends EventEmitter {
     return this.statistics.get(id);
   }
   remember(thread) {
+    if (this.childParents.has(thread.id)) return;
     thread.cwd = localFilePath(thread.cwd);
     const previous = this.records.get(thread.id);
     this.records.set(thread.id, { id: thread.id, cwd: thread.cwd, title: thread.name || thread.preview || previous?.title || '新会话',
@@ -175,7 +201,7 @@ export class CodexState extends EventEmitter {
   async create(cwd) {
     cwd = localFilePath(cwd);
     await this.client.connect();
-    const result = await this.client.request('thread/start', { cwd, config: { thread_unload_delay_secs: 0 } });
+    const result = await this.client.request('thread/start', { cwd });
     const thread = { ...result.thread, settings: threadSettings(result), generation: this.client.generation };
     if (!samePath(path.resolve(localFilePath(thread.cwd)), path.resolve(cwd))) throw new Error('Codex 返回的会话项目与所选目录不一致');
     // Native naming commits an empty thread before it can be restored after process exit.
@@ -198,7 +224,7 @@ export class CodexState extends EventEmitter {
       await this.releasing.get(id)?.promise;
       let thread = this.threads.get(id);
       if (!this.writers.has(id)) {
-        const result = await this.client.request('thread/resume', { threadId: id, config: { thread_unload_delay_secs: 0 } });
+        const result = await this.client.request('thread/resume', { threadId: id });
         thread = { ...result.thread, settings: threadSettings(result), generation: this.client.generation };
         if (thread.id !== id) throw new Error('Codex 返回的会话 ID 与所选会话不一致');
         const previous = this.records.get(id);
@@ -246,7 +272,7 @@ export class CodexState extends EventEmitter {
         cwd: source.cwd, model: settings.model || source.model,
         approvalPolicy: settings.approvalPolicy, approvalsReviewer: settings.approvalsReviewer,
         sandbox: { readOnly: 'read-only', workspaceWrite: 'workspace-write', dangerFullAccess: 'danger-full-access' }[settings.sandboxPolicy?.type],
-        config: { model_reasoning_effort: settings.effort ?? settings.reasoningEffort ?? null, thread_unload_delay_secs: 0 } });
+        config: { model_reasoning_effort: settings.effort ?? settings.reasoningEffort ?? null } });
       const thread = { ...result.thread, settings: threadSettings(result), generation: this.client.generation };
       if (!samePath(path.resolve(localFilePath(thread.cwd)), path.resolve(localFilePath(source.cwd)))) throw new Error('Codex 分叉会话的项目与源会话不一致');
       const original = this.statisticsFor(id), early = this.statisticsFor(thread.id);
@@ -290,10 +316,19 @@ export class CodexState extends EventEmitter {
 
   notification({ method, params: p }) {
     if (method === 'thread/closed') {
+      this.childChats.delete(p.threadId);
       this.writers.delete(p.threadId);
       const release = this.releasing.get(p.threadId);
       this.releasing.delete(p.threadId);
       release?.resolve();
+      const parent = this.childParents.get(p.threadId);
+      this.childParents.delete(p.threadId);
+      if (parent) {
+        this.threads.delete(p.threadId);
+        this.statistics.delete(p.threadId);
+        this.queues.delete(p.threadId);
+        this.releaseIdle(parent).catch(error => this.changed(parent, error));
+      }
       return;
     }
     if (method === 'thread/started' || method === 'thread/name/updated') {
@@ -319,11 +354,12 @@ export class CodexState extends EventEmitter {
     else if (method === 'thread/name/updated') { thread.name = p.threadName; this.remember(thread); }
     else if (method === 'thread/queue/changed') {
       this.queueRevisions.set(id, (this.queueRevisions.get(id) || 0) + 1);
-      this.readQueue(id).catch(error => this.changed(id, error));
+      this.readQueue(id).then(() => this.releaseIdle(id)).catch(error => this.changed(id, error));
     } else if (method === 'serverRequest/resolved') this.requests.delete(p.requestId);
     else if (method === 'turn/plan/updated') {
       const rows = this.statisticsFor(id);
       rows[p.turnId] = { ...rows[p.turnId], plan: p.plan };
+      this.remember(thread);
     }
     else if (method === 'turn/started' || method === 'turn/completed') {
       const old = thread.turns.find(turn => turn.id === p.turn.id);
@@ -352,6 +388,10 @@ export class CodexState extends EventEmitter {
         const item = p.item.type === 'contextCompaction' ? { ...p.item, source: previous?.source || (this.manualCompactions.has(id) ? 'manual' : 'auto') } : p.item;
         if (previous) Object.assign(previous, item);
         else turn.items.push(item);
+        if (method === 'item/completed' && item.type === 'collabAgentToolCall' && item.tool === 'spawnAgent'
+          && item.senderThreadId === id && this.hasWriter(id))
+          for (const child of item.receiverThreadIds)
+            this.trackChild(id, child).catch(error => this.changed(id, error));
         if (item.type === 'contextCompaction' && method === 'item/completed') this.manualCompactions.delete(id);
       }
     } else if (method.startsWith('item/') && method.endsWith('Delta') || method === 'item/agentMessage/delta' || method === 'item/plan/delta') {
@@ -371,7 +411,7 @@ export class CodexState extends EventEmitter {
     }
     this.changed(id);
     if (method === 'turn/completed') this.retryCapacity(id);
-    if (method === 'turn/completed' || method === 'serverRequest/resolved')
+    if (method === 'turn/completed' || method === 'serverRequest/resolved' || method === 'thread/status/changed')
       this.releaseIdle(id).catch(error => this.changed(id, error));
   }
 
@@ -487,13 +527,28 @@ export class CodexState extends EventEmitter {
     return this.chat(id, 60, thread);
   }
 
+  async readChildren(parent, item) {
+    if (item.senderThreadId !== parent.id) throw new Error('子 Agent 工具不属于当前会话');
+    const cache = this.childChats.get(parent.id) || new Map();
+    this.childChats.set(parent.id, cache);
+    await Promise.all([...new Set(item.receiverThreadIds || [])].map(async id => {
+      cache.delete(id);
+      const { thread } = await this.client.request('thread/read', { threadId: id, includeTurns: true });
+      if (thread.id !== id || thread.parentThreadId !== parent.id
+        || parent.projectId && thread.projectId !== parent.projectId) return;
+      // Archiving/closing the parent while the read is pending must not restore its cache.
+      if (this.childChats.get(parent.id) === cache) cache.set(id, this.chat(id, 60, thread));
+    }));
+  }
+
   chat(id, limit = 60, thread = this.threads.get(id), tools = null) {
     const turn = thread.disconnected ? null : busyTurn(thread), latest = thread.turns.at(-1), items = [];
     const all = thread.turns.flatMap(row => {
       const last = row.status === 'completed' && row.items.findLast(item => item.type === 'agentMessage' && item.text);
       const plan = this.statistics.get(id)?.[row.id]?.plan || [];
       return [...row.items, ...(plan.length ? [{ type: 'todo-list', id: row.id + ':tasks', plan }] : [])].map(item => ({ item, turn: row, fork: item === last }));
-    });
+    }).filter(({ item }) => item.type === 'reasoning' ? !!reasoningText(item).trim()
+      : item.type === 'agentMessage' || item.type === 'plan' ? !!item.text?.trim() : chatTypes.has(item.type));
     for (const { item, turn: owner, fork } of all.slice(-limit)) {
       const base = { i: item.id, order: owner.startedAt * 1000 || thread.createdAt * 1000 };
       if (item.type === 'userMessage') {
@@ -508,7 +563,7 @@ export class CodexState extends EventEmitter {
           done: item.plan.filter(step => step.status === 'completed').length,
           items: item.plan.map(step => ({ t: step.step, status: step.status === 'completed' ? 'done' : step.status })) });
       } else if (item.type === 'reasoning') {
-        const text = (item.summary?.length ? item.summary : item.content || []).join('\n');
+        const text = reasoningText(item);
         if (text) items.push({ ...base, k: 'thinking', t: '思考\n' + text, live: !thread.disconnected && owner.status === 'inProgress' });
       } else if (item.type === 'imageGeneration') {
         const image = generatedImageSource(item);
@@ -528,8 +583,8 @@ export class CodexState extends EventEmitter {
       } else if (item.type === 'collabAgentToolCall') {
         const details = !tools || tools.has(item.id);
         items.push({ ...base, k: 'tool', src: 'codex', kind: 'other', t: `${item.tool} · ${item.status}`, status: item.status,
-          ...(details ? { output: JSON.stringify(item.agentsStates || {}), children: (item.receiverThreadIds || []).filter(child => this.childChats.has(child)).map(child => ({
-            id: child, title: item.agentsStates?.[child]?.nickname || child, items: this.childChats.get(child).items,
+          ...(details ? { output: JSON.stringify(item.agentsStates || {}), children: (item.receiverThreadIds || []).filter(child => this.childChats.get(id)?.has(child)).map(child => ({
+            id: child, title: item.agentsStates?.[child]?.nickname || child, items: this.childChats.get(id).get(child).items,
           })) } : {}) });
       } else if (item.type === 'mcpToolCall') items.push({ ...base, k: 'tool', src: 'codex', kind: 'command', t: `${item.server} · ${item.tool}`.slice(0, 240),
         ...(!tools || tools.has(item.id) ? { output: JSON.stringify(item.result || item.error || '') } : {}), status: item.status });
@@ -566,6 +621,17 @@ export class CodexState extends EventEmitter {
     };
   }
 
+  forget(id) {
+    this.manualCompactions.delete(id);
+    this.childChats.delete(id);
+    for (const children of this.childChats.values()) children.delete(id);
+    this.records.delete(id); this.threads.delete(id); this.queues.delete(id); this.drafts.delete(id); this.draftTimes.delete(id); this.nativeDrafts.delete(id); this.statistics.delete(id); this.save();
+    this.writers.delete(id);
+    this.retryAttempts.delete(id);
+    for (const [key, request] of this.requests) if (request.params.threadId === id) this.requests.delete(key);
+    for (const [owner, settings] of this.retrySettings) if (settings.id === id) this.retrySettings.delete(owner);
+    this.emit('catalogChanged', id);
+  }
   async manage(id, action, name) {
     return this.withWriter(id, async () => {
       if (action === 'rename') {
@@ -575,16 +641,13 @@ export class CodexState extends EventEmitter {
         this.remember(this.threads.get(id));
       } else if (action === 'archive') {
         await this.client.request('thread/archive', { threadId: id });
-        this.manualCompactions.delete(id);
-        this.records.delete(id); this.threads.delete(id); this.queues.delete(id); this.drafts.delete(id); this.draftTimes.delete(id); this.nativeDrafts.delete(id); this.statistics.delete(id); this.save();
-        this.writers.delete(id);
-        this.retryAttempts.delete(id);
+        this.forget(id);
       } else throw new Error('不支持的 Codex 会话操作');
       this.changed(id);
     });
   }
   states() {
-    return [...this.threads.keys()].map(id => {
+    return [...this.threads.keys()].filter(id => !this.childParents.has(id)).map(id => {
       const chat = this.chat(id);
       return { thread: id, title: chat.title, busy: chat.busy, waiting: chat.waiting, waitingText: chat.waitingText,
         last: chat.items.findLast(item => item.k === 'assistant')?.t || '', generation: chat.generation,

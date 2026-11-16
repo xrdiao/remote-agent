@@ -1097,7 +1097,7 @@ function renderQuestions(qs) {
           submit.disabled = !el.value.trim();
         }
       };
-      el.onchange = () => { if (!el.dataset.request.startsWith('async:')) send({ t: 'codexRequest', id: el.dataset.request, field: Number(el.dataset.field), value: questionFieldValue(el) }); };
+      el.onchange = () => { if (qs.src !== 'devin' && !el.dataset.request.startsWith('async:')) send({ t: 'codexRequest', id: el.dataset.request, field: Number(el.dataset.field), value: questionFieldValue(el) }); };
       if (qnDrafts.has(key)) el.oninput();
       if (key === focusKey && !qnPending) {
         el.focus();
@@ -1849,7 +1849,7 @@ function dressMessage(el) {
     if (/^https?:\/\/\S+$/i.test(t) && !code.closest('a')) {
       const a = document.createElement('a'); a.href = t; a.textContent = t; code.replaceChildren(a); return;
     }
-    if (!code.closest('a') && !/[\s`<>]/.test(t) && (RemoteAgentRules.uploadDocument(t) || Object.keys(RemoteAgentRules.previewImageTypes).some(ext => t.toLowerCase().endsWith(ext)))) {
+    if (!code.closest('a') && !/[\s`<>]/.test(t) && (/\.(?:pdf|docx?|xlsx|pptx)$/i.test(t) || Object.keys(RemoteAgentRules.previewImageTypes).some(ext => t.toLowerCase().endsWith(ext)))) {
       code.dataset.file = t;
       return;
     }

@@ -15,6 +15,22 @@ async function withTools(c, app, inspect) {
 }
 
 export default [
+  { id: 'conversation.codex-empty-reasoning', title: '旧 Codex 会话空思考不占首屏名额，正文及历史保持可见', refs: ['F07', 'F18', 'R07'], mode: 'read', apps: ['codex'], async run(c, app) {
+    const target = await c.target(app, 'long'); await c.open(target);
+    const first = await c.b.read('({items:lastChat.items.map(i=>({id:i.i,k:i.k,text:i.t})),earlier:lastChat.earlier})');
+    c.equal(first.items.length, 60, '首屏保留 60 条有效内容');
+    c.check(first.items.some(item => item.k === 'assistant' && item.text?.trim()), '旧样本首屏有助手正文');
+    c.check(!first.items.some(item => item.k === 'thinking' && !item.text?.replace(/^思考\s*/, '').trim()), '空思考未占分页名额');
+    await c.b.wait("document.getElementById('items').textContent.trim().length>0", '旧样本正文实际呈现');
+    c.check(first.earlier, '仍可追加更早历史');
+    await c.b.click('#older');
+    await c.b.wait(`lastChat?.thread===${attr(target.thread)}&&lastChat.items.length>${first.items.length}&&!historyRequest&&!historyRendering`, '旧样本有效历史呈现完成');
+    const after = await c.b.read('({ids:lastChat.items.map(i=>i.i),thread:lastChat.thread})');
+    c.equal(after.thread, target.thread, '分页不改变所属会话');
+    c.equal(new Set(after.ids).size, after.ids.length, '追加历史没有重复条目');
+    c.check(after.ids.length > first.items.length, '追加历史包含更早有效内容');
+    return { first: first.items.length, after: after.ids.length };
+  } },
   { id: 'conversation.tasks', title: '原生任务清单、完成进度及折叠状态', refs: ['F07', 'F18'], mode: 'read', apps: true, async run(c, app) {
     const target = await c.target(app); await c.open(target);
     const task = await c.b.read("lastChat.items.findLast(item=>item.k==='tasks')||null");

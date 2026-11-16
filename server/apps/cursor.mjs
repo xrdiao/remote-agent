@@ -61,7 +61,10 @@ export const adapter = {
         const info = await h.nativeSessionInfo('cursor', id, 'context');
         if (!window.__remoteAgentCursorServices) throw new Error('Cursor 原生会话目录尚未就绪');
         if (!info) throw new Error('Cursor 原生目录中没有这个会话');
-        if (window.__remoteAgentCursorServices.data.getComposerDataIfLoaded(id)?.isArchived) throw new Error('这个 Cursor 会话已归档');
+        const peek = await window.__remoteAgentCursorServices.data.composerDataHandleManager.peekComposerData(id);
+        const data = peek?.source === 'memory' ? peek.handle.data : peek?.data;
+        if (!data) throw new Error('Cursor 原生目录中没有这个会话');
+        if (data.isArchived) throw new Error('这个 Cursor 会话已归档');
         if (h.activeThread() !== id) await window.__remoteAgentCursorServices.composer.openComposer(id);
       })()`);
       for (let i = 0; i <= 12; i++) {

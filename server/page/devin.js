@@ -501,33 +501,31 @@
     const cursor = window.__SSG_COMPOSER_PROVIDER__?.getStates?.().find(s => s.id === activeThread());
     return cursor?.state === 'generating' || !!stopGenerationButton() || !!legacyStopIcon() || devinSubmitBusy();
   };
-  // Devin's queue (verified live): a bar "N message(s) queued" with a "Clear all" button, then an <ol>
-  // of li[role=button] rows holding the message text. Hovering a row reveals "Edit message",
-  // "Remove from queue" and "Send now" (hidden until hover). Rows are read from textContent.
-  const devinQueueText = () => devinQueueBar()?.innerText || '';
+  // Queue data comes from the bound session; native controller callbacks use the same entry IDs.
   const devinQueueBar = () => [...document.querySelectorAll('span.text-12')].find(s => {
     const text = s.innerText || '';
     const count = Number(/\d+/.exec(text)?.[0]);
     return count > 0 && text.trim() === devinText('inputBox.queuedMessagesCount', { count })
       || /\d+\s+messages?\s+queued/i.test(text) || /排队(?:中)?\s*\d+\s*条/.test(text);
   });
-  const devinQueueCount = () => {
-    const text = devinQueueText();
-    return Number(/\d+/.exec(text)?.[0]) || 0;
+  const devinQueueCount = () => devinQueued().length;
+  const devinQueued = (thread = remoteContext?.app === 'devin' ? remoteContext.threadId : activeThread()) => {
+    const data = devinSessionData(thread);
+    return (data?.localQueuedMessages.length ? data.localQueuedMessages : data?.queuedMessages || []).map(row => ({
+      id: String(row.id), t: devinMessageText(row.content).slice(0, 4000), src: 'devin',
+    }));
   };
-  const devinQueueRows = () => devinQueueBar() ? [...document.querySelectorAll('ol li[role="button"]')].filter(e => /cursor-grab/.test(e.className)) : [];
-  const devinQueued = () => devinQueueRows().map((row, n) => ({
-    id: `dq${n}`,
-    t: (row.innerText || '').replace(/[ \t]+/g, ' ').replace(/\n{3,}/g, '\n\n').trim().slice(0, 4000),
-    src: 'devin',
-  }));
-  const devinQueueTarget = (n, action) => {
-    const row = devinQueueRows()[Number(n)];
-    if (!row || !vis(row)) return null;
-    if (!action) return center(row);
-    const label = { send: 'Send now', remove: 'Remove from queue' }[action];
-    const b = label && [...row.querySelectorAll('button[aria-label]')].find(e => vis(e) && nativeLabel(e.getAttribute('aria-label'), label));
-    return b ? center(b) : null;
+  const devinQueueTarget = (id, action) => {
+    const bar = devinQueueBar();
+    const props = bar && codexFiberProps(bar, Infinity).find(props => Array.isArray(props.entries) && props.entries.some(entry => String(entry.id) === id) && typeof props.onRemove === 'function');
+    if (!props) return null;
+    if (!action) return center(bar);
+    if (props.controlsDisabled) return null;
+    const entry = props.entries.find(entry => String(entry.id) === id);
+    const handler = action === 'send' && !entry.sendDisabled ? props.onSendNow : action === 'remove' ? props.onRemove : null;
+    if (!handler) return null;
+    handler(entry.id);
+    return true;
   };
   const devinQueueClearTarget = () => {
     const b = [...document.querySelectorAll('button[aria-label]')].find(e => vis(e) && nativeLabel(e.getAttribute('aria-label'), 'Clear all'));
@@ -686,9 +684,10 @@
   const devinNativeRequests = thread => [...devinPermissions(thread), ...devinElicitationEntries(thread).map(({ id, params }) => ({ id,
     text: params.message, fields: RemoteAgentRules.elicitationFields(params.requestedSchema),
     buttons: ['accept', 'decline', 'cancel'].map(label => ({ label })) }))];
-  const devinQuestions = () => {
-    const requests = devinPermissions(remoteContext?.app === 'devin' ? remoteContext.threadId : activeThread());
+  const devinQuestions = (thread = remoteContext?.app === 'devin' ? remoteContext.threadId : activeThread()) => {
+    const requests = devinNativeRequests(thread);
     if (requests.length) return { codex: true, src: 'devin', requests, list: [] };
+    if (activeThread() !== thread) return null;
     const band = devinQnBand();
     if (!band) return null;
     const pg = /\b(\d+) of (\d+)\b/.exec(band.innerText || '');
@@ -938,7 +937,7 @@
     if (!devinSessionRecord(id)) throw new Error('Devin 原生目录中没有这个会话');
     const found = devinNativeSubmission(id);
     if (!found) throw new Error('Devin 原生输入框尚未就绪');
-    const before = new Set(devinQueueRows());
+    const before = new Set(devinQueued(id).map(row => row.id));
     if (typeof found.props.onEnqueue !== 'function') {
       found.props.onSubmit();
       return { queued: true, now: spec.now === true };
@@ -946,12 +945,10 @@
     found.props.onEnqueue();
     await new Promise(resolve => requestAnimationFrame(resolve));
     devinCheckSession(id);
-    const row = devinQueueRows().find(row => !before.has(row));
+    const row = devinQueued(id).find(row => !before.has(row.id));
     if (!row) throw new Error('Devin 原生队列没有接受这条消息');
     if (spec.now === true) {
-      const button = [...row.querySelectorAll('button[aria-label]')].find(el => nativeLabel(el.getAttribute('aria-label'), 'Send now'));
-      if (!button) throw new Error('Devin 原生立即发送入口尚未就绪');
-      button.click();
+      if (!devinQueueTarget(row.id, 'send')) throw new Error('Devin 原生立即发送入口尚未就绪');
     }
     return { queued: true, now: spec.now === true };
   };

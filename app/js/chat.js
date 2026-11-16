@@ -35,7 +35,7 @@ itemsEl.addEventListener('click', async e => {
     }
     const chev = tr.querySelector('.chev');
     if (chev) chev.textContent = box.classList.contains('open') ? '▾' : '▸';
-    const hit = cache.get(box.dataset.i);
+    const hit = box.dataset.readOnly ? null : cache.get(box.dataset.i);
     if (hit && box.classList.contains('open')) { hit.refresh = true; hit.key = null; queueChatRender(); }
     if (isFollowingBottom()) requestChatScroll();
     return;
@@ -50,10 +50,10 @@ itemsEl.addEventListener('click', async e => {
   box.classList.toggle('open', next);
   b.querySelector('.tha').textContent = next ? '收起' : '展开';
   if (body) body.hidden = !next;
-  const hit = cache.get(box.dataset.i);
+  const hit = box.dataset.readOnly ? null : cache.get(box.dataset.i);
   if (hit && next) { hit.refresh = true; hit.key = null; queueChatRender(); }
   // Devin thoughts beyond the payload budget arrive title-only; fetch the body on first open.
-  if (next && b.dataset.more && !thoughtFull.has(b.dataset.think)) {
+  if (next && !box.dataset.readOnly && b.dataset.more && !thoughtFull.has(b.dataset.think)) {
     requestThought(b.dataset.think);
   }
 });
@@ -309,6 +309,7 @@ function renderItem(it, readOnly = false) {
   const el = document.createElement('div');
   el.className = 'msg ' + it.k;
   el.dataset.i = it.i;
+  if (readOnly) el.dataset.readOnly = '1';
   if (it.k === 'notice') {
     el.innerHTML = `<span>${esc(it.t || '')}</span>`;
     el.classList.toggle('capacity', it.kind === 'capacity');

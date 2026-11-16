@@ -13,7 +13,7 @@ const textTypes = new Set(textExtensions.map(ext => '.' + ext));
 const images = imageTypes;
 const documents = new Set(documentExtensions.map(ext => '.' + ext));
 
-async function parseDocument(file) {
+export async function parseDocument(file) {
   const ast = await parseOffice(file, { ocr: false, extractAttachments: false });
   if (!ast.toText().trim()) return '';
   if (ast.type === 'xlsx') ast.content = ast.content.flatMap(sheet => [

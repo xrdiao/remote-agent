@@ -315,9 +315,15 @@
       return { items: (config?.options || []).flatMap(group => group.options || [group]).map(option => ({
         label: option.name, id: option.value, desc: option.description || '', checked: option.value === config.currentValue })) };
     }
-    if (app === 'codex' && catalog === 'refreshCatalog')
-      return codexConversationManager(null, codexHistoryScopes(), 'local').refreshRecentConversations({ afterCurrent: true })
-        .then(() => codexQueryClient().refetchQueries({ queryKey: ['recent-conversations-meta'], type: 'all' }, { throwOnError: true, cancelRefetch: false })).then(() => true);
+    if (app === 'codex' && catalog === 'refreshCatalog') return (async () => {
+      const manager = codexConversationManager(null, codexHistoryScopes(), 'local');
+      await manager.refreshRecentConversations({ afterCurrent: true });
+      await codexQueryClient().refetchQueries({ queryKey: ['recent-conversations-meta'], type: 'all' }, { throwOnError: true, cancelRefetch: false });
+      if (id) await manager.threadStore.hydrateThreads([id], {
+        addToRecentConversations: true, notifyAnyCallbacks: true, shouldThrowOnReadError: true,
+      });
+      return true;
+    })();
     if (app === 'codex' && catalog === 'connection') return (async () => {
       const manager = codexConversationManager(id, codexHistoryScopes(), 'local');
       if (!manager) return null;
@@ -556,6 +562,8 @@
           ...(name.role === 'main' ? {} : { subagentInfo: { parentComposerId: id, subagentTypeName: 'side-chat' } }) },
       }));
       window.__remoteAgentNativeCreations.get(name.requestId).nativeThreadId = created.composerId;
+      await services.data.persistComposerWorkspacePlacement(created.composerId, { name: name.title });
+      await services.data.syncComposerHeadersFromCanonicalStorage();
       return nativeSessionContext(app, created.composerId);
     }
     if (action === 'createNative' && app === 'devin') {

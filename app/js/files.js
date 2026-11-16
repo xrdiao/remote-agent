@@ -251,7 +251,7 @@ $('vDownload').onclick = async () => {
   const target = fileDownload;
   $('vDownload').disabled = true;
   try { await downloadComputerFiles(target.computer, [target.path]); }
-  catch (error) { status(error.message); }
+  catch (error) { if (fileDownload === target) status(error.message); }
   finally { if (fileDownload === target) $('vDownload').disabled = false; }
 };
 async function openFile(ref, diff = '', fromChanges = false, computer = null) {
@@ -311,7 +311,7 @@ function showFile(m) {
   }
   if (m.downloadOnly) {
     $('vWrap').hidden = true;
-    body.innerHTML = '<div class="note">ZIP 压缩包，请点击上方“下载”保存原文件。</div>';
+    body.innerHTML = '<div class="note">' + (/\.zip$/i.test(m.path) ? 'ZIP 压缩包' : '此格式暂不支持预览') + '，请点击上方“下载”保存原文件。</div>';
     return;
   }
   if (m.video) {

@@ -1307,7 +1307,7 @@
       items,
       global,
       busy: isBusy(),
-      queued: devinLog() ? devinQueued() : (codexFacts()?.queued || queued()),
+      queued: devinSurface() ? devinQueued() : (codexFacts()?.queued || queued()),
       ...(devinLog() ? { queuedCount: devinQueueCount() } : {}),
       subagents: subagents(),
       changed: changedCount(),
@@ -1354,6 +1354,11 @@
     ...(images.length ? { images } : {}) });
   const cursorMessageImages = message => (message.context?.selectedImages || []).map(image => image.path);
   const nativeConversationChat = async (history, limit, beforeItem = null, context = remoteContext) => {
+    if (context.app === 'devin') return devinReadSession(context.threadId,
+      () => nativeConversationData(history, limit, beforeItem, context));
+    return nativeConversationData(history, limit, beforeItem, context);
+  };
+  const nativeConversationData = async (history, limit, beforeItem, context) => {
     const { app, threadId: thread } = context;
     let items = [], earlier = false, before = 0, questions = null, title = '', draft, performanceData;
     if (app === 'cursor') {
@@ -1394,9 +1399,9 @@
         const agents = await Promise.all(data.subagentComposerIds.map(async id => {
           const peek = await cursorSessionServices().data.composerDataHandleManager.peekComposerData(id);
           const child = peek?.source === 'memory' ? peek.handle.data : peek?.data;
-          return { id, title: child?.name || id };
+          return child && !child.isArchived ? { id, title: child.name || id } : null;
         }));
-        items.push({ i: thread + ':subagents', k: 'tool', t: '子 Agent', agents });
+        items.push({ i: thread + ':subagents', k: 'tool', t: '子 Agent', agents: agents.filter(Boolean) });
       }
       title = data.name || ''; draft = data.text;
       earlier = end > headers.length;
@@ -1417,9 +1422,7 @@
         items.push({ i: 'acp' + messages.length + ':error', k: 'tool', kind: 'error', t: failure[1].errorMessage, keep: true });
       title = session.title || '';
       before = Math.max(0, end - limit); earlier = before > 0;
-      const requests = devinNativeRequests(thread);
-      if (requests.length) questions = { codex: true, src: 'devin', requests, list: [] };
-      else if (activeThread() === thread) questions = devinQuestions();
+      questions = devinQuestions(thread);
       items = items.map(item => ({ ...item, src: 'devin' }));
     }
     if (history) {
@@ -1434,7 +1437,7 @@
     });
     return { thread, title, items, global: [], rect: [0, 0, 0, 0], busy: run?.status === 'running', readonly: false,
       _nativeState: { thread, title, run, busy: run?.status === 'running', host: remoteContext.host, workspace: remoteContext.cwd, ...waiting },
-      queued: app === 'cursor' ? (cursorPendingTool().data.queueItems || []).map(item => ({ id: item.id, t: item.query, src: 'cursor' })) : [],
+      queued: app === 'cursor' ? (cursorPendingTool().data.queueItems || []).map(item => ({ id: item.id, t: item.query, src: 'cursor' })) : devinQueued(thread),
       questions, changed, subagents: [], earlier, historyBefore: before,
       model: agentModelName(), effort: effortName(), permission: null, context: app === 'devin' ? contextPct() : null,
       ...((app === 'devin' || app === 'cursor') ? { mode: nativeSessionInfo(app, thread, 'mode').items.find(item => item.checked)?.label || null } : {}),

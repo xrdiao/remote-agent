@@ -38,7 +38,6 @@ export function overviewSnapshot(deviceId) {
     }
     const rows = new Map((catalog?.rows || []).map(row => [sessionId(win.app, row.id), row]));
     const local = new Map((source.catalog || []).map(row => [sessionId(win.app, row.id), row]));
-    const devinThreads = win.app === 'devin' ? new Set((snap?.states || []).map(state => sessionId(win.app, state.thread))) : null;
     const workspaceIds = new Set([...local.keys()].map(id => rows.get(id)?.workspaceId).filter(Boolean));
     const belongs = row => row.workspace
       ? roots.some(root => (root.host || '') === (row.host || '') && samePath(root.root, row.workspace, !row.host))
@@ -72,13 +71,12 @@ export function overviewSnapshot(deviceId) {
         actions: s.actions || [], devin: !!s.devin, changed: s.changed || 0, acceptAll: !!s.acceptAll, changes: s.changes || null, lastUsed: Number.isFinite(s.lastUsed) ? s.lastUsed : 0,
         favorite: record?.favorite === true, lastMessageAt: Number(record?.lastMessageAt) || 0,
         workspace, host,
-        ...(win.app === 'devin' ? { dormant: !local.has(key) && !devinThreads.has(key) && key !== sessionId(win.app, snap?.chat?.thread) } : {}),
       };
       if (win.app === 'devin' && value.statusKnown && s.busy === false && value.run?.status === 'unknown') value.run = null;
       const identity = JSON.stringify([project, key]), previous = collected.get(identity);
       const quality = Number(!!s.run && s.run.status !== 'unknown') * 4 + Number(!!s.run) * 2
         + Number(key === sessionId(win.app, snap?.chat?.thread));
-      const owner = win.app === 'devin' ? Number(!value.dormant) * 2 + Number(belongs(row)) : 0;
+      const owner = win.app === 'devin' ? Number(belongs(row)) : 0;
       if (!previous || owner > previous.owner || owner === previous.owner && ((s.run?.startedAt || 0) > (previous.value.run?.startedAt || 0)
         || (s.run?.startedAt || 0) === (previous.value.run?.startedAt || 0)
           && (quality > previous.quality || quality === previous.quality && source.updatedAt > previous.updatedAt)))

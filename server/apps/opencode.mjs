@@ -103,7 +103,7 @@ async function bind(s, req) {
   const directory = safeHomePath(req.project?.root || native?.directory || req.windowId ||
     [...openCode.sessions.values()].sort((a, b) => b.time.updated - a.time.updated)[0]?.directory || os.homedir()).real;
   if (native && !samePath(native.directory, directory)) throw new Error('OpenCode 会话不属于所选项目');
-  const thread = native || (!req.newSession && [...openCode.sessions.values()]
+  const thread = native || (req.newSession ? await createSession(directory) : [...openCode.sessions.values()]
     .filter(row => samePath(row.directory, directory)).sort((a, b) => b.time.updated - a.time.updated)[0]);
   if (thread) await Promise.all([openCode.loadMessages(thread.id), openCode.loadTasks(thread.id)]);
   cdpRead.getStore()?.throwIfAborted();
@@ -133,17 +133,22 @@ async function list(s, m = {}) {
   s.emit({ t: 'agents', app: 'opencode', sel: s.selectionKey(), silent: m.silent === true, list: rows });
 }
 
+async function createSession(directory) {
+  const native = await openCode.client.request('/session', { directory, method: 'POST', body: {}, signal: cdpRead.getStore() });
+  native.directory = localFilePath(native.directory);
+  openCode.sessions.set(native.id, native);
+  openCode.selections.set(native.id, openCode.selection(directory));
+  openCode.changed(native.id);
+  cdpRead.getStore()?.throwIfAborted();
+  return native;
+}
+
 async function ensureSession(s) {
   if (s.threadId) return;
-  const model = openCode.selection(s.openCodeDirectory);
-  const native = await openCode.client.request('/session', { directory: s.openCodeDirectory, method: 'POST', body: {}, signal: cdpRead.getStore() });
-  native.directory = localFilePath(native.directory);
-  cdpRead.getStore()?.throwIfAborted();
-  openCode.sessions.set(native.id, native);
+  const native = await createSession(s.openCodeDirectory);
   s.threadId = s.selectedThread = native.id;
   s.openCodePages.set(native.id, viewPage(native.id));
   s.clearViewState();
-  openCode.selections.set(native.id, model);
   s.stopChatUpdates();
   s.chatUpdatesStop = watch(s);
   rememberSelection(s.deviceId, selection(s));
@@ -162,11 +167,11 @@ export async function manageOpenCodeSession(id, action, name) {
     publishSessionChange('opencode', id, { action: 'rename', title: updated.title });
   } else if (action === 'archive') {
     await openCode.client.request(`/session/${id}`, { directory, method: 'PATCH', body: { time: { archived: Date.now() } }, signal: cdpRead.getStore() });
-    openCode.sessions.delete(id);
+    openCode.forgetSession(id);
     publishSessionChange('opencode', id, { action: 'archive' });
   } else if (action === 'delete' || action === 'remove') {
     await openCode.client.request(`/session/${id}`, { directory, method: 'DELETE', signal: cdpRead.getStore() });
-    openCode.sessions.delete(id);
+    openCode.forgetSession(id);
     removeLibrarySession('opencode', id, 'delete');
   } else throw new Error('不支持的 OpenCode 会话操作');
   openCode.changed();

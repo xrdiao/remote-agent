@@ -35,20 +35,46 @@ async function transferOperation(c, selector, name) {
   if (name) await c.b.dialog(name, () => c.b.click(selector)); else await c.b.click(selector);
   await c.b.wait("!transferFileOperation&&document.getElementById('transferStatus').textContent==='文件操作已完成'", '文件操作及目录刷新回执');
 }
-async function referenceDocuments(root) {
-  const { ZipFile } = await import('yazl'), zip = new ZipFile();
-  zip.addBuffer(Buffer.from('<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>'), '[Content_Types].xml');
-  zip.addBuffer(Buffer.from('<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>'), '_rels/.rels');
-  zip.addBuffer(Buffer.from('<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>REFERENCE_CONTENT</w:t></w:r></w:p></w:body></w:document>'), 'word/document.xml');
-  zip.end(); const chunks = []; for await (const chunk of zip.outputStream) chunks.push(chunk);
-  await fs.writeFile(path.join(root, 'RAQA_reference.docx'), Buffer.concat(chunks));
-  const objects = ['<< /Type /Catalog /Pages 2 0 R >>', '<< /Type /Pages /Kids [3 0 R] /Count 1 >>', '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] >>'];
-  let pdf = '%PDF-1.4\n', offsets = [0]; for (let i = 0; i < objects.length; i++) { offsets.push(Buffer.byteLength(pdf)); pdf += `${i + 1} 0 obj\n${objects[i]}\nendobj\n`; }
-  const xref = Buffer.byteLength(pdf); pdf += `xref\n0 4\n0000000000 65535 f \n${offsets.slice(1).map(offset => String(offset).padStart(10, '0') + ' 00000 n \n').join('')}trailer\n<< /Size 4 /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
-  await fs.writeFile(path.join(root, 'RAQA_reference.pdf'), pdf);
+async function officeDocuments(c, types, root) {
+  const documents = c.options.targets?.documents || {};
+  if (types.some(type => !documents[type]?.path))
+    throw new Unavailable('请在 --targets 的 documents 中提供本轮临时文档路径及 contains 验证文字：' + types.join(', '));
+  await fs.mkdir(root, { recursive: true });
+  const files = {};
+  for (const type of types) {
+    const name = 'RAQA_reference.' + type, file = path.join(root, name);
+    await fs.copyFile(path.resolve(documents[type].path), file);
+    files[type] = { file, contains: documents[type].contains || [] };
+  }
+  return files;
 }
 
 export default [
+  { id: 'files.office-preview', title: 'Word、PPTX、XLSX 正文预览与原文件下载', refs: ['F10', 'F12'], mode: 'write', async run(c) {
+    const { root } = await sample(c), documents = await officeDocuments(c, ['docx', 'pptx', 'xlsx'], root);
+    const downloads = path.resolve(c.directory, 'office-downloads'); await fs.mkdir(downloads, { recursive: true });
+    await c.b.cdp.send('Browser.setDownloadBehavior', { behavior: 'allow', downloadPath: downloads, eventsEnabled: true });
+    try {
+      await browse(c, root);
+      for (const [type, document] of Object.entries(documents)) {
+        const { file, contains: tokens } = document, normalized = file.replaceAll(path.sep, '/');
+        await c.b.click(by('data-computer-path', normalized));
+        await c.b.wait(`fileDownload?.path===${attr(normalized)}&&!readingFile&&viewing?.text`, 'Office 实际文件读取');
+        for (const token of tokens) c.check(await c.b.read(`document.getElementById('vBody').textContent.includes(${attr(token)})`), type + ' 实际正文包含 ' + token);
+        c.check(await c.b.read("document.getElementById('vEdit').hidden&&!document.getElementById('vDownload').disabled"), 'Office 只读且允许下载');
+        await c.b.click('#vDownload');
+        const destination = path.join(downloads, path.basename(file)), deadline = Date.now() + c.options.timeout;
+        let actual;
+        while (Date.now() < deadline) { try { actual = await fs.readFile(destination); break; } catch (error) { if (error.code !== 'ENOENT') throw error; } await new Promise(resolve => setTimeout(resolve, 100)); }
+        c.check(!!actual, type + ' 实际下载成功'); c.equal(hash(actual), hash(await fs.readFile(file)), type + ' 原始字节一致');
+        await c.b.click('#vClose');
+      }
+      return { formats: ['docx', 'pptx', 'xlsx'] };
+    } finally {
+      await c.b.cdp.send('Browser.setDownloadBehavior', { behavior: 'default' });
+      if (await c.b.has('#vClose')) await c.b.click('#vClose'); await c.b.dismiss();
+    }
+  } },
   { id: 'files.zip-download', title: 'ZIP 查看页下载原压缩包并核对字节', refs: ['F10', 'F12'], mode: 'write', async run(c) {
     const { root } = await sample(c), name = '测试 归档.zip', file = path.join(root, name);
     const { ZipFile } = await import('yazl'), zip = new ZipFile();
@@ -72,11 +98,12 @@ export default [
       if (await c.b.has('#vClose')) await c.b.click('#vClose'); await c.b.dismiss();
     }
   } },
-  { id: 'files.native-references', title: '真实回复中的 PDF／Word 文件引用与普通代码', refs: ['F07', 'F10'], mode: 'generate', apps: true, async run(c, app) {
-    const target = await c.target(app, 'file-references', true); await referenceDocuments(target.root); await c.open(target);
-    await c.send(target, '这是文件引用显示测试。不要调用任何工具，只逐字回复以下三段行内代码，保留反引号：`RAQA_reference.pdf`、`RAQA_reference.docx`、`print(12345678)`。不要附加其他内容。');
+  { id: 'files.native-references', title: '真实回复中的 PDF／Office 文件引用与普通代码', refs: ['F07', 'F10'], mode: 'generate', apps: true, async run(c, app) {
+    const target = await c.target(app, 'file-references', true);
+    const documents = await officeDocuments(c, ['pdf', 'docx', 'pptx', 'xlsx'], target.root); await c.open(target);
+    await c.send(target, '这是文件引用显示测试。不要调用任何工具，只逐字回复以下七段行内代码，保留反引号：`RAQA_reference.pdf`、`RAQA_reference.docx`、`RAQA_reference.pptx`、`RAQA_reference.xlsx`、`print(12345678)`、`index.js`、`README.md`。不要附加其他内容。');
     await c.b.wait('!chatFrame&&!scrollFrame&&!chatScrolling&&!deferredScrollRender', '生成后的正文呈现完成');
-    for (const name of ['RAQA_reference.pdf', 'RAQA_reference.docx']) {
+    for (const name of ['RAQA_reference.pdf', 'RAQA_reference.docx', 'RAQA_reference.pptx', 'RAQA_reference.xlsx']) {
       const selector = '#items code' + by('data-file', name);
       c.check(await c.b.has(selector), '真实回复识别文件引用：' + name);
       c.check(!await c.b.read(`document.querySelector(${attr(selector)}).classList.contains('copyable')`), '文件名不被当作复制代码');
@@ -84,12 +111,17 @@ export default [
       try {
         await c.b.wait(`fileRequestId>${before}`, '点击文件进入读取链路');
         await c.b.wait(`fileDownload?.path?.endsWith(${attr(name)})&&!readingFile&&!document.getElementById('vDownload').hidden`, '原生会话文件引用预览');
-        if (name.endsWith('.docx')) c.check(await c.b.read("viewing?.text?.includes('REFERENCE_CONTENT')"), 'Word 读取的是实际文档正文');
-        else await c.b.wait("document.querySelector('#vBody canvas')", '实际 PDF 渲染');
+        if (name.endsWith('.pdf')) await c.b.wait("document.querySelector('#vBody canvas')", '实际 PDF 渲染');
+        else {
+          c.check(await c.b.read('!!viewing?.text?.trim()'), 'Office 读取实际正文');
+          for (const token of documents[path.extname(name).slice(1)].contains)
+            c.check(await c.b.read(`viewing.text.includes(${attr(token)})`), 'Office 正文包含指定验证文字');
+        }
       } finally { if (await c.b.has('#vClose')) await c.b.click('#vClose'); }
     }
-    c.check(await c.b.read("[...document.querySelectorAll('#items code.copyable')].some(e=>e.textContent==='print(12345678)')"), '普通代码继续复制');
-    return { documents: 2 };
+    for (const code of ['print(12345678)', 'index.js', 'README.md'])
+      c.check(await c.b.read(`[...document.querySelectorAll('#items code.copyable')].some(e=>e.textContent===${attr(code)}&&!e.dataset.file)`), '普通代码保留复制：' + code);
+    return { documents: 4 };
   } },
   { id: 'files.references', title: '正文文件名打开预览，普通代码保留复制', refs: ['F07', 'F10'], mode: 'read', apps: true, async run(c, app) {
     await c.open(await c.target(app));

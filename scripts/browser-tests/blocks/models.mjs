@@ -2,6 +2,27 @@ import { attr, by } from '../context.mjs';
 import { Unavailable } from '../browser.mjs';
 
 export default [
+  { id: 'models.codex-permissions', title: 'Codex 三种权限实际切换并回读', refs: ['F08', 'W03', 'M02'], mode: 'write', apps: ['codex'], async run(c, app) {
+    await c.open(await c.target(app, 'permissions', true));
+    const original = (await c.menu('permission')).find(row => row.checked);
+    c.check(!!original, '原生权限有当前选项');
+    const values = [];
+    try {
+      for (const label of ['Ask for approval', 'Approve for me', 'Full access']) {
+        const choices = await c.menu('permission');
+        c.check(choices.length === 3, '权限菜单保留三个模式');
+        await c.b.click(`#sheet [data-kind="permission"]${by('data-label', label)}`);
+        await c.b.wait('!menuPending', '权限修改回执');
+        c.check((await c.menu('permission')).some(row => row.label === label && row.checked), '实际回读选中：' + label);
+        values.push(label);
+      }
+    } finally {
+      await c.menu('permission');
+      await c.b.click(`#sheet [data-kind="permission"]${by('data-label', original.label)}`);
+      await c.b.wait('!menuPending', '恢复原权限'); await c.b.dismiss();
+    }
+    return { values, restored: original.label };
+  } },
   { id: 'models.read', title: '模型、强度和权限原生菜单', refs: ['F08', 'W03', 'W04', 'M02'], mode: 'read', apps: true, async run(c, app) {
     await c.open(await c.target(app)); const evidence = {};
     for (const kind of ['model', 'effort']) {

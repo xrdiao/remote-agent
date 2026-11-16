@@ -10,6 +10,7 @@ export default [
     await c.send(a, `请使用提问工具问一个问题：${c.marker} 选择哪个测试值？选项为 QA_ONE 和 QA_TWO。只提问并等待，不执行工具或修改文件。`, { complete: false });
     const outcome = await c.b.wait("(lastChat.questions?.requests?.length||lastChat.questions?.list?.length||lastChat.items.some(i=>i.k==='opencodeQuestion'))?'question':!lastChat.busy?'completed':null", '原生问题或本轮结束', c.options.generationTimeout);
     if (outcome === 'completed') throw new Unavailable('模型已完成但没有产生原生问题；普通文本问句不能计为问题卡片通过');
+    if (app !== 'opencode') c.check(await c.b.has('#qnBar .qnCard'), '原生问题卡片实际可见');
     const draft = '#qnBar input[data-request^="async:"][data-field]:not([type="password"]):not(:disabled)';
     const edited = await c.b.has(draft);
     if (edited) await c.b.fill(draft, 'QA_ONE');
@@ -26,13 +27,22 @@ export default [
     if (edited) c.equal(await c.b.read(`document.querySelector(${attr(draft)}).value`), 'QA_ONE', '返回后保留本轮问题的未发答案');
     if (await c.b.has('#qnBar [data-request][data-action="0"]')) {
       const request = await c.b.read("document.querySelector('#qnBar [data-request][data-action]').dataset.request");
+      if (app === 'devin') {
+        const fields = await c.b.read("[...document.querySelectorAll('#qnBar [data-field]')].map(e=>({n:e.dataset.field,tag:e.tagName,options:e.tagName==='SELECT'?[...e.options].map(o=>o.value).filter(Boolean):null}))");
+        for (const field of fields) {
+          const selector = `#qnBar [data-field="${field.n}"]`;
+          if (field.options) await c.b.select(selector, field.options.find(value => value === 'QA_ONE') || field.options[0]);
+          else await c.b.fill(selector, 'QA_ONE');
+        }
+      }
       await c.b.click('#qnBar [data-request][data-action="0"]');
       if (request.startsWith('async:')) {
         const submit = await c.b.read(`[...document.querySelectorAll('#qnBar [data-request][data-action]')].filter(e=>e.dataset.request===${attr(request)}&&!e.disabled).at(-1)?.dataset.action`);
         if (submit != null) await c.b.click(`#qnBar [data-request=${attr(request)}][data-action=${attr(submit)}]`);
       }
       await c.b.wait('!questionSubmissions.size', '原生回答回执', c.options.timeout);
-      c.check(await c.b.read('!lastChat.questions?.requests?.length'), '原生问题回答后移除');
+      await c.b.wait(`!lastChat.questions?.requests?.some(r=>r.id===${attr(request)})`, '原生问题处理后移除', c.options.timeout);
+      c.check(await c.b.read(`!lastChat.questions?.requests?.some(r=>r.id===${attr(request)})`), '原生问题回答后移除');
     } else if (await c.b.has('#qnBar [data-qi][data-oi]')) {
       const count = await c.b.read('lastChat.questions.list.length');
       for (let i = 0; i < count; i++) await c.b.click(`#qnBar button[data-qi="${i}"][data-oi="0"]`);

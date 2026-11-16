@@ -95,6 +95,8 @@ async function refreshSessionCatalog(source, changed) {
       }
     }
     const first = !read.catalog, recovered = !!read.error, reconciled = reconcileSessionCatalog(app, catalog);
+    for (const id of [...(catalog.removed || []), ...catalog.rows.filter(row => row.archived).map(row => row.id)])
+      for (const window of windows.values()) if (window.win?.app === app) window.forgetSession(id);
     read.catalog = catalog;
     read.error = null;
     if (first || changed || reconciled || recovered) publishCatalog(app);
@@ -335,6 +337,17 @@ export class NativeWindow {
     const key = JSON.stringify([context.host, context.threadId]);
     if (!this.conversations.has(key)) this.conversations.set(key, { revision: 0, at: 0, listeners: new Set(), management: new Set() });
     return this.conversations.get(key);
+  }
+  forgetSession(id) {
+    this.previews.delete(id);
+    this.runStates.delete(id);
+    this.itemCache.delete(id);
+    for (const [key, view] of this.conversations) if (JSON.parse(key)[1] === id) {
+      view.revision++;
+      view.snapshot = null;
+      view.key = null;
+      if (!view.listeners.size && !view.management.size) this.conversations.delete(key);
+    }
   }
   async readConversation(context, fresh = false) {
     const view = this.conversationView(context);

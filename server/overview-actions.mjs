@@ -8,6 +8,7 @@ import { catalogSessions, storedProjectSession } from './project-windows.mjs';
 import { manageFusionWorkbench } from './fusion/owner.mjs';
 import { manageOpenCodeSession } from './apps/opencode.mjs';
 import { codexBackend, CODEX_BACKEND } from './codex/state.mjs';
+import { adapter as codexAdapter } from './apps/codex.mjs';
 import { publishSessionChange } from '../lib/session-library.mjs';
 
 export async function manageOverviewSession(deviceId, body) {
@@ -32,7 +33,7 @@ export async function manageOverviewSession(deviceId, body) {
   }
   if (app === 'codex' && windowId === CODEX_BACKEND) {
     if (action === 'actions') return { actions: ['rename', 'archive'] };
-    await codexBackend.manage(threadId, action, body.name);
+    await codexAdapter.manageBackendThread(threadId, action, body.name);
     publishSessionChange('codex', threadId, { action, ...(action === 'rename' ? { title: body.name } : {}) });
     return { ok: true };
   }

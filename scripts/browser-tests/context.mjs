@@ -23,7 +23,7 @@ export class Context {
   check(value, message) { this.assertions.push(message); assert(value, message); }
   equal(actual, expected, message) { this.assertions.push(message); assert.equal(actual, expected, message); }
   async start() {
-    this.original = await this.b.read(`({computer:currentComputer()?.id,target:winBinding?.target||(lastChat?.thread?{computer:currentComputer()?.id,win:currentApp,windowId:viewSel.split('|')[1],threadId:lastChat.thread}:null),mode,
+    this.original = await this.b.read(`({computer:currentComputer()?.id,target:windowReady?(winBinding?.target||(lastChat?.thread?{computer:currentComputer()?.id,win:currentApp,windowId:viewSel.split('|')[1],threadId:lastChat.thread}:null)):null,mode,
       overview:{...ovS},conversation:document.body.classList.contains('conv'),width:innerWidth,height:innerHeight,
       theme:store.get('theme')||'dark',language:I18N.lang,draft:text.value,inputExpanded:document.getElementById('composerFold').getAttribute('aria-expanded'),
       expanded:[...ovExpanded],collapsed:[...ovCollapsed]})`);
@@ -43,8 +43,6 @@ export class Context {
       if (['fold', 'models', 'commands', 'terminal'].includes(slot)) slot = 'A';
       const previous = this.owned.find(row => row.app === app && row.slot === slot);
       const target = await this.prerequisite(`create:${app}:${slot}`, async () => previous || this.create(app, slot));
-      if (!target.thread && this.test?.id !== 'sessions.project')
-        throw new Unavailable('OpenCode 项目已打开；原生会话 ID 在首次发送后创建，此场景需 full 套件先持久化隔离会话');
       return target;
     }
     const rows = await this.rows(app), selected = this.options.targets?.[app]?.[slot];
@@ -98,8 +96,6 @@ export class Context {
     const target = { app, comp: this.computer, thread: '', root, slot, owned: true };
     this.owned.push(target); await this.persistResources();
     await this.openProject(target);
-    if (app === 'opencode' && this.options.suite === 'full')
-      await this.send(target, `只回复 ${this.marker}-SESSION，不运行工具或修改文件。`);
     if (target.thread) await this.refreshTarget(target);
     target.projectRead = await this.verifyProject(target);
     await this.persistResources(); return target;
@@ -118,12 +114,10 @@ export class Context {
     await b.wait(`computerFiles?.directory?.path===${attr(root.replaceAll(path.sep, '/'))}&&!computerFiles?.message`, '测试项目目录');
     const previous = await b.read('lastChat?.thread');
     await b.click('[data-computer-project="chat"]');
-    const ready = app === 'opencode'
-      ? `windowReady&&!navigationPending&&currentApp==='opencode'&&viewSel.split('|')[1]===${attr(root.replaceAll(path.sep, '/'))}&&lastChat?.empty&&!lastChat.thread`
-      : `windowReady&&!navigationPending&&lastChat?.thread&&lastChat.thread!==${attr(previous)}&&currentApp===${attr(app)}`;
+    const ready = `windowReady&&!navigationPending&&lastChat?.thread&&lastChat.thread!==${attr(previous)}&&currentApp===${attr(app)}`;
     await b.wait(`(${ready})||!!document.querySelector('[data-project-trust="yes"]')`, '项目创建或信任确认');
     if (await b.has('[data-project-trust="yes"]')) await b.click('[data-project-trust="yes"]');
-    await b.wait(ready, app === 'opencode' ? '新项目输入已就绪（尚未持久化会话）' : '新建会话');
+    await b.wait(ready, '新建原生会话');
     Object.assign(target, await b.read("({thread:lastChat.thread,win:currentWindow,window:viewSel.split('|')[1]})"));
     await this.persistResources();
   }
@@ -165,6 +159,8 @@ export class Context {
   }
   async send(target, text, options = {}) {
     const b = this.b;
+    const modelError = this.prerequisites.get('model:' + target.app);
+    if (modelError) throw Object.assign(new Unavailable(modelError), { kind: 'environment' });
     return this.prerequisite(`send:${target.app}:${target.thread || target.root}`, async () => {
       assert(this.owned.includes(target)
         || this.owned.some(row => row.thread && row.thread === target.thread && row.app === target.app)
@@ -183,9 +179,28 @@ export class Context {
         ids:lastChat.items.filter(i=>i.k==='human'&&!${JSON.stringify(before)}.includes(i.i)).map(i=>i.i)})`);
       assert.equal(receipt.ids.length, 1, '同一次发送出现重复原生用户消息');
       if (options.complete !== false) await this.prerequisite(`generation:${target.app}:${target.thread}`,
-        () => b.wait('!lastChat.busy', '原生生成完成', this.options.generationTimeout));
+        () => this.finishGeneration(target, '原生生成完成'));
       return receipt;
     });
+  }
+  async finishGeneration(target, label) {
+    const result = await this.b.wait(`(()=>{
+      const failure=lastChat.items.find(item=>item.k==='notice'&&/Cannot connect to API|Unable to connect/.test(item.t||''));
+      if(failure)return {error:failure.t};
+      if(!lastChat.busy)return {done:true};
+      const approval=lastChat.questions?.requests?.find(request=>request.id.startsWith('devin-permission:')&&request.text.includes(${attr(this.marker)}));
+      return approval?{approval:approval.id}:null;
+    })()`, label, this.options.generationTimeout);
+    if (result.error) {
+      this.prerequisites.set('model:' + target.app, result.error);
+      throw Object.assign(new Unavailable(result.error), { kind: 'environment' });
+    }
+    if (result.approval) {
+      assert(this.owned.includes(target), '只审批本轮隔离测试会话的标记命令');
+      await this.b.click(`#qnBar [data-request=${attr(result.approval)}][data-action="0"]`);
+      await this.b.wait(`!questionSubmissions.size&&!lastChat.questions?.requests?.some(request=>request.id===${attr(result.approval)})`, '测试命令单次审批回执');
+      await this.b.wait('!lastChat.busy', label, this.options.generationTimeout);
+    }
   }
   async menu(kind) {
     const b = this.b; await b.dismiss();
@@ -205,6 +220,12 @@ export class Context {
   }
   async cleanupSession(target) {
     const b = this.b; await b.dismiss();
+    await this.open(target);
+    if (await b.read('lastChat.busy')) {
+      if (await b.read("document.getElementById('composerFold').getAttribute('aria-expanded')==='false'")) await b.click('#composerFold');
+      await b.click('#stop'); await b.click('#askOk');
+      await b.wait('!lastChat.busy', '停止本轮测试会话后清理');
+    }
     const card = await this.reveal(target); await b.hold(`${card} .ov-title`);
     await b.wait("sheetKind==='agent-actions'&&!document.querySelector('#sheet [role=status]')&&document.querySelector('#sheet [data-agent-action=rename]')", '原生会话管理操作加载');
     const archive = '#sheet [data-agent-action="archive"]', remove = '#sheet [data-agent-action="delete"]';
@@ -276,6 +297,10 @@ export class Context {
     if (!this.cleanup.errors.length && this.owned.length) {
       try { this.cleanup.platform = await platform.cleanupProjects(this.directory, this.options.registryConfig, this.computer, () => this.overview()); }
       catch (error) { this.cleanup.errors.push({ projects: error.message }); }
+    }
+    for (const name of ['files', 'downloads', 'office-downloads', 'preview-downloads', 'zip-downloads']) {
+      try { await fs.rm(path.join(this.directory, name), { recursive: true, force: true }); }
+      catch (error) { this.cleanup.errors.push({ temporary: name, error: error.message }); }
     }
     await this.persistResources(); return this.cleanup;
   }

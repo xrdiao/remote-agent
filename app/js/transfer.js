@@ -5,6 +5,7 @@ const transferXhrs = new Set();
 let transferUploads = [], transferUploading = false, transferCancelled = false;
 const transferDirectories = JSON.parse(store.get('transfer-directories') || '{}');
 let transferClipboard = null, transferFileOperation = null;
+let transferDownloadRequest = null;
 const transferPanel = document.createElement('section');
 transferPanel.id = 'transfer';
 transferPanel.hidden = true;
@@ -36,7 +37,7 @@ function saveTransferDirectories() {
 function transferCurrentDirectory() { return transferPicker || transferDirectory; }
 function transferCount() {
   $('transferSelected').textContent = `已选 ${transferSelection.size} 项`;
-  $('transferDownload').disabled = !transferSelection.size;
+  $('transferDownload').disabled = !transferSelection.size || transferDownloadRequest?.selection === transferSelection;
   $('transferClearFooter').hidden = !transferSelection.size;
 }
 function renderTransferPage() {
@@ -87,7 +88,7 @@ async function openTransfer(id = currentComputer().id) {
   closeSheet();
   const computer = loadComputers().find(c => c.id === id);
   if (id !== transferComputer?.id) {
-    transferRequest++; transferDirectory = null; transferPicker = null; transferSelection.clear();
+    transferRequest++; transferDirectory = null; transferPicker = null; transferSelection = new Map();
     transferUploadPath = transferDirectories[id]?.upload || '';
     if (!transferUploading) { transferUploads = []; $('transferProgress').replaceChildren(); }
   }
@@ -163,6 +164,7 @@ $('transferHidden').onclick = () => {
 $('transferRows').onchange = e => {
   const entry = transferCurrentDirectory()?.entries[e.target.dataset.transferCheck];
   if (!entry || transferPicker) return;
+  transferSelection = new Map(transferSelection);
   if (e.target.checked) transferSelection.set(entry.path, entry); else transferSelection.delete(entry.path);
   transferCount();
   renderTransferPage();
@@ -175,12 +177,13 @@ $('transferRows').onclick = e => {
   else button.parentElement.querySelector('input')?.click();
 };
 $('transferAll').onclick = () => {
+  transferSelection = new Map(transferSelection);
   $('transferRows').querySelectorAll('input:not(:disabled)').forEach(box => {
     box.checked = true; const entry = transferDirectory.entries[box.dataset.transferCheck]; transferSelection.set(entry.path, entry);
   });
   $('transferSelectMenu').open = false; renderTransferPage();
 };
-function clearTransferSelection() { transferSelection.clear(); renderTransferPage(); $('transferSelectMenu').open = false; }
+function clearTransferSelection() { transferSelection = new Map(); renderTransferPage(); $('transferSelectMenu').open = false; }
 $('transferClear').onclick = clearTransferSelection;
 $('transferClearFooter').onclick = clearTransferSelection;
 async function downloadComputerFiles(computer, paths) {
@@ -193,17 +196,21 @@ async function downloadComputerFiles(computer, paths) {
   return link;
 }
 $('transferDownload').onclick = async () => {
-  const computer = transferComputer, paths = [...transferSelection.keys()];
-  $('transferDownload').disabled = true;
+  const computer = transferComputer, selection = transferSelection, paths = [...selection.keys()];
+  const request = transferDownloadRequest = { selection };
+  transferCount();
   transferStatus('正在准备下载…');
   try {
     const link = await downloadComputerFiles(computer, paths);
-    if (transferComputer.id !== computer.id) return;
-    for (const file of paths) transferSelection.delete(file);
+    if (transferComputer.id !== computer.id || transferSelection !== selection) return;
+    for (const file of paths) selection.delete(file);
     renderTransferPage();
     $('transferStatus').replaceChildren(link);
-  } catch (error) { transferStatus(error.message, true); }
-  finally { transferCount(); }
+  } catch (error) { if (transferComputer.id === computer.id && transferSelection === selection) transferStatus(error.message, true); }
+  finally {
+    if (transferDownloadRequest === request) transferDownloadRequest = null;
+    if (transferComputer.id === computer.id) transferCount();
+  }
 };
 function renderTransferUploads() {
   for (const item of transferUploads) {

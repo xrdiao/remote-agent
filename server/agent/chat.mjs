@@ -1,7 +1,7 @@
 // 对话：聊天轮询、历史加载、发送与附件
 import fs from 'node:fs';
 import path from 'node:path';
-import { IS_MAC, mod, pathKey } from '../../lib/platform.mjs';
+import { mod, pathKey } from '../../lib/platform.mjs';
 import { codexContext } from '../windows.mjs';
 import { cdpRead, awaitCdpRead } from '../cdp.mjs';
 import { PAGE_SRC, helpersCall } from '../page/build.mjs';
@@ -505,28 +505,27 @@ export const methods = {
     return this.adapter.queueAction.call(this, id, action);
   },
   async stopButton(message) {
-    const cdp = this.cdp, scope = this.selectionKey();
+    const cdp = this.cdp, scope = this.selectionKey(), app = this.app, thread = this.threadId;
     if (message.sel && message.sel !== scope) return;
     await nativeWindow(cdp)?.stopRetry();
+    if (['cursor', 'devin'].includes(app) && thread) {
+      await cdp.evaluate(helpersCall(`nativeSessionAction(${JSON.stringify(app)}, ${JSON.stringify(thread)}, 'stop')`));
+      if (cdp === this.cdp && scope === this.selectionKey()) this.pollChat(true).catch(() => {});
+      return;
+    }
     await this.assertSelectedThread();
     if (cdp !== this.cdp || scope !== this.selectionKey()) return;
     const clicked = await cdp.evaluate(helpersCall('stopTarget(true)'));
     if (cdp === this.cdp && scope === this.selectionKey()) this.emit({ t: 'status', msg: clicked ? '已点击停止' : '当前没有停止按钮' });
   },
   async stopAgent() {
+    if (['cursor', 'devin'].includes(this.app) && this.threadId)
+      return this.cdp.evaluate(helpersCall(`nativeSessionAction(${JSON.stringify(this.app)}, ${JSON.stringify(this.threadId)}, 'stop')`));
     await this.assertSelectedThread();
     const pos = await this.cdp.evaluate(helpersCall('stopTarget()'));
-    const running = !!(await this.cdp.evaluate(helpersCall('agentState()')))?.busy;
-    if (!pos && !(this.app === 'devin' && running)) throw new Error('Agent 当前没有在运行');
-    if (pos) await this.tapCss(pos.x, pos.y);
-    else {
-      // Devin shows "Queue" instead of "Cancel" while the desktop prompt holds a draft, so there is no stop
-      // button; its own cancel shortcut (shown in the button tooltip: Ctrl+Alt+C, Ctrl+C on a Mac) still works.
-      if (!await this.cdp.evaluate(FOCUS_COMPOSER)) throw new Error('没找到可见的聊天输入框');
-      await this.key(IS_MAC ? 'Ctrl+c' : 'Ctrl+Alt+c');
-    }
+    if (!pos) throw new Error('Agent 当前没有在运行');
+    await this.tapCss(pos.x, pos.y);
     this.emit({ t: 'status', ok: true, msg: '正在停止…' });
-    // A running command has to be killed first, so Devin can take several seconds to finish cancelling.
     let busy = true;
     for (let i = 0; i < 48; i++) {
       await new Promise(r => setTimeout(r, 250));
@@ -534,7 +533,7 @@ export const methods = {
       if (!busy) break;
     }
     await this.pollChat().catch(() => {});
-    if (busy) throw new Error(pos ? '没有停下来，Agent 仍在运行，请到电脑上看一下' : '没有停下来：电脑上的输入框里还有没发出的文字，Devin 没有停止按钮。清空输入框，或在电脑上按 Ctrl+Alt+C');
+    if (busy) throw new Error('没有停下来，Agent 仍在运行，请到电脑上看一下');
     this.emit({ t: 'status', ok: true, msg: '已停止 Agent' });
   },
   async scrollChat(dy, automatic = false, history = false, beforeOrder = null, known = [], details = false) {
