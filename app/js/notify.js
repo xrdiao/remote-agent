@@ -740,6 +740,14 @@ async function useComputer(i) {
     return openComputerEntry(new URL('./', c.discovery).href, c.id || await computerIdFromKey(c.key));
   }
   parkComputerSocket();
+  invalidateChatRender();
+  setWindowReady(false);
+  viewSel = liveChatSelection = '';
+  selectionReady = false;
+  navigationPending = null;
+  beginChatSelection();
+  currentProject = '';
+  renderChat(null, false, true);
   entryComputer = '';
   saveComputers(list, c.key);
   store.set('window', c.win || null);

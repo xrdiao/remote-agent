@@ -30,6 +30,14 @@
       updatedAt: row?.updated_at, latest_message_event_at: row?.latest_message_event_at,
       _meta: { ...info?._meta, 'cognition.ai/isArchived': row?.is_archived === true } };
   };
+  const devinSessionModel = (id = remoteContext?.app === 'devin' ? remoteContext.threadId : activeThread()) => {
+    const key = devinNativeId(id);
+    const host = [...devinEditorContexts()].flatMap(context => context.values)
+      .find(value => typeof value.peekSession === 'function' && value.peekSession(key));
+    const options = host ? host.peekSession(key).store.getState().sessionInfo.configOptions : devinSessionRecord(id)?.configOptions;
+    const config = options?.find(option => option.category === 'model');
+    return config?.options.flatMap(group => group.options || [group]).find(option => option.value === config.currentValue);
+  };
   const devinMessageItems = (messages, prefix = 'acp', start = 0) => messages.flatMap((message, index) => {
     const id = prefix + (start + index), items = [];
     if (['user_message', 'agent_message', 'agent_thought'].includes(message.kind)) {

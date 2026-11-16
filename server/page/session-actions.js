@@ -196,8 +196,7 @@
         const messages = devinMessages(id);
         const message = messages.findLast(m => ['agent_message', 'user_message'].includes(m.kind)
           && m.content?.some(block => block.content?.type === 'text' && block.content.text?.trim()));
-        const config = devinSessionRecord(id)?.configOptions?.find(c => c.category === 'model');
-        const model = config?.options.flatMap(o => o.options || [o]).find(o => o.value === config.currentValue)?.name;
+        const model = devinSessionModel(id)?.name;
         const tools = messages.slice(messages.findLastIndex(m => m.kind === 'user_message') + 1).filter(m => m.kind === 'tool_call').map(m => ({
           id: m.content.toolCallId || m.id, label: m.content.title, status: m.content.status,
         }));

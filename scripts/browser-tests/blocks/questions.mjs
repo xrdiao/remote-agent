@@ -14,6 +14,18 @@ export default [
     const draft = '#qnBar input[data-request^="async:"][data-field]:not([type="password"]):not(:disabled)';
     const edited = await c.b.has(draft);
     if (edited) await c.b.fill(draft, 'QA_ONE');
+    const choiceValues = "JSON.stringify([...document.querySelectorAll('#qnBar .qnChoices')].map(el=>[el.dataset.field,questionFieldValue(el)]))";
+    let selectedChoices;
+    if (app === 'devin') {
+      const groups = await c.b.read("[...document.querySelectorAll('#qnBar .qnChoices')].map(el=>({n:el.dataset.field,values:[...el.querySelectorAll('input')].map(input=>input.value)}))");
+      if (!groups.length) throw new Unavailable('本轮 Devin 原生问题没有枚举字段，不能验收平铺选项');
+      c.check(!await c.b.has('#qnBar select[data-field]'), 'Devin 选项直接显示，无需打开下拉框');
+      for (const group of groups) {
+        const value = group.values.find(value => value === 'QA_ONE') || group.values[0];
+        await c.b.click(`#qnBar .qnChoices[data-field=${attr(group.n)}] label:has(input[value=${attr(value)}])`);
+      }
+      selectedChoices = await c.b.read(choiceValues);
+    }
     const identity = "JSON.stringify(lastChat.questions?.requests?.map(r=>r.id)||lastChat.questions?.list?.map(r=>r.question)||lastChat.items.filter(i=>i.k==='opencodeQuestion').map(i=>i.requestID))";
     const before = await c.b.read(identity);
     if (app === 'codex') {
@@ -24,6 +36,7 @@ export default [
     }
     await c.open(b); await c.open(a);
     c.equal(await c.b.read(identity), before, 'A 的问题身份没有被 B 替换');
+    if (selectedChoices) c.equal(await c.b.read(choiceValues), selectedChoices, '返回后保留 Devin 已选答案');
     if (edited) c.equal(await c.b.read(`document.querySelector(${attr(draft)}).value`), 'QA_ONE', '返回后保留本轮问题的未发答案');
     if (await c.b.has('#qnBar [data-request][data-action="0"]')) {
       const request = await c.b.read("document.querySelector('#qnBar [data-request][data-action]').dataset.request");
@@ -31,6 +44,7 @@ export default [
         const fields = await c.b.read("[...document.querySelectorAll('#qnBar [data-field]')].map(e=>({n:e.dataset.field,tag:e.tagName,options:e.tagName==='SELECT'?[...e.options].map(o=>o.value).filter(Boolean):null}))");
         for (const field of fields) {
           const selector = `#qnBar [data-field="${field.n}"]`;
+          if (field.tag === 'FIELDSET') continue;
           if (field.options) await c.b.select(selector, field.options.find(value => value === 'QA_ONE') || field.options[0]);
           else await c.b.fill(selector, 'QA_ONE');
         }

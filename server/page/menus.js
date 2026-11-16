@@ -87,6 +87,7 @@
   const normKey = s => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
   // Prop-based model list: no visible menu is opened. Returns null when only the DOM path can answer.
   const agentModelName = () => {
+    if (remoteContext?.app === 'devin' || devinSurface() && activeThread()) return devinSessionModel()?.name || null;
     const cloud = devinCloudPickerProps();
     if (cloud) return devinCloudModels(cloud).find(row => row.checked)?.label || null;
     const codex = codexModelName();
@@ -249,7 +250,7 @@
     }
     return devinVariants('effort', includePricing).sort((a, b) => a.order - b.order).map(({ label, checked, pricing }) => ({ label, checked, ...(pricing ? { pricing } : {}) }));
   };
-  const effortName = () => effortItems().find(x => x.checked)?.label || (doc.querySelector('.vscode-model-picker__trigger') ? /\b(Low|Medium|High|Max|Extra High|Ultra)(?: Fast)?$/i.exec(normLabel(modelButton()?.innerText))?.[1] || 'Effort' : null);
+  const effortName = () => remoteContext?.app === 'devin' || devinSurface() && activeThread() ? null : effortItems().find(x => x.checked)?.label || (doc.querySelector('.vscode-model-picker__trigger') ? /\b(Low|Medium|High|Max|Extra High|Ultra)(?: Fast)?$/i.exec(normLabel(modelButton()?.innerText))?.[1] || 'Effort' : null);
   const pickEffort = label => {
     const codex = codexPickerProps();
     if (codex) {
