@@ -1097,7 +1097,7 @@ function renderQuestions(qs) {
           submit.disabled = !el.value.trim();
         }
       };
-      el.onchange = () => { if (!el.dataset.request.startsWith('async:')) send({ t: 'codexRequest', id: el.dataset.request, field: Number(el.dataset.field), value: questionFieldValue(el) }); };
+      el.onchange = () => { if (qs.src !== 'devin' && !el.dataset.request.startsWith('async:')) send({ t: 'codexRequest', id: el.dataset.request, field: Number(el.dataset.field), value: questionFieldValue(el) }); };
       if (qnDrafts.has(key)) el.oninput();
       if (key === focusKey && !qnPending) {
         el.focus();
