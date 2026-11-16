@@ -968,9 +968,12 @@ const qnDrafts = new Map(), questionSubmissions = new Map(), questionDraftReques
 const questionScope = () => JSON.stringify([currentComputer()?.id || '', currentApp, lastChat?.thread || currentComputer()?.threadId || '']);
 const questionDraftKey = (request, field, scope = questionScope()) => JSON.stringify([scope, request, field]);
 const questionFieldKey = el => questionDraftKey(el.dataset.request, el.dataset.field);
-const questionFieldValue = el => el.multiple ? [...el.selectedOptions].map(option => option.value) : el.value;
+const questionFieldValue = el => el.classList.contains('qnChoices')
+  ? el.dataset.multiple === 'true' ? [...el.querySelectorAll('input:checked')].map(input => input.value) : el.querySelector('input:checked')?.value || ''
+  : el.multiple ? [...el.selectedOptions].map(option => option.value) : el.value;
 function setQuestionFieldValue(el, value) {
-  if (el.multiple) [...el.options].forEach(option => { option.selected = value.includes(option.value); });
+  if (el.classList.contains('qnChoices')) el.querySelectorAll('input').forEach(input => { input.checked = el.dataset.multiple === 'true' ? value.includes(input.value) : input.value === value; });
+  else if (el.multiple) [...el.options].forEach(option => { option.selected = value.includes(option.value); });
   else el.value = value;
 }
 function clearQuestionDraft(request, scope = questionScope()) {
@@ -1074,7 +1077,8 @@ function renderQuestions(qs) {
   qnSig = sig;
   if (qs?.codex) {
     const focused = bar.contains(document.activeElement) ? document.activeElement : null;
-    const focusKey = focused?.matches('[data-field]') ? questionFieldKey(focused) : null;
+    const focusField = focused?.closest('[data-field]');
+    const focusKey = focusField ? questionFieldKey(focusField) : null;
     const selection = focusKey ? [focused.selectionStart, focused.selectionEnd] : null;
     const expanded = new Set([...bar.querySelectorAll('.qnDetails[open]')].map(el => el.dataset.question));
     bar.innerHTML = questionCard(`${qs.src === 'devin' ? 'Devin' : 'Codex'} 等待你${qs.requests.some(r => r.id.startsWith('approval:')) ? '审批' : '回答'}<span class="qnCount">${qs.requests.length} 个请求</span>`, qs.requests.map(r => {
@@ -1083,7 +1087,9 @@ function renderQuestions(qs) {
       return `<section class="qnRequest"><div class="qnQ">${esc(heading)}</div>`
       + (remaining ? `<details class="qnDetails" data-question="${esc(r.id)}" ${expanded.has(r.id) ? 'open' : ''}><summary>展开问题详情</summary>${esc(remaining)}</details>` : '')
       + (r.id.startsWith('async:') ? `<div class="qnOpts">${r.buttons.slice(0, -2).map((b, n) => `<button class="qnOpt ${b.selected ? 'on' : ''}" data-request="${esc(r.id)}" data-action="${n}" aria-pressed="${!!b.selected}" ${b.disabled ? 'disabled' : ''}>${esc(b.label)}</button>`).join('')}</div>` : '')
-      + r.fields.map((f, n) => `<label class="qnFree">${esc(f.label)}${f.options ? `<select data-request="${esc(r.id)}" data-field="${n}"${f.multiple ? ' multiple' : ''}>${f.options.map(o => `<option value="${esc(o.value)}" ${(f.multiple ? f.value.includes(o.value) : o.value === f.value) ? 'selected' : ''}>${esc(o.label)}</option>`).join('')}</select>` : `<input data-request="${esc(r.id)}" data-field="${n}" type="${f.type === 'password' ? 'password' : 'text'}" value="${esc(f.value)}"${r.id.startsWith('async:') ? ' enterkeyhint="send"' : ''}>`}</label>`).join('')
+      + r.fields.map((f, n) => qs.src === 'devin' && f.options
+        ? `<fieldset class="qnOpts qnChoices" data-request="${esc(r.id)}" data-field="${n}" data-multiple="${!!f.multiple}"><legend class="qnHint">${esc(f.label)}</legend>${f.options.filter(o => o.value !== '').map(o => `<label class="qnOpt"><input type="${f.multiple ? 'checkbox' : 'radio'}" name="${esc(JSON.stringify([r.id, n]))}" value="${esc(o.value)}" ${(f.multiple ? f.value.includes(o.value) : o.value === f.value) ? 'checked' : ''}><span>${esc(o.label)}</span></label>`).join('')}</fieldset>`
+        : `<label class="qnFree">${esc(f.label)}${f.options ? `<select data-request="${esc(r.id)}" data-field="${n}"${f.multiple ? ' multiple' : ''}>${f.options.map(o => `<option value="${esc(o.value)}" ${(f.multiple ? f.value.includes(o.value) : o.value === f.value) ? 'selected' : ''}>${esc(o.label)}</option>`).join('')}</select>` : `<input data-request="${esc(r.id)}" data-field="${n}" type="${f.type === 'password' ? 'password' : 'text'}" value="${esc(f.value)}"${r.id.startsWith('async:') ? ' enterkeyhint="send"' : ''}>`}</label>`).join('')
       + `<div class="qnAct">${r.buttons.map((b, n) => r.id.startsWith('async:') && n < r.buttons.length - 2 ? '' : `<button data-request="${esc(r.id)}" data-action="${n}" aria-pressed="${!!b.selected}" ${b.disabled ? 'disabled' : ''}>${esc(b.label)}</button>`).join('')}</div></section>`; }).join(''), open);
     bar.classList.toggle('show', qs.requests.length > 0);
     bar.querySelectorAll('[data-field]').forEach(el => {
@@ -1100,8 +1106,11 @@ function renderQuestions(qs) {
       el.onchange = () => { if (qs.src !== 'devin' && !el.dataset.request.startsWith('async:')) send({ t: 'codexRequest', id: el.dataset.request, field: Number(el.dataset.field), value: questionFieldValue(el) }); };
       if (qnDrafts.has(key)) el.oninput();
       if (key === focusKey && !qnPending) {
-        el.focus();
-        if (el.tagName === 'INPUT') el.setSelectionRange(...selection);
+        if (el.classList.contains('qnChoices')) el.querySelector(`input[value="${CSS.escape(focused.value)}"]`)?.focus();
+        else {
+          el.focus();
+          if (el.tagName === 'INPUT') el.setSelectionRange(...selection);
+        }
       }
     });
     questionBusy();
@@ -1168,7 +1177,7 @@ $('qnBar').onclick = e => {
   if (b.dataset.qi) sendQuestion({ t: 'question', qi: Number(b.dataset.qi), oi: Number(b.dataset.oi), part: 'option' });
 };
 $('qnBar').addEventListener('keydown', e => {
-  if (e.key !== 'Enter' || !e.target.matches('input')) return;
+  if (e.key !== 'Enter' || !e.target.matches('input') || e.target.closest('.qnChoices')) return;
   const answering = e.target.dataset.request?.startsWith('async:');
   if (answering && e.isComposing) return;
   if (e.target.matches('[data-qtext]') && e.isComposing) return;

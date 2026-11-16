@@ -710,6 +710,10 @@ body.kb.chatmode #qnBar.codex .qnQ { max-height: none; overflow: visible; }
 body[data-app="devin"] #qnBar .qnOpt { width: 100%; min-width: 0; white-space: normal; overflow-wrap: anywhere; }
 body[data-app="devin"] #qnBar .qnOpt > span { flex: 1; min-width: 0; }
 body[data-app="devin"] #qnBar .qnQ { overflow-wrap: anywhere; }
+body[data-app="devin"] #qnBar .qnChoices { border: 0; padding: 0; margin: 0; min-width: 0; }
+body[data-app="devin"] #qnBar .qnChoices legend { padding: 0; margin-bottom: 6px; }
+body[data-app="devin"] #qnBar .qnChoices input { flex: none; width: 18px; height: 18px; margin: 0; accent-color: var(--accent); }
+body[data-app="devin"] #qnBar .qnChoices .qnOpt:has(input:checked) { background: var(--accent-tint); box-shadow: inset 0 0 0 1.5px var(--accent); color: var(--accent-text); }
 #qnBar .qnAct .primary:disabled { opacity: .4; }
 
 /* ---------- composer ---------- */
