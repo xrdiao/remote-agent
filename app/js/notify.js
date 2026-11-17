@@ -539,7 +539,8 @@ $('sheet').addEventListener('click', async e => {
       menuCache.delete(menuCacheKey('effort'));
     }
     if (!['codex-run', 'codex-chat', 'model', 'effort'].includes(b.dataset.kind)) beginSwitch(b.dataset.kind);
-    return send({ t: 'pickMenu', kind: b.dataset.kind, label: b.dataset.label });
+    return send({ t: 'pickMenu', kind: b.dataset.kind, label: b.dataset.label,
+      ...(currentApp === 'codex' && b.dataset.kind === 'model' ? { name: b.dataset.modelId } : {}) });
   }
   if (b.dataset.chopen) { const diff = changeFiles.find(f => f.name === b.dataset.chopen)?.diff || ''; closeSheet(); return openFile(b.dataset.chopen, diff, true); }
   if (b.dataset.ch) {

@@ -232,6 +232,108 @@ async function withBackendSettings(s, action) {
   }
 }
 
+async function withCodexModelOwner(s, action) {
+  const id = s.threadId;
+  if (!id) throw new Error('Codex 会话尚未加载');
+  if (!s.codexBackend) return action({ id, cdp: s.cdp });
+  const owner = await s.adapter.backendOwner(id);
+  if (!owner) return codexBackend.withWriter(id, thread => action({ id, thread }));
+  const cdp = new Cdp(owner.chatWs), context = { app: 'codex', threadId: id, host: '', cwd: owner.cwd };
+  try {
+    await cdp.connect();
+    return await action({ id, cdp, context });
+  } finally { cdp.close(); }
+}
+
+async function codexModelSettings(owner) {
+  if (owner.thread) return { ...owner.thread.settings, model: owner.thread.settings.model || owner.thread.model };
+  return owner.cdp.evaluate(helpersCall(`nativeSessionInfo('codex', ${JSON.stringify(owner.id)}, 'modelSettings')`, owner.context));
+}
+
+async function codexModelList(owner, settings) {
+  const models = [];
+  let cursor = null;
+  do {
+    const params = { cursor, limit: 100, includeHidden: true, modelProvider: settings.modelProvider || null };
+    const page = owner.thread ? await codexBackend.client.request('model/list', params)
+      : await owner.cdp.evaluate(helpersCall(`nativeSessionInfo('codex', ${JSON.stringify(owner.id)}, 'modelPage', ${JSON.stringify(params)})`, owner.context));
+    models.push(...page.data);
+    cursor = page.nextCursor;
+  } while (cursor);
+  return models;
+}
+
+const codexModelId = model => model.model || model.id;
+const codexFastTier = model => model?.serviceTiers?.find(tier =>
+  ['priority', 'fast'].includes(tier.id) || ['fast', 'priority'].includes(String(tier.name || '').trim().toLowerCase()));
+function codexFastState(model, settings) {
+  const tier = codexFastTier(model);
+  if (!tier) return null;
+  return { on: settings.serviceTier === tier.id, description: tier.description || '' };
+}
+
+async function readCodexModelMenu(kind, requestId) {
+  const sel = this.selectionKey(), id = this.threadId, generation = this.sel;
+  const { settings, models } = await withCodexModelOwner(this, async owner => {
+    const settings = await codexModelSettings(owner);
+    return { settings, models: await codexModelList(owner, settings) };
+  });
+  if (this.selectionKey() !== sel || this.threadId !== id || this.sel !== generation) return;
+  this.codexModelCatalog = { id, provider: settings.modelProvider || null, models };
+  const current = models.find(row => codexModelId(row) === settings.model);
+  const modelItems = models.filter(row => !row.hidden).map(row => ({ label: row.displayName || codexModelId(row),
+    id: codexModelId(row), checked: codexModelId(row) === settings.model }));
+  if (models.some(row => row.isDefault)) modelItems.unshift({ id: '__codex_default__', label: 'Default Recommended set of models', checked: false });
+  const effortItems = (current?.supportedReasoningEfforts || []).map(row => ({ label: row.reasoningEffort,
+    checked: row.reasoningEffort === (settings.effort ?? settings.reasoningEffort ?? current.defaultReasoningEffort) }));
+  const fast = codexFastState(current, settings), model = current?.displayName || settings.model;
+  const items = kind === 'effort' ? effortItems : kind === 'fast'
+    ? ['Standard', 'Fast'].map(label => ({ label, checked: !!fast?.on === (label === 'Fast') })) : modelItems;
+  this.emit({ t: 'menu', kind, requestId, sel, items, modelItems, effortItems, fast, model });
+}
+
+async function pickCodexModelMenu(kind, label, name) {
+  const id = this.threadId, sel = this.selectionKey(), generation = this.sel, catalog = this.codexModelCatalog;
+  if (!catalog || catalog.id !== id) throw new Error('请重新打开 Codex 模型菜单');
+  const result = await withCodexModelOwner(this, async owner => {
+    const settings = await codexModelSettings(owner);
+    if ((settings.modelProvider || null) !== catalog.provider) throw new Error('Codex 模型来源已变化，请重新打开菜单');
+    const current = catalog.models.find(row => codexModelId(row) === settings.model);
+    let update;
+    if (kind === 'model') {
+      const model = name === '__codex_default__' ? catalog.models.find(row => row.isDefault)
+        : catalog.models.find(row => codexModelId(row) === name && !row.hidden);
+      if (!model) throw new Error('Codex 模型已不存在');
+      const effort = name === '__codex_default__' ? model.defaultReasoningEffort
+        : model.supportedReasoningEfforts.find(row => row.reasoningEffort === settings.effort)?.reasoningEffort || model.defaultReasoningEffort;
+      update = { model: codexModelId(model), effort };
+    } else if (kind === 'effort') {
+      if (!current?.supportedReasoningEfforts.some(row => row.reasoningEffort === label)) throw new Error('当前模型不支持这个思考强度');
+      if (label === 'max' && !this.codexBackend) await this.enableCodexMax();
+      update = { effort: label };
+    } else {
+      const tier = codexFastTier(current);
+      if (!tier) throw new Error('当前模型不支持 Fast');
+      update = { serviceTier: label === 'on' || label === 'Fast' ? tier.id : null };
+    }
+    if (this.selectionKey() !== sel || this.threadId !== id || this.sel !== generation) throw new Error('会话已切换，请重新操作');
+    if (owner.thread) {
+      await codexBackend.client.request('thread/settings/update', { threadId: id, ...update });
+      Object.assign(owner.thread.settings, update);
+      codexBackend.remember(owner.thread);
+      return owner.thread.settings;
+    }
+    return owner.cdp.evaluate(helpersCall(`nativeSessionAction('codex', ${JSON.stringify(id)}, 'modelSettings', ${JSON.stringify(update)})`, owner.context));
+  });
+  if (this.selectionKey() !== sel || this.threadId !== id || this.sel !== generation) return;
+  if (kind === 'fast') {
+    const current = catalog.models.find(row => codexModelId(row) === result.model);
+    this.emit({ t: 'fastState', sel, fast: codexFastState(current, result) });
+  }
+  if (this.codexBackend) codexBackend.changed(id);
+  else this.refreshModelChat().catch(() => {});
+}
+
 const backendRoutes = {
   settings(m) { return withBackendSettings(this, context => context.showCodexSettings('', m.requestId)); },
   codexSetting(m) { return withBackendSettings(this, context => context.showCodexSettings(String(m.id || ''), m.requestId, typeof m.value === 'string' ? m.value : undefined)); },
@@ -340,38 +442,25 @@ const backendRoutes = {
     this.emit({ t: 'historyDone', sel: this.selectionKey(), requestId: m.requestId, earlier: chat.earlier });
   },
   async openMenu(m) {
-    const sel = this.selectionKey(), thread = codexBackend.threads.get(this.threadId), settings = thread.settings;
-    const { data } = await awaitCdpRead(codexBackend.client.request('model/list', {}));
-    if (this.selectionKey() !== sel) return;
-    const current = data.find(row => row.model === (settings.model || thread.model));
-    const items = m.kind === 'model' ? data.filter(row => !row.hidden).map(row => ({ label: row.displayName, id: row.model, checked: current?.model === row.model }))
-      : m.kind === 'effort' ? (current?.supportedReasoningEfforts || []).map(row => ({ label: row.reasoningEffort, checked: row.reasoningEffort === (settings.effort ?? settings.reasoningEffort) }))
-      : m.kind === 'permission' ? ['Ask for approval', 'Approve for me', 'Full access'].map(label => ({ label, checked: label === codexBackend.chat(this.threadId).permission }))
-      : m.kind === 'fast' ? ['Standard', 'Fast'].map(label => ({ label, checked: (settings.serviceTier === 'fast' ? 'Fast' : 'Standard') === label })) : [];
-    this.emit({ t: 'menu', kind: m.kind, requestId: m.requestId, sel, items,
-      fast: { on: settings.serviceTier === 'fast' } });
+    if (['model', 'effort', 'fast'].includes(m.kind)) return readCodexModelMenu.call(this, m.kind, m.requestId);
+    const sel = this.selectionKey();
+    const items = m.kind === 'permission' ? ['Ask for approval', 'Approve for me', 'Full access'].map(label => ({ label, checked: label === codexBackend.chat(this.threadId).permission })) : [];
+    this.emit({ t: 'menu', kind: m.kind, requestId: m.requestId, sel, items });
   },
   async pickMenu(m) {
-    const id = this.threadId, sel = this.selectionKey(), directory = this.codexDirectory;
+    const id = this.threadId, directory = this.codexDirectory;
+    if (['model', 'effort', 'fast'].includes(m.kind)) return pickCodexModelMenu.call(this, m.kind, m.label, m.name);
     let update;
     if (m.kind === 'codex-chat') {
       if (m.label === 'Archive') return backendRoutes.codexArchive.call(this, { id: `thread:backend:${id}` });
       return backendRoutes.codexRename.call(this, { id: `thread:backend:${id}`, name: m.name });
     }
-    if (m.kind === 'model') {
-      const { data } = await codexBackend.client.request('model/list', {});
-      const model = data.find(row => row.displayName === m.label);
-      if (!model) throw new Error('Codex 模型已不存在');
-      update = { model: model.model, effort: model.defaultReasoningEffort };
-    } else if (m.kind === 'effort') update = { effort: m.label };
-    else if (m.kind === 'permission') update = { approvalPolicy: m.label === 'Full access' ? 'never' : 'on-request', approvalsReviewer: m.label === 'Approve for me' ? (IS_WIN ? 'guardian_subagent' : 'auto_review') : 'user', sandboxPolicy: { type: m.label === 'Full access' ? 'dangerFullAccess' : 'workspaceWrite', ...(m.label === 'Full access' ? {} : { writableRoots: [directory], networkAccess: false, excludeTmpdirEnvVar: false, excludeSlashTmp: false }) } };
-    else if (m.kind === 'fast') update = { serviceTier: m.label === 'on' || m.label === 'Fast' ? 'fast' : null };
+    if (m.kind === 'permission') update = { approvalPolicy: m.label === 'Full access' ? 'never' : 'on-request', approvalsReviewer: m.label === 'Approve for me' ? (IS_WIN ? 'guardian_subagent' : 'auto_review') : 'user', sandboxPolicy: { type: m.label === 'Full access' ? 'dangerFullAccess' : 'workspaceWrite', ...(m.label === 'Full access' ? {} : { writableRoots: [directory], networkAccess: false, excludeTmpdirEnvVar: false, excludeSlashTmp: false }) } };
     else throw new Error('当前后台没有此设置');
     await codexBackend.withWriter(id, async thread => {
       await codexBackend.client.request('thread/settings/update', { threadId: id, ...update });
       Object.assign(thread.settings, update); codexBackend.remember(thread);
     });
-    if (m.kind === 'fast') this.emit({ t: 'fastState', sel, fast: { on: update.serviceTier === 'fast' } });
     codexBackend.changed(id);
   },
   async codexRequest(m) {
@@ -547,6 +636,8 @@ async function readCodexMenu(context, button, select = items => items.length ? i
 export const adapter = {
   backendQuestionState,
   backendRoutes,
+  readModelMenu: readCodexModelMenu,
+  pickModelSetting: pickCodexModelMenu,
   routes: { toolDetails: backendRoutes.toolDetails },
   async backendOwner(id) {
     await codexBackend.releasing.get(id)?.promise;
@@ -894,14 +985,6 @@ export const adapter = {
     const marks = agentMarks(edits, f.path, text);
     if (marks) return { marks, markSource: 'agent', diff };
     return null;
-  },
-
-  async pickModelMenu(label) {
-    if (!await this.cdp.evaluate(helpersCall(`pickCodexModel(${JSON.stringify(String(label))})`))) return false;
-    await this.waitModel(label);
-    await this.closeMenus();
-    this.refreshModelChat().catch(() => {});
-    return true;
   },
 
   async showSettings(requestId = 0) {

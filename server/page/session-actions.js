@@ -338,6 +338,16 @@
       const manager = codexConversationManager(id, codexHistoryScopes(), 'local');
       return manager?.getStreamRole(id)?.role === 'owner' ? { cwd: localFilePath(manager.getConversation(id).cwd) } : null;
     }
+    if (app === 'codex' && (catalog === 'modelSettings' || catalog === 'modelPage')) return (async () => {
+      const context = await nativeSessionContext(app, id);
+      const manager = codexConversationManager(id, codexHistoryScopes(), context.host || 'local');
+      const conversation = manager.getConversation(id);
+      if (!conversation) throw new Error('Codex 会话尚未加载');
+      if (catalog === 'modelPage') return manager.sendRequest('model/list', nativeValue(previous));
+      const settings = conversation.latestThreadSettings || {};
+      return { model: settings.model || conversation.latestModel, effort: settings.effort ?? conversation.latestReasoningEffort,
+        serviceTier: settings.serviceTier ?? null, modelProvider: settings.modelProvider || conversation.modelProvider };
+    })();
     if (catalog === 'cleanup' || catalog === 'name') return nativeSessionCleanup(app, id);
     if (catalog === 'settings') {
       if (app === 'cursor') {
@@ -468,6 +478,12 @@
     return nativeSessionContext('codex', created.conversationId);
   };
   const nativeSessionAction = async (app, id, action, name) => {
+    if (app === 'codex' && action === 'modelSettings') {
+      const context = await nativeSessionContext(app, id);
+      const manager = codexConversationManager(id, codexHistoryScopes(), context.host || 'local');
+      await manager.updateThreadSettingsForNextTurn(id, nativeValue(name));
+      return nativeSessionInfo(app, id, 'modelSettings');
+    }
     if (action === 'project' && app === 'cursor') {
       const services = cursorSessionServices();
       const uri = services.composer.composerChatService._workspaceContextService.getWorkspace().folders[0].uri;

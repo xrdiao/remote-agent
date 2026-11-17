@@ -118,18 +118,9 @@ export const methods = {
     if (this.app === 'devin' && kind === 'mode') return this.readWindowsDevinMode(requestId);
     if (this.app === 'cursor' && (kind === 'model' || kind === 'effort' || kind === 'mode'))
       return this.readCursorMenu(kind, requestId);
+    if (this.app === 'codex' && (kind === 'model' || kind === 'effort' || kind === 'fast'))
+      return this.adapter.readModelMenu.call(this, kind, requestId);
     const sel = this.sel;
-    if (this.app === 'codex' && (kind === 'model' || kind === 'effort')) {
-      const data = await this.cdp.evaluate(`(() => {
-        const h = ${PAGE_SRC};
-        if (!h.codexPickerProps()) return null;
-        return { items: ${kind === 'model' ? 'h.modelItemsFast()' : 'h.effortItems(true, true)'}, fast: h.fastInfo(), model: h.agentModelName() };
-      })()`);
-      if (data) {
-        if (this.sel === sel) this.emit({ t: 'menu', kind, ...data, requestId, sel: this.selectionKey() });
-        return;
-      }
-    }
     if (kind === 'effort') {
       let items = await this.cdp.evaluate(helpersCall(`effortItems(true, ${this.app === 'codex'})`));
       let fast = await this.cdp.evaluate(helpersCall('fastInfo()'));
@@ -265,6 +256,8 @@ export const methods = {
     if (this.app === 'devin' && kind === 'mode') return this.pickWindowsDevinMode(label);
     if (this.app === 'cursor' && (kind === 'model' || kind === 'effort' || kind === 'mode'))
       return this.withCursorUiRead(() => this.pickCursorMenu(kind, label));
+    if (this.app === 'codex' && (kind === 'model' || kind === 'effort' || kind === 'fast'))
+      return this.adapter.pickModelSetting.call(this, kind, label, name);
     if (kind === 'fast') {
       const on = label === 'on';
       if (!await this.cdp.evaluate(helpersCall(`pickFast(${on})`))) {
@@ -283,15 +276,6 @@ export const methods = {
       return;
     }
     if (kind === 'effort') {
-      if (this.app === 'codex' && label === 'max') {
-        const max = await this.cdp.evaluate(`(() => {
-          const h = ${PAGE_SRC};
-          if (h.effortItems().some(x => x.label === 'max')) return 'visible';
-          return h.effortItems(false, true).some(x => x.label === 'max') ? 'hidden' : null;
-        })()`);
-        if (!max) throw new Error('当前 Codex 模型不支持 Max');
-        if (max === 'hidden') await this.enableCodexMax();
-      }
       const picked = await this.cdp.evaluate(helpersCall(`pickEffort(${JSON.stringify(label)})`));
       if (!picked) {
         await this.openEffortMenu();
@@ -300,7 +284,6 @@ export const methods = {
         await this.tapCss(pos.x, pos.y);
         await this.closeMenus();
       }
-      if (this.app === 'codex' && !await this.waitFor(`effortItems().some(item => item.checked && item.label === ${JSON.stringify(label)})`)) throw new Error('尚未确认电脑端思考强度，请重新读取强度列表');
       this.refreshModelChat().catch(() => {});
       return;
     }

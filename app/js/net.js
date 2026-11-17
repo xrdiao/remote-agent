@@ -215,6 +215,7 @@ function applySelection(m, clearChat = true) {
     setWindowReady(false);
     $('items').inert = true;
     capabilityBlock = ''; viewSel = m.sel || ''; liveChatSelection = ''; beginChatSelection(); thoughtObserver.disconnect(); cache.clear(); $('sessionNotice').hidden = true;
+    if (currentApp === 'codex') { menuCache.delete(menuCacheKey('model')); menuCache.delete(menuCacheKey('effort')); }
   }
   const here = currentComputer();
   const id = m.id || here?.win;
@@ -1473,7 +1474,7 @@ async function connect(resumeLink = null) {
     else if (m.t === 'fastState') {
       if (m.sel && m.sel !== viewSel) return;
       for (const [key, cached] of menuCache) {
-        if (!key.startsWith(`${currentApp}|${viewSel}|`)) continue;
+        if (!key.startsWith(menuCachePrefix())) continue;
         cached.fast = m.fast;
         if (m.fusion) cached.fusion = m.fusion;
       }
@@ -1493,7 +1494,10 @@ async function connect(resumeLink = null) {
         || m.kind !== menuPending.kind || menuPending.sel !== viewSel)) return;
       if (m.error) return showMenuError(m.kind, m.error);
       if (m.requestId != null) menuPending = null;
-      lruPut(menuCache, menuCacheKey(m.kind), m, 24);
+      if (currentApp === 'codex' && m.modelItems && m.effortItems) {
+        lruPut(menuCache, menuCacheKey('model'), { ...m, kind: 'model', items: m.modelItems }, 24);
+        lruPut(menuCache, menuCacheKey('effort'), { ...m, kind: 'effort', items: m.effortItems }, 24);
+      } else lruPut(menuCache, menuCacheKey(m.kind), m, 24);
       if (m.requestId == null && !(sheetKind === 'menu' && menuSheetKind === m.kind)) return;
       showMenu(m.kind, m.items, m.max, m.fusion, m.fast, m.model, false, m.pricing);
     }

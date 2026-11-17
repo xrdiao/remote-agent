@@ -52,9 +52,47 @@ export default [
     }
     return evidence;
   } },
+  { id: 'models.codex-menu', title: 'Codex 模型菜单和 Fast 往返', refs: ['F08', 'W04'], mode: 'write', apps: ['codex'], async run(c, app) {
+    const b = c.b;
+    await c.open(await c.target(app, 'models', true));
+    const choices = await c.menu('model');
+    c.check(choices.some(row => row.checked), '模型菜单显示当前模型');
+    if (!await b.has('#sheet [data-fast]')) throw new Unavailable('当前模型没有 Fast 档位，需要提供支持 Fast 的会话');
+    const original = await b.read("document.querySelector('#sheet [data-fast]').dataset.fast === 'off'");
+    let menuRequests = 0;
+    const previous = b.cdp.handlers.get('Network.webSocketFrameSent');
+    b.cdp.on('Network.webSocketFrameSent', event => {
+      previous?.(event);
+      if (event.response.opcode !== 1) return;
+      try { const message = JSON.parse(event.response.payloadData); if (message.t === 'openMenu') menuRequests++; } catch {}
+    });
+    try {
+      await b.click('#sheet [data-effort-open]');
+      await b.wait("menuSheetKind==='effort'&&!menuPending", '思考强度菜单');
+      c.check(await b.has('#sheet [data-kind="effort"]'), '同一次读取包含思考强度');
+      await b.click('#sheet [data-model-back]');
+      await b.wait("menuSheetKind==='model'&&!menuPending", '返回模型菜单');
+      c.equal(menuRequests, 0, '模型与强度之间切换不重复请求');
+      for (const on of [!original, original]) {
+        await b.click('#sheet [data-fast]');
+        await b.wait('!modelSwitchRequest', 'Fast 设置回执');
+        c.equal(await b.read("document.querySelector('#sheet [data-fast]').dataset.fast === 'off'"), on, 'Fast 状态更新');
+      }
+      await c.menu('model');
+      c.equal(await b.read("document.querySelector('#sheet [data-fast]').dataset.fast === 'off'"), original, '重新读取后 Fast 状态已恢复');
+    } finally {
+      if (previous) b.cdp.on('Network.webSocketFrameSent', previous); else b.cdp.handlers.delete('Network.webSocketFrameSent');
+      if (await b.has('#sheet [data-fast]') && await b.read("document.querySelector('#sheet [data-fast]').dataset.fast === 'off'") !== original) {
+        await b.click('#sheet [data-fast]');
+        await b.wait('!modelSwitchRequest', '恢复 Fast');
+      }
+      await b.dismiss();
+    }
+    return { fastRestored: original };
+  } },
   { id: 'models.change', title: '切换模型并读回、恢复', refs: ['F08', 'S02'], mode: 'write', apps: true, async run(c, app) {
     const target = await c.target(app, 'models', true); await c.open(target);
-    const choices = await c.menu('model'), original = choices.find(row => row.checked), next = choices.find(row => !row.checked && !row.disabled);
+    const choices = await c.menu('model'), original = choices.find(row => row.checked), next = choices.find(row => !row.checked && !row.disabled && !(app === 'codex' && row.label === 'Default Recommended set of models'));
     if (!original || !next) throw new Unavailable('原生模型菜单不足两个可选模型或未标识当前模型');
     const values = [];
     try { for (const choice of [next, original]) {
