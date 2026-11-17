@@ -743,7 +743,8 @@ function fusionBlock(fusion) {
 // Devin's permission modes: the desktop's own description, plus a Chinese one when the app is in Chinese.
 const MODE_ZH = { Code: '写代码、改文件，正常提问', Smart: '模型判断安全的操作自动批准', Ask: '只回答问题，不改代码', Plan: '先做方案，再动手', 'Bypass Permissions': '自动批准所有工具调用（不再询问）' };
 const modeDesc = it => (I18N.lang === 'zh' && MODE_ZH[it.label]) || it.desc;
-const menuCacheKey = kind => `${currentApp}|${viewSel}|${kind}`;
+const menuCachePrefix = () => `${currentApp === 'codex' ? `${currentComputer()?.key || ''}|${connGen}|` : ''}${currentApp}|${viewSel}|`;
+const menuCacheKey = kind => `${menuCachePrefix()}${kind}`;
 function requestMenu(kind, loadingMsg) {
   clearTimeout(menuRefreshTimer);
   if (kind === 'model' || kind === 'effort') {
@@ -752,9 +753,12 @@ function requestMenu(kind, loadingMsg) {
   }
   const cached = menuCache.get(menuCacheKey(kind));
   if (cached) {
+    const localNavigation = currentApp === 'codex' && sheetKind === 'menu'
+      && ['model', 'effort'].includes(menuSheetKind) && ['model', 'effort'].includes(kind) && menuSheetKind !== kind;
     menuRequest++;
-    showMenu(kind, cached.items, cached.max, cached.fusion, cached.fast, cached.model, true, cached.pricing);
-    menuRefreshTimer = setTimeout(() => send({ t: 'openMenu', kind }), 150);
+    if (currentApp === 'codex') menuPending = null;
+    showMenu(kind, cached.items, cached.max, cached.fusion, cached.fast, cached.model, !localNavigation, cached.pricing);
+    if (!localNavigation) menuRefreshTimer = setTimeout(() => send({ t: 'openMenu', kind }), 150);
   } else {
     status(loadingMsg);
     menuSheetKind = kind;
@@ -784,7 +788,7 @@ function showMenu(kind, items, max, fusion, fast, model, refreshing, pricing) {
     const shown = perm ? `${esc(perm[0])}<span class="sub">${esc(perm[1])}</span>` : effort ? `${esc(effort)} · ${esc(it.label)}` : esc(it.label);
     const pick = picking
       ? `<button class="opt ${it.checked ? 'cur' : ''}" data-fusion-pick="${esc(part)}" data-label="${esc(it.label)}"><span class="lbl">${esc(it.label)}${modelPricingHtml(it.pricing, it.checked)}</span></button>`
-      : `<button class="opt ${it.checked ? 'cur' : ''}" data-kind="${kind}" data-label="${esc(it.label)}"><span class="lbl">${shown}${it.desc ? `<span class="sub">${esc(modeDesc(it))}</span>` : ''}${modelPricingHtml(it.pricing, it.checked)}</span>${it.label === 'Bypass Permissions' ? '<span class="tag" style="color:var(--warn)">⚠</span>' : ''}</button>`;
+      : `<button class="opt ${it.checked ? 'cur' : ''}" data-kind="${kind}" data-label="${esc(it.label)}"${currentApp === 'codex' && kind === 'model' ? ` data-model-id="${esc(it.id)}"` : ''}><span class="lbl">${shown}${it.desc ? `<span class="sub">${esc(modeDesc(it))}</span>` : ''}${modelPricingHtml(it.pricing, it.checked)}</span>${it.label === 'Bypass Permissions' ? '<span class="tag" style="color:var(--warn)">⚠</span>' : ''}</button>`;
     return it.params ? `<div class="optRow">${pick}<button class="paramBtn" data-params="${esc(it.id)}" data-plabel="${esc(it.label)}">参数</button></div>` : pick;
   }).join('');
   const agentRow = '';
