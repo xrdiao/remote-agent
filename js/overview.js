@@ -22,13 +22,6 @@ const OV_EN = {
   '更多操作': 'More actions', '本次发送': 'Send this message', '输入工具': 'Input tools',
   '状态待确认': 'Status unavailable', '执行失败': 'Failed', '其余项目仍在读取…': 'Loading remaining projects…',
   '项目读取失败': 'Could not load projects',
-  '电脑互控': 'Computer links', '互控': 'Links', '电脑身份校验失败': 'Computer identity could not be verified',
-  '授权后，两台电脑可通过各自的系统账号执行对方的命令。': 'Authorized computers can execute commands using each other’s system accounts.',
-  '请先在此入口配对至少两台电脑。': 'Pair at least two computers with this entry first.', '两台电脑已连接': 'Computers connected',
-  '已撤销互控授权': 'Computer link revoked', '离线电脑尚未撤销，请上线后再次撤销': 'Revoke the offline computer after it reconnects',
-  '电脑离线': 'Computer offline', '正在读取…': 'Loading…', '读取失败': 'Could not load', '已授权': 'Authorized',
-  '部分授权': 'Partially authorized', '未启用': 'Not enabled', '连接': 'Connect', '启用': 'Enable', '撤销': 'Revoke',
-  '刷新状态': 'Refresh', '正在处理…': 'Working…',
 };
 const ovT = s => I18N.lang === 'en' && OV_EN[s] || s;
 const OV_ICON = {
@@ -38,7 +31,6 @@ const OV_ICON = {
   star: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="m12 3 2.8 5.7 6.3.9-4.5 4.4 1.1 6.2-5.7-3-5.7 3 1.1-6.2L3 9.6l6.2-.9z"/></svg>',
   arrow: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5 12l7-7 7 7"/></svg>',
   fusion: '<svg viewBox="0 0 24 24" aria-hidden="true"><use href="logo-fusion.svg#fusion"/></svg>',
-  peers: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2.5" y="4" width="7" height="6" rx="1.2"/><rect x="14.5" y="14" width="7" height="6" rx="1.2"/><path d="M6 10v2h12v2M4 12h4m8 10h4"/></svg>',
 };
 const ovSt = new Map(), ovBusy = new Set(), ovErr = new Map();
 const ovCollapsed = new Set();
@@ -122,7 +114,6 @@ function ovPoll() {
   if (document.visibilityState !== 'visible') return;
   ovSync().then(() => {
     for (const e of ovList) if (e.c && !e.foreign) ovFetch(e);
-    if (ovS.level === 'peers' && peerEntries().some(entry => peerOnline(entry) && !peerStates.has(entry.id))) refreshPeers();
     ovRefreshPreview();
     ovRender();
   });
@@ -508,7 +499,6 @@ function ovSessions(recs, scope) {
 function ovEmpty(text) { return `<div class="ov-empty">${text}</div>`; }
 function ovBoard(all, projs, scoped) {
   if (ovS.level === 'fusion') return fusionBoard();
-  if (ovS.level === 'peers') return peerBoard();
   if (ovS.level === 'favorites') return scoped.sort(ovCompare).map(row => row.fusion
     ? fusionWorkbenchTile(ovList.find(entry => entry.id === row.comp), fusionWorkspaces.get(row.comp).runs.find(run => run.id === row.threadId)) : ovSessTile(row)).join('')
     || ovEmpty(`${ovT('还没有收藏会话')}<small>${ovT('长按会话卡片可收藏')}</small>`);
@@ -529,11 +519,10 @@ function ovPlan() {
   const crumbs = [`<label class="ov-scope"><select class="ovRaw" data-ov-computer aria-label="${ovT('电脑范围')}"><option value=""${!ovS.comp ? ' selected' : ''}>${ovT('全部电脑')}</option>${ovList.map(e => `<option value="${esc(e.id)}"${ovS.comp === e.id ? ' selected' : ''}>${esc(e.name)}</option>`).join('')}</select><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></label>`];
   if (ovS.proj) crumbs.push(`<i>›</i><button data-ov="crumb" data-v="proj"><span class="ovRaw">${esc(projs.find(p => p.key === ovS.proj)?.name || '')}</span></button>`);
   if (ovS.level === 'favorites') crumbs.splice(0, crumbs.length, `<span class="ov-favorites-title">${ovT('收藏')}</span>`);
-  if (ovS.level === 'peers') crumbs.splice(0, crumbs.length, `<span class="ov-favorites-title">${ovT('电脑互控')}</span>`);
   if (ovS.level === 'fusion') crumbs.unshift('<strong class="ov-fusion-title">Fusion ·</strong>');
-  const levels = [['sessions', ovT('概览'), OV_ICON.grid], ['projects', ovT('项目'), OV_ICON.folder], ['favorites', ovT('收藏'), OV_ICON.star], ['fusion', 'Fusion', OV_ICON.fusion], ['peers', ovT('互控'), OV_ICON.peers]]
+  const levels = [['sessions', ovT('概览'), OV_ICON.grid], ['projects', ovT('项目'), OV_ICON.folder], ['favorites', ovT('收藏'), OV_ICON.star], ['fusion', 'Fusion', OV_ICON.fusion]]
     .map(([v, l, ic]) => `<button class="ov-lv${ovS.level === v ? ' on' : ''}" data-ov="level" data-v="${v}"><i>${ic}${v === 'sessions' && anyWait && ovS.level !== 'sessions' ? '<span class="ov-dot"></span>' : ''}</i><span>${l}</span></button>`).join('');
-  const summary = (['fusion', 'peers'].includes(ovS.level) ? [] : [['total', ovT(ovS.level === 'favorites' ? '收藏会话' : '全部会话'), 'var(--fg-3)'], ['wait', ovT('需要你'), 'var(--ov-amber)'], ['run', ovT('运行中'), 'var(--accent)'], ['err', ovT('已停止'), 'var(--err)'], ['done', '今日完成', 'var(--ok)'], ['inactive', ovT('不常用'), 'var(--fg-4)']])
+  const summary = (ovS.level === 'fusion' ? [] : [['total', ovT(ovS.level === 'favorites' ? '收藏会话' : '全部会话'), 'var(--fg-3)'], ['wait', ovT('需要你'), 'var(--ov-amber)'], ['run', ovT('运行中'), 'var(--accent)'], ['err', ovT('已停止'), 'var(--err)'], ['done', '今日完成', 'var(--ok)'], ['inactive', ovT('不常用'), 'var(--fg-4)']])
     .filter(([n]) => k[n]).map(([n, l, c]) => `<span><i class="ov-d" style="background:${c}"></i><b>${k[n]}</b><em>${l}</em></span>`).join('');
   const lane = ovS.level !== 'projects' || ovS.proj ? '' : scoped.filter(r => r.state === 'wait').sort((a, b) => ovRecency(b) - ovRecency(a))
     .map(r => `<div class="ov-lane-item" data-ov="lane" data-id="${esc(r.key)}">${ovRecLogo(r)}<span class="ovRaw">${esc(r.title)}</span><small>${esc(ovBadge(r))}</small></div>`).join('');
@@ -677,7 +666,6 @@ function ovRestore(st) {
   ovExpanded.clear();
   for (const id of st?.ovExpanded || []) ovExpanded.add(id);
   if (['fusion', 'favorites'].includes(ovS.level)) refreshFusionWorkspace();
-  if (ovS.level === 'peers') refreshPeers();
   ovRender(true, st?.ovScroll || 0);
 }
 function ovMove(change, push = false) {
@@ -688,7 +676,6 @@ function ovMove(change, push = false) {
   const depth = history.state?.ovDepth || 0;
   Object.assign(ovS, change);
   if (['fusion', 'favorites'].includes(ovS.level)) refreshFusionWorkspace();
-  if (ovS.level === 'peers') refreshPeers();
   history[push ? 'pushState' : 'replaceState']({ ...ovHistory(0), ovDepth: depth + Number(push) }, '');
   ovRender(true, 0);
 }
@@ -1032,7 +1019,7 @@ $('overview').addEventListener('click', e => {
     case 'proj': return ovMove({ comp: id.split('|')[0], proj: id, level: 'projects', open: null }, true);
     case 'level':
       store.set('ov-level', v);
-      return ovMove({ level: v, comp: ['favorites', 'peers'].includes(v) ? null : ovS.comp, proj: null, open: null });
+      return ovMove({ level: v, comp: v === 'favorites' ? null : ovS.comp, proj: null, open: null });
     case 'batch-all':
       ovBatch.selected.clear();
       for (const r of ovScopedRecs().filter(ovCanManage)) ovBatch.selected.set(ovSessionIdentity(r), r);

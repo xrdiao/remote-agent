@@ -36,19 +36,14 @@ function entryKey() {
   entryKeyPromise.catch(() => { entryKeyPromise = null; });
   return entryKeyPromise;
 }
-async function entrySign(payload) {
-  const key = await entryKey();
-  const signature = key.native ? window.AgentRemoteApp.authSign(payload)
-    : authB64(await crypto.subtle.sign({ name: 'ECDSA', hash: 'SHA-256' }, key.privateKey, new TextEncoder().encode(payload)));
-  if (!signature) throw new Error('入口签名失败，请重新打开入口');
-  return signature;
-}
 async function entryProof(computer, scope) {
-  await entryKey();
+  const key = await entryKey();
   const ts = Date.now(), nonce = authB64(crypto.getRandomValues(new Uint8Array(16)));
   const id = computer.id || await computerIdFromKey(computer.key);
   const payload = ['ra-entry-v1', id, computer.token, scope, ts, nonce].join('\n');
-  const signature = await entrySign(payload);
+  const signature = key.native ? window.AgentRemoteApp.authSign(payload)
+    : authB64(await crypto.subtle.sign({ name: 'ECDSA', hash: 'SHA-256' }, key.privateKey, new TextEncoder().encode(payload)));
+  if (!signature) throw new Error('入口签名失败，请重新打开入口');
   return { ts, nonce, signature };
 }
 async function entryHeaders(computer, method, path) {
