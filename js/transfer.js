@@ -1,8 +1,8 @@
 /* File transfer belongs to its selected computer; it never changes the active Agent or its editor. */
 let transferComputer = null, transferTab = 'download', transferDirectory = null, transferPicker = null;
 let transferUploadPath = '', transferSelection = new Map(), transferRequest = 0;
-const transferXhrs = new Set();
-let transferUploads = [], transferUploading = false, transferCancelled = false;
+const transferUploadQueues = new Map(), transferUploadRuns = new Map();
+let transferUploads = [], transferUploading = false;
 const transferDirectories = JSON.parse(store.get('transfer-directories') || '{}');
 let transferClipboard = null, transferFileOperation = null;
 let transferDownloadRequest = null;
@@ -90,7 +90,9 @@ async function openTransfer(id = currentComputer().id) {
   if (id !== transferComputer?.id) {
     transferRequest++; transferDirectory = null; transferPicker = null; transferSelection = new Map();
     transferUploadPath = transferDirectories[id]?.upload || '';
-    if (!transferUploading) { transferUploads = []; $('transferProgress').replaceChildren(); }
+    if (!transferUploadQueues.has(id)) transferUploadQueues.set(id, []);
+    transferUploads = transferUploadQueues.get(id);
+    $('transferProgress').replaceChildren(...transferUploads.map(item => item.row).filter(Boolean));
   }
   transferComputer = computer;
   if (!history.state?.transfer) {
@@ -213,11 +215,13 @@ $('transferDownload').onclick = async () => {
   }
 };
 function renderTransferUploads() {
+  const queue = transferUploads;
+  transferUploading = transferUploadRuns.has(queue);
   for (const item of transferUploads) {
     if (!item.row) {
       item.row = document.createElement('div'); item.row.className = 'transferUploadItem';
       item.row.innerHTML = `<span class="transferFileIcon" aria-hidden="true">${fileEntryIcon(false)}</span><span class="transferFileInfo"><span class="transferName">${esc(item.name)}</span><span class="hint transferItemStatus"></span></span><button class="transferRemove transferIcon" aria-label="移除 ${esc(item.name)}">×</button>`;
-      item.row.querySelector('button').onclick = () => { if (transferUploading) return; item.row.remove(); transferUploads.splice(transferUploads.indexOf(item), 1); renderTransferUploads(); };
+      item.row.querySelector('button').onclick = () => { if (transferUploadRuns.has(queue)) return; item.row.remove(); queue.splice(queue.indexOf(item), 1); renderTransferUploads(); };
       $('transferProgress').append(item.row);
     }
     const text = `${fmtSize(item.file.size)} · ${item.status}`;
@@ -234,34 +238,38 @@ function renderTransferUploads() {
   $('transferRetry').hidden = transferUploading || !transferUploads.some(item => item.failed);
   for (const id of ['transferFiles', 'transferFolder', 'transferCollision', 'transferChangeTarget']) $(id).disabled = transferUploading;
 }
-async function transferSendFile(item) {
+async function transferSendFile(item, batch, render) {
   const query = new URLSearchParams({ directory: item.directory, name: item.name, mode: item.mode });
   const path = '/api/transfer/upload?' + query;
   return uploadBinary({ target: item.base, computer: item.computer, path, file: item.file,
-    cancelled: () => transferCancelled,
-    onRequest: request => transferXhrs.add(request), onEnd: request => transferXhrs.delete(request),
+    cancelled: () => batch.cancelled,
+    onRequest: request => batch.requests.add(request), onEnd: request => batch.requests.delete(request),
     onProgress: event => {
       item.status = event.lengthComputable ? `上传中 ${Math.round(event.loaded / event.total * 100)}%` : '上传中';
-      renderTransferUploads();
+      render();
     },
   });
 }
 async function runTransferUploads(items) {
-  transferUploading = true; transferCancelled = false;
+  const queue = transferUploads;
+  if (!items.length || transferUploadRuns.has(queue)) return;
+  const batch = { cancelled: false, requests: new Set() };
+  transferUploadRuns.set(queue, batch);
+  const render = () => { if (transferUploads === queue) renderTransferUploads(); };
   for (const item of items) { item.mode = $('transferCollision').value; item.pending = false; }
   renderTransferUploads();
   let next = 0;
   const paths = new Map();
   async function upload(item) {
-    if (transferCancelled) { item.status = '已取消'; item.failed = false; return; }
-    item.failed = false; item.status = '上传中'; renderTransferUploads();
+    if (batch.cancelled) { item.status = '已取消'; item.failed = false; return; }
+    item.failed = false; item.status = '上传中'; render();
     try {
-      const result = await transferSendFile(item);
+      const result = await transferSendFile(item, batch, render);
       item.status = result.skipped ? '已跳过' : '已上传';
       item.row.remove();
-      transferUploads.splice(transferUploads.indexOf(item), 1);
-    } catch (error) { item.status = error.message; item.failed = !transferCancelled; }
-    renderTransferUploads();
+      queue.splice(queue.indexOf(item), 1);
+    } catch (error) { item.status = error.message; item.failed = !batch.cancelled; }
+    render();
   }
   async function worker() {
     while (next < items.length) {
@@ -273,8 +281,8 @@ async function runTransferUploads(items) {
       await task;
     }
   }
-  await Promise.all(Array.from({ length: Math.min(2, items.length) }, () => worker()));
-  transferUploading = false; renderTransferUploads();
+  try { await Promise.all(Array.from({ length: Math.min(2, items.length) }, () => worker())); }
+  finally { transferUploadRuns.delete(queue); render(); }
 }
 function chooseTransferFiles(files) {
   if (!files.length || !transferUploadPath || transferUploading) return;
@@ -285,7 +293,12 @@ $('transferFiles').onclick = () => $('transferFileInput').click();
 $('transferFolder').onclick = () => $('transferFolderInput').click();
 for (const id of ['transferFileInput', 'transferFolderInput']) $(id).onchange = e => { chooseTransferFiles(e.target.files); e.target.value = ''; };
 $('transferStart').onclick = () => runTransferUploads(transferUploads.filter(item => item.pending));
-$('transferCancel').onclick = () => { transferCancelled = true; for (const xhr of transferXhrs) xhr.abort(); };
+$('transferCancel').onclick = () => {
+  const batch = transferUploadRuns.get(transferUploads);
+  if (!batch) return;
+  batch.cancelled = true;
+  for (const xhr of batch.requests) xhr.abort();
+};
 $('transferRetry').onclick = () => runTransferUploads(transferUploads.filter(item => item.failed));
 $('transferCollision').onchange = () => { $('transferCollisionLabel').textContent = '同名文件：' + ({ rename: '另存', skip: '跳过', replace: '覆盖' })[$('transferCollision').value] + ' ›'; };
 

@@ -28,9 +28,10 @@ function scDb() {
   return scDbP;
 }
 const scReq = (mode, fn) => scDb().then(db => new Promise((res, rej) => {
-  const rq = fn(db.transaction('s', mode).objectStore('s'));
-  rq.onsuccess = () => res(rq.result);
-  rq.onerror = () => rej(rq.error);
+  const transaction = db.transaction('s', mode);
+  const request = fn(transaction.objectStore('s'));
+  transaction.oncomplete = () => res(request.result);
+  transaction.onabort = () => rej(transaction.error);
 })).catch(() => null);
 const idbGet = k => scReq('readonly', s => s.get(k));
 const idbPut = (k, v) => scTrackWrite(k, scReq('readwrite', s => s.put(v, k)));
@@ -177,17 +178,24 @@ function scSave(key, items, collapsed) {
     if (size === undefined) { size = JSON.stringify(it).length; scItemBytes.set(it, size); }
     return sum + size;
   }, 0);
-  return Promise.all([idbPut('h:' + key, { items, collapsed }), idbPut('m:' + key, { n: items.length, bytes, updated })]);
+  return scTrackWrite('h:' + key, scReq('readwrite', s => {
+    s.put({ n: items.length, bytes, updated }, 'm:' + key);
+    return s.put({ items, collapsed }, 'h:' + key);
+  }).then(result => result !== null));
 }
 // Sessions saved before the native database existed (IndexedDB) are copied over once.
 async function scMigrate() {
   const n = nativeHist();
   if (!n || store.get('histMig1')) return;
-  for (const mk of (await idbKeys() || []).map(String).filter(k => k.startsWith('m:'))) {
+  const keys = await idbKeys();
+  if (!keys) return;
+  let migrated = true;
+  for (const mk of keys.map(String).filter(k => k.startsWith('m:'))) {
     const key = mk.slice(2), version = scVersion(key), h = await idbGet('h:' + key);
-    if (version === scVersion(key) && !scClearing(key) && h?.items && !n.histGet(key)) await scSave(key, h.items, h.collapsed || []);
+    if (version !== scVersion(key) || scClearing(key) || n.histGet(key)) continue;
+    if (!h?.items || !await scSave(key, h.items, h.collapsed || [])) migrated = false;
   }
-  store.set('histMig1', 1);
+  if (migrated) store.set('histMig1', 1);
 }
 setTimeout(scMigrate, 2000);
 const scKeyFor = sess => `${currentComputer()?.id || '-'}|${currentApp || '?'}|${currentComputer()?.windowId || ''}|${sess}`;
@@ -238,9 +246,9 @@ function scDrain(force = false) {
     if (scClearing(key)) continue;
     if (pending.saving) { saves.push(pending.saving); continue; }
     const { items, collapsed } = scSnapshot(pending);
-    pending.saving = Promise.resolve(scSave(key, items, collapsed)).then(() => {
-      if (scPending.get(key) === pending) scPending.delete(key);
-    });
+    pending.saving = Promise.resolve(scSave(key, items, collapsed)).then(saved => {
+      if (saved && scPending.get(key) === pending) scPending.delete(key);
+    }).finally(() => { pending.saving = null; });
     saves.push(pending.saving);
   }
   return Promise.all(saves);

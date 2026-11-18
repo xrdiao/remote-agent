@@ -7,7 +7,7 @@ const store = {
 const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 const themeName = () => ({ dark: '深色', light: '浅色', auto: '跟随系统' })[store.get('theme') || 'dark'];
 const sleep = ms => new Promise(r => setTimeout(r, ms));
-const APP_VERSION = 'v486'; // keep in sync with the CACHE name in sw.js
+const APP_VERSION = 'v489'; // keep in sync with the CACHE name in sw.js
 
 let base = null, info = null, ws = null, authed = false;
 let windowReady = false;
@@ -414,7 +414,8 @@ function desktopAction(obj) {
 }
 function sendDesktopOperation(obj, computer = currentComputer()?.id || '', socket = ws, pending = {}) {
   obj.operationId ||= crypto.randomUUID();
-  desktopRequests.set(obj.operationId, { computer, revision: 0, ...pending });
+  desktopRequests.set(obj.operationId, { computer, kind: obj.t, requestId: obj.requestId, device: currentComputer()?.device,
+    revision: 0, ...pending });
   socket.send(JSON.stringify(obj));
 }
 function send(obj, target) {

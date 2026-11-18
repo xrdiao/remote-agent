@@ -689,12 +689,17 @@ function submitComposerReceipt(v, when) {
   if (send({ t: 'send', text: v, submit: true, ...receipt, ...(when ? { when } : {}), ...mentionsFor(v) }) === false) failPendingSend(receipt.requestId);
   if (mode === 'chat') jumpToLatest();
 }
+function composerUploadsReady() {
+  if (pendingImageUploads()) { status('图片尚未上传完成；失败图片请重试或删除', false); return false; }
+  if (pendingDocumentUploads()) { status('请等文件上传完成再发送', false); return false; }
+  return true;
+}
 function sendComposer() {
   if ($('send').disabled) return;
   if (mode === 'terminal') return sendTerminalInput();
   cancelVoice();
   if (mode === 'chat' && questionCompose?.sel === viewSel) return submitQuestionCompose();
-  if (mode === 'chat' && pendingImageUploads()) return status('图片尚未上传完成；失败图片请重试或删除', false);
+  if (mode === 'chat' && !composerUploadsReady()) return;
   const v = text.value;
   if (!v.trim() && !$('attachments').children.length) return;
   if (submitComposerCommand()) return;
@@ -706,13 +711,14 @@ function sendComposer() {
 async function sendComposerNow() {
   if ($('sendNow').disabled) return;
   cancelVoice();
-  if (pendingImageUploads()) return status('图片尚未上传完成；失败图片请重试或删除', false);
+  if (!composerUploadsReady()) return;
   const v = text.value;
   if (!v.trim() && !$('attachments').children.length) return;
   saveDraft();
   const follow = codexFollow();
   const steer = !follow || follow === 'queue';
   if (!await ask(steer ? '立即追加到当前任务？' : '改为排队，等当前任务结束后再发送？', steer ? '立即追加' : '排队', true)) return;
+  if (!composerUploadsReady()) return;
   submitComposerReceipt(v, steer ? 'now' : 'queue');
 }
 $('send').onclick = sendComposer;
