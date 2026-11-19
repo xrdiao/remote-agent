@@ -31,6 +31,7 @@ const OV_ICON = {
   star: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="m12 3 2.8 5.7 6.3.9-4.5 4.4 1.1 6.2-5.7-3-5.7 3 1.1-6.2L3 9.6l6.2-.9z"/></svg>',
   arrow: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5 12l7-7 7 7"/></svg>',
   fusion: '<svg viewBox="0 0 24 24" aria-hidden="true"><use href="logo-fusion.svg#fusion"/></svg>',
+  peers: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2.5" y="4" width="7" height="6" rx="1.2"/><rect x="14.5" y="14" width="7" height="6" rx="1.2"/><path d="M6 10v2h12v2M4 12h4m8 10h4"/></svg>',
 };
 const ovSt = new Map(), ovBusy = new Set(), ovErr = new Map();
 const ovCollapsed = new Set();
@@ -521,7 +522,8 @@ function ovPlan() {
   if (ovS.level === 'favorites') crumbs.splice(0, crumbs.length, `<span class="ov-favorites-title">${ovT('收藏')}</span>`);
   if (ovS.level === 'fusion') crumbs.unshift('<strong class="ov-fusion-title">Fusion ·</strong>');
   const levels = [['sessions', ovT('概览'), OV_ICON.grid], ['projects', ovT('项目'), OV_ICON.folder], ['favorites', ovT('收藏'), OV_ICON.star], ['fusion', 'Fusion', OV_ICON.fusion]]
-    .map(([v, l, ic]) => `<button class="ov-lv${ovS.level === v ? ' on' : ''}" data-ov="level" data-v="${v}"><i>${ic}${v === 'sessions' && anyWait && ovS.level !== 'sessions' ? '<span class="ov-dot"></span>' : ''}</i><span>${l}</span></button>`).join('');
+    .map(([v, l, ic]) => `<button class="ov-lv${ovS.level === v ? ' on' : ''}" data-ov="level" data-v="${v}"><i>${ic}${v === 'sessions' && anyWait && ovS.level !== 'sessions' ? '<span class="ov-dot"></span>' : ''}</i><span>${l}</span></button>`).join('')
+    + `<button class="ov-lv" data-ov="peer-tasks" aria-haspopup="dialog"><i>${OV_ICON.peers}</i><span>${I18N.tr('互控')}</span></button>`;
   const summary = (ovS.level === 'fusion' ? [] : [['total', ovT(ovS.level === 'favorites' ? '收藏会话' : '全部会话'), 'var(--fg-3)'], ['wait', ovT('需要你'), 'var(--ov-amber)'], ['run', ovT('运行中'), 'var(--accent)'], ['err', ovT('已停止'), 'var(--err)'], ['done', '今日完成', 'var(--ok)'], ['inactive', ovT('不常用'), 'var(--fg-4)']])
     .filter(([n]) => k[n]).map(([n, l, c]) => `<span><i class="ov-d" style="background:${c}"></i><b>${k[n]}</b><em>${l}</em></span>`).join('');
   const lane = ovS.level !== 'projects' || ovS.proj ? '' : scoped.filter(r => r.state === 'wait').sort((a, b) => ovRecency(b) - ovRecency(a))
@@ -1033,6 +1035,7 @@ $('overview').addEventListener('click', e => {
       return ovMove({ open: null });
     case 'up': return ovUp();
     case 'menu': return showMainMenu();
+    case 'peer-tasks': return showPeerTasks();
     case 'computer-projects': return showComputerActions(id);
     case 'computer-editor': return openComputerFiles(id);
     case 'computer-terminal': return openComputerTerminal(id);

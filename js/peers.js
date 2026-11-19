@@ -1,103 +1,118 @@
-const peerStates = new Map();
-let peerBusy = '', peerMessage = '';
+const peerTaskStates = { running: '任务运行中', stopping: '正在停止任务', succeeded: '任务完成', failed: '任务失败',
+  cancelled: '任务已停止', timeout: '任务超时且已停止', unknown: '任务结果待确认' };
 
-function peerEntries() { return ovList.filter(entry => entry.c && !entry.foreign); }
-function peerComputer(entry) { return computerSockets.get(entry.c.key)?.computer || entry.c; }
-function peerOnline(entry) { const link = computerSockets.get(entry.c.key); return !!link?.authed && link.socket?.readyState === 1; }
-function peerRender() { if (ovS.level === 'peers') ovRender(); }
-
-async function peerRequest(computer, path, body) {
-  const response = body === undefined ? await api(path, { computer, timeout: 30000 })
-    : await post(path, body, { computer, timeout: 30000 });
-  const result = await response.json();
-  if (!response.ok) throw new Error(result.error || ovT('操作失败'));
-  return result;
+async function peerTaskRequest(computer, action, body) {
+  const linked = computerSockets.get(computer.key)?.computer;
+  const owner = linked?.relay ? linked : loadComputers().find(row => row.id === computer.id);
+  if (!owner?.relay) throw new Error(I18N.tr('电脑未连接'));
+  const route = '/api/peers' + (action ? '/' + action : '');
+  const response = action ? await post(route, body, { computer: owner, timeout: 12000 }) : await api(route, { computer: owner });
+  const value = await response.json();
+  if (!action && (response.status === 404 || response.ok && value.v !== 1)) throw new Error(I18N.tr('电脑中继尚不支持新版互控'));
+  if (!response.ok) throw new Error(I18N.tr(value.error || '互控请求失败'));
+  if (!action && value.id !== computer.id) throw new Error(I18N.tr('返回结果的电脑身份不匹配'));
+  return value;
 }
 
-function refreshPeers() {
-  for (const entry of peerEntries()) {
-    if (!peerOnline(entry) || peerStates.get(entry.id)?.loading) continue;
-    const previous = peerStates.get(entry.id);
-    peerStates.set(entry.id, { ...previous, loading: true, error: '' });
-    peerRequest(peerComputer(entry), '/api/peers').then(result => {
-      peerStates.set(entry.id, { peers: result.peers, loading: false, error: '' });
-    }, error => {
-      peerStates.set(entry.id, { ...previous, loading: false, error: error.message });
-    }).finally(peerRender);
+function showPeerTasks() {
+  const tr = I18N.tr;
+  const computers = loadComputers().filter(row => row.id && (!row.discovery || new URL(row.discovery).origin === location.origin));
+  const header = `<h3>${tr('电脑互控')}</h3>`;
+  if (computers.length < 2) return openSheet('peer-tasks', header + `<p class="hint">${tr('请先从同一个网页入口配对两台电脑。')}</p>`);
+  const current = currentComputer()?.id;
+  const targetInitial = computers.find(row => row.id === current) || computers[0];
+  const sourceInitial = computers.find(row => row.id !== targetInitial.id);
+  const options = (rows, id, scope = rows) => rows.map(row => {
+    const name = row.name || row.id;
+    const label = scope.some(other => other.id !== row.id && other.name === name) ? `${row.id.slice(-6)} · ${name}` : name;
+    return `<option value="${esc(row.id)}"${row.id === id ? ' selected' : ''}>${esc(label)}</option>`;
+  }).join('');
+  openSheet('peer-tasks', header + `<div id="peerTasks">
+    <p class="hint">${tr('由目标电脑运行自己登记的任务，无需安装 Agent。')}</p>
+    <label class="opt"><span class="lbl">${tr('目标电脑')}</span><select data-peer-select="target">${options(computers, targetInitial.id)}</select></label>
+    <label class="opt"><span class="lbl">${tr('发起电脑')}</span><select data-peer-select="source">${options(computers.filter(row => row.id !== targetInitial.id), sourceInitial.id, computers)}</select></label>
+    <div data-peer-content></div><p class="hint" role="status" data-peer-note></p></div>`);
+  const root = $('peerTasks'), targetSelect = root.querySelector('[data-peer-select="target"]'), sourceSelect = root.querySelector('[data-peer-select="source"]');
+  const content = root.querySelector('[data-peer-content]'), note = root.querySelector('[data-peer-note]');
+  const selected = select => computers.find(row => row.id === select.value);
+  let sourceInfo = null, targetInfo = null, chosen = '', snapshot = null, busy = false;
+  const matched = () => targetInfo?.grants.find(row => row.source === sourceSelect.value && row.task === chosen);
+  const jobKey = grant => `peer-job:${targetSelect.value}:${grant.id}`;
+  const stored = grant => store.get(jobKey(grant));
+  const button = (act, title, disabled, value = '') => `<button class="opt" data-peer-action="${act}" data-peer-grant="${esc(value)}"${disabled ? ' disabled' : ''}>${esc(title)}</button>`;
+
+  function render() {
+    const target = targetSelect.value, grant = matched();
+    const tasks = targetInfo?.tasks || [], task = tasks.find(row => row.id === chosen);
+    const ready = !!sourceInfo?.targets.includes(target);
+    const jobId = grant && stored(grant);
+    const job = snapshot?.id === jobId ? snapshot : null;
+    const active = ['running', 'stopping'].includes(job?.state);
+    targetSelect.disabled = sourceSelect.disabled = busy;
+    const info = !targetInfo ? '' : !targetInfo.canRun ? tr('目标电脑的平台暂不支持执行任务')
+      : !tasks.length ? tr('目标电脑未登记预设任务') : sourceInfo && !ready ? tr('请先在发起电脑登记目标地址') : '';
+    content.innerHTML = (info ? `<p class="hint">${esc(info)}</p>` : '')
+      + (tasks.length ? `<label class="opt"><span class="lbl">${tr('预设任务')}</span><select data-peer-select="task"${busy ? ' disabled' : ''}>${options(tasks, chosen)}</select></label>` : '')
+      + (task && !grant ? button('grant', tr('允许发起电脑执行此任务'), busy || !sourceInfo) : '')
+      + (task && grant ? `<p class="hint">${tr('目标电脑已授权')}</p><div class="optRow" data-peer-actions>`
+        + button('start', tr(jobId && !job ? '按原任务号重试' : '发起任务'), busy || !ready || active)
+        + (jobId ? button('read', tr('查询状态'), busy || !ready) + button('cancel', tr('停止任务'), busy || !ready || !!job && job.state !== 'running') : '') + '</div>' : '')
+      + (jobId ? `<p class="hint" data-peer-job>${esc(jobId)} · ${tr(peerTaskStates[job?.state] || '任务结果待确认')}</p>` : '')
+      + (job?.error || job?.output ? `<pre class="connection-technical" data-peer-output>${esc([job.error, job.output].filter(Boolean).join('\n'))}</pre>` : '')
+      + (job?.truncated ? `<p class="hint">${tr('输出已截断')}</p>` : '')
+      + (targetInfo?.grants.filter(row => row.source === sourceSelect.value).map(row =>
+        button('revoke', `${tr('撤销任务授权')} · ${tasks.find(task => task.id === row.task)?.name || row.task}`, busy, row.id)).join('') || '')
+      + button('refresh', tr('刷新互控状态'), busy);
   }
-}
 
-async function peerVerifiedIdentity(entry) {
-  const computer = peerComputer(entry), nonce = authB64(crypto.getRandomValues(new Uint8Array(16)));
-  const result = await peerRequest(computer, '/api/peers/identity?nonce=' + nonce);
-  const der = b64(result.certificate.replace(/-----BEGIN CERTIFICATE-----|-----END CERTIFICATE-----|\s/g, ''));
-  const hash = await crypto.subtle.digest('SHA-256', der);
-  const fingerprint = [...new Uint8Array(hash)].map(value => value.toString(16).padStart(2, '0')).join('');
-  const key = await crypto.subtle.importKey('raw', b64u(computer.key), { name: 'HMAC', hash: 'SHA-256' }, false, ['verify']);
-  const payload = JSON.stringify(['ra-peer-identity-v1', entry.id, nonce, fingerprint]);
-  const valid = await crypto.subtle.verify('HMAC', key, b64u(result.mac), new TextEncoder().encode(payload));
-  if (!valid || result.id !== entry.id || result.nonce !== nonce || result.fingerprint !== fingerprint)
-    throw new Error(ovT('电脑身份校验失败'));
-  return { id: entry.id, name: entry.name, fingerprint, certificate: result.certificate,
-    discovery: computer.discovery || discoveryUrl(), address: computer.relay || new URL(computer.discovery || discoveryUrl()).origin };
-}
+  async function refresh() {
+    const [a, b] = await Promise.allSettled([peerTaskRequest(selected(sourceSelect)), peerTaskRequest(selected(targetSelect))]);
+    sourceInfo = a.status === 'fulfilled' ? a.value : null;
+    targetInfo = b.status === 'fulfilled' ? b.value : null;
+    if (!targetInfo?.tasks.some(task => task.id === chosen)) chosen = targetInfo?.tasks[0]?.id || '';
+    note.textContent = [a, b].map((row, i) => row.status === 'rejected'
+      ? `${tr(i === 0 ? '发起电脑' : '目标电脑')}：${row.reason.message}` : '').filter(Boolean).join(' · ');
+  }
 
-async function enablePeer(a, b) {
-  const identities = await Promise.all([peerVerifiedIdentity(a), peerVerifiedIdentity(b)]);
-  const computers = identities.map(({ certificate, ...row }) => row);
-  const payload = JSON.stringify({ v: 1, kind: 'ra-peer-link-v1', nonce: authB64(crypto.getRandomValues(new Uint8Array(16))),
-    expires: Date.now() + 60000, computers });
-  const signature = await entrySign(payload);
-  const certificates = Object.fromEntries(identities.map(row => [row.id, row.certificate]));
-  const grants = await Promise.all([a, b].map(entry => peerRequest(peerComputer(entry), '/api/peers/grant', { payload, signature, certificates })));
-  await peerRequest(peerComputer(a), '/api/peers/connect', { id: b.id });
-  const errors = grants.flatMap((grant, index) => grant.codex?.ready === false ? [`${[a, b][index].name}: ${grant.codex.error}`] : []);
-  peerMessage = ovT('两台电脑已连接') + (errors.length ? ' · Codex: ' + errors.join('；') : '');
-}
+  async function change(action) {
+    if (busy) return;
+    busy = true; note.textContent = tr('正在处理互控请求…'); render();
+    try { await action(); }
+    catch (error) { note.textContent = error.name === 'AbortError' || error.name === 'TypeError' ? tr('电脑未响应，请刷新互控状态') : error.message; }
+    finally { busy = false; if (root.isConnected) render(); }
+  }
 
-async function revokePeer(a, b) {
-  const targets = [[a, b], [b, a]].filter(([owner, other]) => peerOnline(owner)
-    && peerStates.get(owner.id)?.peers?.some(peer => peer.id === other.id));
-  const results = await Promise.all(targets.map(async ([owner, other]) => {
-    const peer = peerStates.get(owner.id).peers.find(row => row.id === other.id);
-    const payload = JSON.stringify({ v: 1, kind: 'ra-peer-revoke-v1', id: other.id, grantId: peer.grantId, expires: Date.now() + 60000 });
-    return peerRequest(peerComputer(owner), '/api/peers/revoke', { payload, signature: await entrySign(payload) });
-  }));
-  peerMessage = peerOnline(a) && peerOnline(b) ? ovT('已撤销互控授权') : ovT('离线电脑尚未撤销，请上线后再次撤销');
-  const errors = results.flatMap((result, index) => result.codex?.ready === false ? [`${targets[index][0].name}: ${result.codex.error}`] : []);
-  if (errors.length) peerMessage += ' · Codex: ' + errors.join('；');
+  root.addEventListener('change', event => {
+    const field = event.target.dataset.peerSelect;
+    if (field === 'task') { chosen = event.target.value; snapshot = null; render(); }
+    else if (field === 'target' || field === 'source') {
+      if (field === 'target') sourceSelect.innerHTML = options(computers.filter(row => row.id !== targetSelect.value), sourceSelect.value, computers);
+      sourceInfo = targetInfo = snapshot = null;
+      change(refresh);
+    }
+  });
+  root.addEventListener('click', event => {
+    const control = event.target.closest('[data-peer-action]');
+    if (!control || busy) return;
+    const action = control.dataset.peerAction, source = selected(sourceSelect), target = selected(targetSelect), grant = matched();
+    change(async () => {
+      if (action === 'refresh') return refresh();
+      if (action === 'grant') {
+        await peerTaskRequest(target, 'grant', { source: source.id, publicKey: sourceInfo.publicKey, task: chosen });
+        return refresh();
+      }
+      if (action === 'revoke') {
+        const result = await peerTaskRequest(target, 'revoke', { grant: control.dataset.peerGrant });
+        await refresh();
+        note.textContent = result.warning ? tr(result.warning) : tr(result.stopRequested ? '已撤销授权，目标电脑正在停止任务' : '目标电脑已撤销授权');
+        return;
+      }
+      const before = stored(grant);
+      const id = action === 'start' && (!before || snapshot?.id === before) ? `${Date.now()}-${crypto.randomUUID()}` : before;
+      if (action === 'start') store.set(jobKey(grant), id);
+      snapshot = (await peerTaskRequest(source, 'send', { target: target.id, grant: grant.id, action, id, task: grant.task })).job;
+      note.textContent = '';
+    });
+  });
+  change(refresh);
 }
-
-function peerBoard() {
-  const entries = peerEntries(), pairs = [];
-  for (let i = 0; i < entries.length; i++) for (let j = i + 1; j < entries.length; j++) pairs.push([entries[i], entries[j]]);
-  const description = `<p class="peer-description">${ovT('授权后，两台电脑可通过各自的系统账号执行对方的命令。')}</p>`;
-  if (!pairs.length) return `<section class="peer-board">${description}<p class="hint">${ovT('请先在此入口配对至少两台电脑。')}</p></section>`;
-  return `<section class="peer-board">${description}${peerMessage ? `<p class="peer-message">${esc(peerMessage)}</p>` : ''}${pairs.map(([a, b]) => {
-    const left = peerStates.get(a.id), right = peerStates.get(b.id), online = peerOnline(a) && peerOnline(b);
-    const one = left?.peers?.some(peer => peer.id === b.id), two = right?.peers?.some(peer => peer.id === a.id);
-    const label = !online ? ovT('电脑离线') : left?.loading || right?.loading || !left || !right ? ovT('正在读取…')
-      : left.error || right.error ? ovT('读取失败') : one && two ? ovT('已授权') : one || two ? ovT('部分授权') : ovT('未启用');
-    const disabled = peerBusy || !online || left?.loading || right?.loading || !left || !right || left.error || right.error;
-    return `<article class="peer-card"><div><strong class="ovRaw">${esc(a.name)} ↔ ${esc(b.name)}</strong><small>${esc(label)}</small></div><div class="peer-actions">`
-      + (one && two ? `<button data-peer="connect" data-a="${esc(a.id)}" data-b="${esc(b.id)}"${disabled ? ' disabled' : ''}>${ovT('连接')}</button>`
-        : `<button class="peer-primary" data-peer="enable" data-a="${esc(a.id)}" data-b="${esc(b.id)}"${disabled ? ' disabled' : ''}>${ovT('启用')}</button>`)
-      + (one || two ? `<button data-peer="revoke" data-a="${esc(a.id)}" data-b="${esc(b.id)}"${peerBusy ? ' disabled' : ''}>${ovT('撤销')}</button>` : '')
-      + '</div></article>';
-  }).join('')}<button class="peer-refresh" data-peer="refresh">${ovT('刷新状态')}</button></section>`;
-}
-
-$('overview').addEventListener('click', async event => {
-  const button = event.target.closest('[data-peer]');
-  if (!button || peerBusy) return;
-  if (button.dataset.peer === 'refresh') { peerMessage = ''; refreshPeers(); peerRender(); return; }
-  const entries = peerEntries(), a = entries.find(entry => entry.id === button.dataset.a), b = entries.find(entry => entry.id === button.dataset.b);
-  if (!a || !b) return;
-  peerBusy = button.dataset.peer; peerMessage = ovT('正在处理…'); peerRender();
-  try {
-    if (peerBusy === 'enable') await enablePeer(a, b);
-    else if (peerBusy === 'revoke') await revokePeer(a, b);
-    else { await peerRequest(peerComputer(a), '/api/peers/connect', { id: b.id }); peerMessage = ovT('两台电脑已连接'); }
-  } catch (error) { peerMessage = error.message; }
-  finally { peerBusy = ''; refreshPeers(); peerRender(); }
-});
