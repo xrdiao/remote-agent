@@ -1342,8 +1342,42 @@ function showViewportTrace() {
   $('viewportTraceBack').onclick = showMainMenu;
 }
 
+function bindAutostartSwitch(row, computer) {
+  const label = row.querySelector('.sub');
+  const thumb = row.querySelector('.switch');
+  const caption = message => { label.textContent = [computer?.name, I18N.tr(message)].filter(Boolean).join(' · '); };
+  if (!computer?.relay) return caption('请先连接电脑');
+  const current = () => row.isConnected && currentComputer()?.key === computer.key;
+  async function readOrSet(enabled) {
+    if (!current()) return;
+    row.disabled = true;
+    row.setAttribute('aria-busy', 'true');
+    caption(enabled === undefined ? '正在读取自启动状态…' : '正在设置自启动…');
+    const options = { computer, timeout: 20000 };
+    try {
+      const response = enabled === undefined ? await api('/api/autostart', options) : await post('/api/autostart', { enabled }, options);
+      if (response.status === 404) throw new Error('请更新电脑中继以设置自启动');
+      const state = await response.json();
+      if (!response.ok || typeof state.enabled !== 'boolean') throw new Error(state.error || '无法读取电脑的自启动状态');
+      if (!current()) return;
+      row.setAttribute('aria-checked', String(state.enabled));
+      thumb.classList.toggle('on', state.enabled);
+      caption(state.trigger === 'boot' ? '随系统启动中继' : '登录后启动中继');
+      row.onclick = () => readOrSet(!state.enabled);
+      row.disabled = false;
+    } catch (error) {
+      if (current()) caption(error instanceof TypeError || error.name === 'AbortError' ? '电脑未响应，请重新打开菜单' : error.message);
+    } finally {
+      if (current()) row.removeAttribute('aria-busy');
+    }
+  }
+  readOrSet();
+}
+
 let usageTimer = null;
 function showMainMenu() {
+  const home = !document.body.classList.contains('conv');
+  const computer = home ? currentComputer() : null;
   const fusionRun = activeFusionController || currentApp === 'fusion' ? currentFusionRun() : null;
   const fusionItem = fusionRun ? `<button class="opt" data-fusion-config data-computer="${esc(fusionRun.computer)}" data-fusion-run="${esc(fusionRun.id)}"><span class="lbl">${I18N.tr(fusionRun.main.bindingId ? '工作台设置' : '启用主 Agent')}</span></button>` : '';
   const startConversation = store.get('start-view') === 'conversation';
@@ -1367,6 +1401,7 @@ function showMainMenu() {
     ${lastChat?.changed && !lastChat?.readonly ? `<button class="opt" data-act="toggleChanges"><span class="lbl">${hiddenChangeNotices.has(changeNoticeKey()) ? '显示改动' : '隐藏改动提示'}</span></button>` : ''}`;
   const connectionItems = `
     <button class="opt" data-act="agentManager"><span class="lbl">Agent 管理<span class="sub">检测安装状态、选择并启动 Agent</span></span></button>
+    ${home ? '<button class="opt" id="menuAutostartRow" type="button" role="switch" aria-checked="false" disabled><span class="lbl">开机启动<span class="sub" aria-live="polite"></span></span><span class="switch" aria-hidden="true"></span></button>' : ''}
     ${connItems}
     ${inApp ? '<button class="opt" data-act="changeUrl"><span class="lbl">更换 App 地址</span></button>' : ''}
     <button class="opt" data-act="reconnect"><span class="lbl">重新连接</span></button>
@@ -1384,6 +1419,7 @@ function showMainMenu() {
     ${menuGroup('general', '通用', menuGroup('connection', 'Agent 与连接', connectionItems, false)
       + menuGroup('settings', '应用设置与帮助', settingsItems, false))}<p class="hint">网页版本 ${esc(APP_VERSION)}</p>`);
   $('viewportTraceEntry').onclick = showViewportTrace;
+  if (home) bindAutostartSwitch($('menuAutostartRow'), computer);
 }
 $('menuBtn').onclick = showMainMenu;
 
