@@ -24,7 +24,9 @@ import { terminalService } from './terminal-service.mjs';
 import { openCode } from './opencode/state.mjs';
 import { codexBackend } from './codex/state.mjs';
 import { initializeUploads } from '../lib/uploads.mjs';
+import { stopPeerJobs } from './peer/jobs.mjs';
 for (const [signal, code] of [['SIGINT', 130], ['SIGTERM', 143]]) process.once(signal, () => {
+  try { stopPeerJobs(); } catch (error) { console.error('[peer]', error.message); }
   terminalService.dispose();
   openCode.close();
   codexBackend.close();

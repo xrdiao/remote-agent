@@ -361,7 +361,7 @@ export class Session extends AgentContext {
     }
     const targetApp = Object.keys(AGENT_REGISTRY).find(app => appId === app || appId.startsWith(app + ':'));
     const wins = windows || (codexPages ? codexPages.length ? [{id: 'codex', app: 'codex', title: 'Codex', ws: codexPages[0].ws, port: CODEX_CDP_URL, kind: 'local'}] : [] : targetApp ? await AGENT_REGISTRY[targetApp].discover() : await listWindows());
-    if (!appId && wins[0]?.app === 'codex') return this.attach({ ...req, id: 'codex' }, wins);
+    if (!appId && ['codex', 'opencode'].includes(wins[0]?.app)) return this.attach({ ...req, id: wins[0].app }, wins);
     if (appId === 'codex') {
       const pages = orderedProjectWindows('codex', codexPages);
       if (!pages.length) {

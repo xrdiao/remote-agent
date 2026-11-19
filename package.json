@@ -10,6 +10,7 @@
     "public": "node server/index.mjs --tunnel",
     "pair": "node cli/devices.mjs pair",
     "devices": "node cli/devices.mjs",
+    "peer": "node cli/peer.mjs",
     "2fa": "node cli/twofa.mjs",
     "check": "node scripts/check.mjs",
     "test": "npm run qa:browser",
