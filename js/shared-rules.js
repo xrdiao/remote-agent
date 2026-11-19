@@ -11,7 +11,7 @@ globalThis.RemoteAgentRules = (() => {
     if (app === 'fusion') return false;
     return message.t === 'send' ? message.submit !== false && mode !== 'terminal'
       : message.t === 'queue' ? message.action !== 'read'
-      : ['stop', 'pickMenu', 'question', 'codexRequest', 'click', 'subagent', 'saveFile', 'sessionManage', 'sessionBatch', 'codexRename', 'codexArchive'].includes(message.t);
+      : ['stop', 'pickMenu', 'question', 'codexRequest', 'opencodeQuestion', 'click', 'subagent', 'saveFile', 'sessionManage', 'sessionBatch', 'codexRename', 'codexArchive'].includes(message.t);
   };
   const parseAgentRef = value => {
     const text = String(value || ''), first = text.indexOf(':');

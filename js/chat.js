@@ -74,12 +74,15 @@ function restoreOpenCodeAnswers(form) {
     const custom = field.querySelector('[data-opencode-custom]');
     if (custom) custom.value = draft.custom;
   });
+  if ([...openCodeQuestionSubmissions.values()].some(row => row.id === form.dataset.opencodeQuestion && row.scope === questionScope()))
+    form.querySelectorAll('input, button').forEach(node => { node.disabled = true; });
   form.oninput = form.onchange = () => captureOpenCodeAnswers(form);
 }
 function finishOpenCodeQuestion(message) {
   const pending = openCodeQuestionSubmissions.get(message.requestId);
-  if (!pending || pending.id !== message.id) return;
+  if (!pending || message.id != null && pending.id !== message.id) return;
   openCodeQuestionSubmissions.delete(message.requestId);
+  desktopRequests.delete(pending.operationId);
   if (message.ok) clearQuestionDraft(pending.id, pending.scope);
   if (pending.scope !== questionScope() || pending.sel !== viewSel) return;
   const form = [...list.querySelectorAll('[data-opencode-question]')].find(form => form.dataset.opencodeQuestion === pending.id);
@@ -101,9 +104,13 @@ list.addEventListener('submit', e => {
   });
   if (!reject && answers.some(values => !values.length)) return status(I18N.tr('请回答所有问题'), false);
   const requestId = crypto.randomUUID();
-  if (send({ t: 'opencodeQuestion', id: form.dataset.opencodeQuestion, requestId, answers, reject })) {
-    openCodeQuestionSubmissions.set(requestId, { id: form.dataset.opencodeQuestion, scope: questionScope(), sel: viewSel });
+  const action = { t: 'opencodeQuestion', id: form.dataset.opencodeQuestion, requestId, operationId: crypto.randomUUID(), answers, reject };
+  openCodeQuestionSubmissions.set(requestId, { id: action.id, operationId: action.operationId, scope: questionScope(), sel: viewSel });
+  try {
+    if (!send(action)) { openCodeQuestionSubmissions.delete(requestId); return; }
     form.querySelectorAll('input, button').forEach(input => { input.disabled = true; });
+  } catch (error) {
+    finishOpenCodeQuestion({ requestId, ok: false, error: error.message });
   }
 });
 const thoughtFull = new Map();
