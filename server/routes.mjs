@@ -17,6 +17,7 @@ import { withOperation, lookupOperations } from './operations.mjs';
 import { realpath } from 'node:fs/promises';
 import { writeTextFile } from '../lib/files.mjs';
 import { fileAction } from '../lib/file-actions.mjs';
+import { parseSessionRef } from '../lib/shared-rules.mjs';
 import os from 'node:os';
 import { terminalService } from './terminal-service.mjs';
 
@@ -276,7 +277,16 @@ export const ROUTES = {
     run: (s, m) => s.listAgents(m.silent === true, m.automatic === true, String(m.projectWindow || ''), m.checkTrust === true),
     fail: (s, m, error) => s.emit({ t: 'agents', app: s.app, sel: s.selectionKey(), silent: m.silent === true, error: error?.message || '会话已切换，请重试列表' }),
   },
-  openAgent: { switchRead: true, navigation: true,  run: (s, m) => s.openAgent(String(m.id ?? ''), String(m.title ?? '')) },
+  openAgent: { switchRead: true, navigation: true,
+    pre: (s, m) => {
+      const id = String(m.id ?? '');
+      if (s.app !== 'codex' || s.cdp || s.fusionBinding || !id.startsWith('thread:')) return SKIP;
+      const threadId = parseSessionRef('codex', id);
+      if (!threadId || !s.adapter.backendThread(threadId)) return SKIP;
+      return s.adapter.attachBackend.call(s, { threadId });
+    },
+    run: (s, m) => s.openAgent(String(m.id ?? ''), String(m.title ?? '')),
+  },
   openMenu: {
     switchRead: true, run: (s, m) => s.openMenu(m.kind, m.requestId),
     fail: (s, m, error) => s.emit({ t: 'menu', kind: m.kind, requestId: m.requestId, sel: s.selectionKey(), error: error?.message || '菜单读取未完成' }),

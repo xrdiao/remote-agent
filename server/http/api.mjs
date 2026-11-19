@@ -22,6 +22,7 @@ import { overviewSnapshot, overviewPreview } from '../overview.mjs';
 import { manageOverviewSession } from '../overview-actions.mjs';
 import { uploadDocument, imageTypes } from '../../lib/shared-rules.mjs';
 import { localFilePath } from '../../lib/platform.mjs';
+import { relayAutostart } from '../autostart.mjs';
 
 // A device is usable once paired and, when 2FA asks for it, re-verified.
 function deviceFor(req) {
@@ -160,6 +161,20 @@ export async function handleApi(req, res, route) {
     return json(req, res, 200, { ok: true });
   }
   if (needsTotp(device)) return json(req, res, 401, { needTotp: true, error: '需要二次验证' });
+  if (route === '/api/autostart' && ['GET', 'POST'].includes(req.method)) {
+    let enabled;
+    if (req.method === 'POST') {
+      ({ enabled } = await readJson(req));
+      if (typeof enabled !== 'boolean') return json(req, res, 400, { error: '请选择开启或关闭自启动' });
+      const paired = findDevice(bearer(req));
+      if (!paired || needsTotp(paired)) return json(req, res, 401, { error: '授权入口已失效' });
+    }
+    try { return json(req, res, 200, await relayAutostart(enabled)); }
+    catch {
+      const error = enabled === undefined ? '无法读取电脑的自启动状态' : '无法更新电脑的自启动设置';
+      return json(req, res, 503, { error });
+    }
+  }
   if (route === '/api/entries/invite' && req.method === 'POST') {
     const { groupId, base } = await readJson(req);
     try {

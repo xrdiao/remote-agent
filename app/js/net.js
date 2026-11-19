@@ -1383,6 +1383,13 @@ async function connect(resumeLink = null) {
     else if (m.t === 'plans') { if (m.plans) { appPlans = { ...appPlans, ...m.plans }; updateTitle(); if (sheetKind === 'windows') showWindows(); paintRail(); } }
     else if (m.t === 'attached') {
       if (m.closed) {
+        const [app, windowId, threadId] = viewSel.split('|');
+        if (m.app === 'codex' && app === m.app && m.windowId === windowId && threadId
+            && mode === 'chat' && windowReady && !navigationPending) {
+          const computer = currentComputer()?.id;
+          const remote = ovRecs().some(row => row.comp === computer && row.app === app && row.threadId === threadId && row.host);
+          if (!remote && send({ t: 'attach', id: m.id, windowId, threadId })) return;
+        }
         forgetClosedWindow(m.id);
         selectionReady = m.ready === true;
         connReadFailed(m.message || '这个窗口已经关闭，请重试或切换 Agent');
