@@ -18,14 +18,13 @@ import { startTunnel } from './publish/tunnel.mjs';
 import { startProjectWindowCleanup, clearLegacyFusionWindows } from './project-windows.mjs';
 import { NativeCdp, nativeWindow, nativeTargets, startNativeWindows } from './native-windows.mjs';
 
-import { saveFusionRuns, initializeFusionState } from './fusion/state.mjs';
+import { initializeFusionState } from './fusion/state.mjs';
 import { recoverFusionRuns } from './fusion/runner.mjs';
 import { terminalService } from './terminal-service.mjs';
 import { openCode } from './opencode/state.mjs';
 import { codexBackend } from './codex/state.mjs';
 import { initializeUploads } from '../lib/uploads.mjs';
 for (const [signal, code] of [['SIGINT', 130], ['SIGTERM', 143]]) process.once(signal, () => {
-  saveFusionRuns();
   terminalService.dispose();
   openCode.close();
   codexBackend.close();

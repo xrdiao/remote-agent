@@ -391,9 +391,10 @@ export class OpenCodeState {
       current: todos.find(todo => todo.status === 'in_progress')?.content || '' } : null;
   }
 
-  overview() {
+  overview(threadId) {
     const windows = new Map(), sessions = [];
-    for (const session of this.sessions.values()) {
+    const selected = this.sessions.get(threadId);
+    for (const session of threadId ? (selected ? [selected] : []) : this.sessions.values()) {
       const root = session.directory, projectId = JSON.stringify(['opencode', '', pathKey(root)]);
       const project = path.basename(root) || root;
       windows.set(pathKey(root), { projectId, win: 'opencode', windowId: root, app: 'opencode', workspace: root, host: '', project });

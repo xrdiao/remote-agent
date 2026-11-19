@@ -20,6 +20,9 @@ const navigationMessage = msg => ROUTES[msg.t]?.navigation === true;
 const pureNavigation = msg => navigationMessage(msg) && msg.newSession !== true && msg.create !== true && !(msg.t === 'openAgent' && /^(?:new:|project-new:)/.test(msg.id || ''));
 const RESUME_MS = 5 * 60 * 1000;
 const BACKGROUND_MS = 5 * 60 * 1000;
+const resumableBinding = session => session.mode === 'terminal'
+  || session.bindingReady && (session.app === 'opencode' || session.codexBackend
+    || session.cdp?.ws?.readyState === 1 && ['cursor', 'devin', 'codex'].includes(session.app));
 
 export function attachWss(server) {
 const voice = voiceWss();
@@ -139,8 +142,7 @@ wss.on('connection', (ws, req) => {
       updateDevice(device.id, { lastSeen: Date.now() });
       const previous = contexts.get(msg.resume);
       const candidate = previous?.session.deviceId === device.id && previous.expires > Date.now()
-        && !previous.session.disposed && (previous.session.app === 'opencode' && previous.session.bindingReady
-          || previous.session.cdp?.ws?.readyState === 1 && ['cursor', 'devin', 'codex'].includes(previous.session.app));
+        && !previous.session.disposed && resumableBinding(previous.session);
       if (candidate) {
         previous.claim?.close(4002, 'connection replaced');
         previous.claim = ws;
@@ -157,8 +159,7 @@ wss.on('connection', (ws, req) => {
         previous.claim = null;
       }
       const resumed = candidate && contexts.get(msg.resume) === previous && previous.expires > Date.now()
-        && !previous.session.disposed && (previous.session.mode === 'terminal'
-          || previous.session.bindingReady && (previous.session.app === 'opencode' || previous.session.cdp?.ws?.readyState === 1));
+        && !previous.session.disposed && resumableBinding(previous.session);
       if (resumed) {
         clearTimeout(previous.timer);
         context = previous;
@@ -176,10 +177,10 @@ wss.on('connection', (ws, req) => {
       subscribeLibrary(ws);
       addViewer(session);
       ws.send(JSON.stringify({ t: 'auth', ok: true, ...identity, lastSelection: lastSelection(device.id),
-        resumeId: session.resumeId, resumed: !!resumed, mode: session.mode, draftEpoch: session.draftEpoch || '',
+        resumeId: session.resumeId, resumed: !!resumed, mode: session.mode, draftEpoch: session.draftEpoch || '', selectiveOperations: true,
         ...(resumed ? { selection: { id: session.targetId, app: session.app, windowId: session.windowId, threadId: session.threadId },
           metadata: [...session.connectionMessages.values()].filter(message => message.t !== 'attached') } : {}) }));
-      unsubscribeOperations = subscribeOperations(device.id, ws);
+      unsubscribeOperations = subscribeOperations(device.id, ws, msg.selectiveOperations !== true);
       console.log(`[+] client ${clientIp(req)}`);
       return;
     }
@@ -363,7 +364,7 @@ wss.on('connection', (ws, req) => {
     });
     if (imageAction) imageActions.push({ group, execute: executeRequest });
     if (flag(route?.background, session, msg)) enqueue(queue);
-    else if (msg.t === 'question' || msg.t === 'codexRequest') questionQueue = enqueue(questionQueue);
+    else if (['question', 'codexRequest', 'opencodeQuestion'].includes(msg.t)) questionQueue = enqueue(questionQueue);
     else queue = enqueue(switching ? Promise.all([queue, questionQueue]) : queue);
   });
   ws.on('close', code => {
@@ -379,8 +380,7 @@ wss.on('connection', (ws, req) => {
     if (!session || context.owner !== connection) return;
     if (session.sessionBatch) session.sessionBatch.cancelled = true;
     removeViewer(session);
-    if (authorized && !session.disposed && (session.mode === 'terminal' || session.app === 'opencode' && session.bindingReady || session.cdp?.ws?.readyState === 1
-        && ['cursor', 'devin', 'codex'].includes(session.app))) {
+    if (authorized && !session.disposed && resumableBinding(session)) {
       retain();
     } else {
       navigationReads.abort(new Error('连接已关闭'));

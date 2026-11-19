@@ -981,7 +981,7 @@ async function openComputerSocket(computer, relay) {
     try {
       const proof = await entryProof(computer, 'WS /ws');
       if (current() && socket.readyState === 1) {
-        socket.send(JSON.stringify({ t: 'auth', token: computer.token, proof, resume: saved?.resumeId }));
+        socket.send(JSON.stringify({ t: 'auth', token: computer.token, proof, resume: saved?.resumeId, selectiveOperations: true }));
         timer = setTimeout(() => {
           if (!current()) return;
           link.error = '设备验证超时'; closeSocket(socket, 'authentication');
@@ -1101,7 +1101,7 @@ function receiveDesktopOperation(link, result) {
   if (pending.computer !== link.expectedId) return;
   if (pending.complete && pending.device !== link.auth.device) return;
   if (result.unknown && link.receive && currentComputer()?.id === pending.computer && !windowReady) return;
-  if (result.kind !== 'send' && !pending.complete && (!link.receive || currentComputer()?.id !== pending.computer)) return;
+  if (pending.kind !== 'send' && !pending.complete && (!link.receive || currentComputer()?.id !== pending.computer)) return;
   for (const event of result.events.slice().sort((a, b) => a.revision - b.revision)) {
     if (event.revision <= pending.revision) continue;
     const m = event.message;
@@ -1116,18 +1116,21 @@ function receiveDesktopOperation(link, result) {
       failPendingSend(pending.requestId, '发送结果无法确认。草稿已保留，请先核对对话再重试。');
     if (pending.kind === 'question' || pending.kind === 'codexRequest')
       finishQuestion({ requestId: pending.requestId, ok: false, error: '回答结果无法确认，请核对卡片后重试' });
+    if (pending.kind === 'opencodeQuestion')
+      finishOpenCodeQuestion({ requestId: pending.requestId, ok: false, error: '回答结果无法确认，请核对问卷后重试' });
     desktopRequests.delete(result.id); link.operations.delete(result.id);
   }
 }
 function replayDesktopOperations(link) {
-  const ids = [], questionIds = [];
+  const ids = [], questionIds = [], pendingIds = [];
   for (const [id, request] of desktopRequests) {
     if (request.computer !== link.expectedId || request.device !== link.auth.device) continue;
     if (request.message) link.send(request.message);
+    else if (link.auth.selectiveOperations) pendingIds.push(id);
     else if (request.kind === 'send') ids.push(id);
     else if ((request.kind === 'question' || request.kind === 'codexRequest') && questionSubmissions.has(request.requestId)) questionIds.push(id);
   }
-  if (ids.length || questionIds.length) link.send({ t: 'operationLookup', ids, questionIds });
+  if (pendingIds.length || ids.length || questionIds.length) link.send({ t: 'operationLookup', pendingIds, ids, questionIds });
 }
 async function warmComputerSocket(computer) {
   if (pending || navigator.onLine === false || computerSockets.get(computer.key)?.phase === 'paused'

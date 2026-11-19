@@ -121,6 +121,7 @@ const terminalInputTarget = (s, m) => {
 
 export const ROUTES = {
   operationLookup: { fast: true, connection: true, fastRun: (s, m) => {
+    if (Array.isArray(m.pendingIds)) lookupOperations(s.deviceId, s.client, m.pendingIds);
     if (Array.isArray(m.ids)) lookupOperations(s.deviceId, s.client, m.ids, ['send']);
     if (Array.isArray(m.questionIds)) lookupOperations(s.deviceId, s.client, m.questionIds, ['question', 'codexRequest']);
   } },

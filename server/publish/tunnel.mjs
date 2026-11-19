@@ -45,18 +45,7 @@ const savedUrl = () => String(readState().relayUrl || '').replace(/\/$/, '');
 const savedPid = () => { try { return Number(fs.readFileSync(pidPath, 'utf8').trim()); } catch { return 0; } };
 const logText = () => { try { return fs.readFileSync(logPath, 'utf8'); } catch { return ''; } };
 const loggedUrl = () => logText().match(/https:\/\/[a-z0-9-]+\.trycloudflare\.com/)?.[0] || '';
-const metricsUrl = () => {
-  const match = logText().match(/Starting metrics server on (127\.0\.0\.1:\d+)\/metrics/);
-  return match ? `http://${match[1]}/ready` : '';
-};
-async function tunnelReady(url, metrics = '') {
-  if (metrics) {
-    try {
-      const r = await fetch(metrics, { signal: AbortSignal.timeout(1500) });
-      if (r.ok && (await r.json())?.readyConnections > 0) return true;
-    } catch {}
-    return false;
-  }
+async function tunnelReady(url) {
   if (!url) return false;
   try {
     const r = await fetch(`${url}/url.json`, { signal: AbortSignal.timeout(4000) });
@@ -69,7 +58,7 @@ export async function publishedTunnel() {
   const pid = findTunnelPid(), owned = pid === savedPid();
   const url = owned ? loggedUrl() : savedUrl();
   if (!quickUrl(url) || !pid) return '';
-  return await tunnelReady(url, owned ? metricsUrl() : '') ? url : '';
+  return await tunnelReady(url) ? url : '';
 }
 
 export function rememberTunnel(url, pid = findTunnelPid()) {
@@ -83,8 +72,13 @@ function publishTunnel(state) {
   publishing = publishing.then(async () => {
     if (tunnel !== state) return;
     let ok = false;
-    try { ok = await publishUrl(state.url); }
-    catch (error) { console.log('!! 隧道地址发布失败：', error.message); }
+    try {
+      if (process.env.CR_TUNNEL_ADDRESS_ONLY === '1') {
+        const signal = AbortSignal.timeout(30000);
+        ok = await publishUrl(state.url, { syncAppFiles: false, offerPairing: false, signal });
+        if (!ok && signal.aborted) console.log('!! 隧道地址发布超时，稍后重试。');
+      } else ok = await publishUrl(state.url);
+    } catch (error) { console.log('!! 隧道地址发布失败：', error.message); }
     if (!ok && tunnel === state) {
       state.publishTimer = setTimeout(() => publishTunnel(state), 30000);
       state.publishTimer.unref();
@@ -120,7 +114,7 @@ function launchTunnel() {
     });
   } catch { fs.closeSync(fd); missing(); return; }
   fs.closeSync(fd);
-  const state = tunnel = { pid: child.pid, owned: true, url: '', metrics: '', unhealthyAt: Date.now() };
+  const state = tunnel = { pid: child.pid, owned: true, url: '', unhealthyAt: Date.now() };
   if (child.pid) fs.writeFileSync(pidPath, `${child.pid}\n`, { mode: 0o600 });
   child.unref();
   child.on('error', missing);
@@ -139,8 +133,7 @@ async function checkTunnel() {
     if (!alive) { launchTunnel(); return; }
     if (state.restarting) return;
     if (!state.url && state.owned) state.url = loggedUrl();
-    if (state.owned) state.metrics = metricsUrl();
-    const ready = await tunnelReady(state.url, state.metrics);
+    const ready = await tunnelReady(state.url);
     if (tunnel !== state) return;
     if (ready && state.url) { state.unhealthyAt = 0; announceTunnel(state); return; }
     state.unhealthyAt ||= Date.now();
@@ -168,7 +161,7 @@ export async function startTunnel() {
   tunnelMonitor.unref();
   const owned = pid === savedPid();
   if (pid && (owned || quickUrl(url))) {
-    tunnel = { pid, owned, url: owned ? loggedUrl() : url, metrics: '', unhealthyAt: Date.now() };
+    tunnel = { pid, owned, url: owned ? loggedUrl() : url, unhealthyAt: Date.now() };
     await checkTunnel();
   } else launchTunnel();
 }

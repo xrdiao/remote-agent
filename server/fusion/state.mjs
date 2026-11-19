@@ -18,8 +18,6 @@ export const NATIVE_UNSETTLED = ['preparing', 'submitting', 'running', 'unknown'
 const subscribers = new Set();
 let fusionStartupError;
 
-export function saveFusionRuns() { fusionStore.write(); }
-
 export function initializeFusionState(clearLegacyWindows) {
   try {
     migrateLegacyFusionState();
@@ -65,7 +63,7 @@ export function newFusionRun(deviceId, project, main, tier = 'balanced') {
 export function publishFusion(controller, persist = true) {
   controller.updated = Date.now();
   controller.revision++;
-  if (persist) saveFusionRuns();
+  if (persist) fusionStore.write(controller);
   for (const changed of subscribers) changed(controller);
 }
 export function rememberFusionMainWindow(controller, selection, roots) {

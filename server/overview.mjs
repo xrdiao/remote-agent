@@ -16,10 +16,12 @@ const APP = { cursor: 'Cursor', codex: 'Codex', devin: 'Devin' };
 const FUSION_RECENT_MS = 24 * 3600 * 1000;
 const projectId = (app, root, host, windowId) => JSON.stringify([app, host || '', root ? pathKey(root, !host) : windowId]);
 
-export function overviewSnapshot(deviceId) {
+export function overviewSnapshot(deviceId, selection) {
   const now = Date.now(), projects = new Map(), collected = new Map(), excluded = fusionTargets(), errors = [];
+  const selectedApp = String(selection?.win || '').split(':')[0], selectedThread = selection?.threadId;
   let pendingWindows = 0;
   for (const win of nativeTargets()) {
+    if (selection && win.app !== selectedApp) continue;
     const windowId = win.pageId || win.id;
     if (excluded.windows.has(win.app + ':' + windowId.replace(/^(cursor|devin|codex):/, ''))) continue;
     const source = nativeWindowAt(win.ws), snap = source?.snapshot, roots = source?.roots;
@@ -42,11 +44,11 @@ export function overviewSnapshot(deviceId) {
     const belongs = row => row.workspace
       ? roots.some(root => (root.host || '') === (row.host || '') && samePath(root.root, row.workspace, !row.host))
       : !!row.workspaceId && workspaceIds.has(row.workspaceId);
-    const projectRows = new Map([...rows].filter(([, row]) => belongs(row)
-      || win.app === 'devin' && row.workspace && !row.host || win.app === 'cursor' && row.workspace));
-    for (const [key, row] of local) if (belongs(row) || !row.workspace && win.app === 'cursor')
+    const projectRows = new Map([...rows].filter(([key, row]) => (!selection || key === selectedThread)
+      && (belongs(row) || win.app === 'devin' && row.workspace && !row.host || win.app === 'cursor' && row.workspace)));
+    for (const [key, row] of local) if ((!selection || key === selectedThread) && (belongs(row) || !row.workspace && win.app === 'cursor'))
       projectRows.set(key, { ...rows.get(key), ...row, lastUsed: row.lastUsed || rows.get(key)?.lastUsed || 0 });
-    for (const state of source.overviewStates()) {
+    for (const state of source.overviewStates(selectedThread)) {
       const key = sessionId(win.app, state.thread), row = projectRows.get(key), known = rows.get(key) || local.get(key);
       if (row || key === sessionId(win.app, snap?.chat?.thread) && (!known?.workspace || belongs(known))) {
         const value = { ...row, ...state, id: key, title: state.title || row?.title || '', lastUsed: state.lastUsed || row?.lastUsed || 0 };
@@ -81,16 +83,18 @@ export function overviewSnapshot(deviceId) {
       const identity = JSON.stringify([project, key]), previous = collected.get(identity);
       const quality = Number(!!s.run && s.run.status !== 'unknown') * 4 + Number(!!s.run) * 2
         + Number(key === sessionId(win.app, snap?.chat?.thread));
-      const owner = win.app === 'codex' ? 0 : Number(belongs({ ...row, workspace }));
+      const owner = win.app === 'codex' ? 0 : win.app === 'devin'
+        ? Number(local.has(key) || source.devinCatalog?.has(key)) : Number(belongs({ ...row, workspace }));
       if (!previous || owner > previous.owner || owner === previous.owner && ((s.run?.startedAt || 0) > (previous.value.run?.startedAt || 0)
         || (s.run?.startedAt || 0) === (previous.value.run?.startedAt || 0)
           && (quality > previous.quality || quality === previous.quality && source.updatedAt > previous.updatedAt)))
         collected.set(identity, { value, quality, owner, updatedAt: source.updatedAt });
     }
   }
-  const api = openCode.overview();
-  const backendStates = new Map(codexBackend.states().map(row => [row.thread, row]));
-  for (const row of codexBackend.records.values()) {
+  const api = !selection || selectedApp === 'opencode' ? openCode.overview(selectedThread) : { windows: [], sessions: [] };
+  const records = !selection ? codexBackend.records.values() : selectedApp === 'codex' ? [codexBackend.records.get(selectedThread)].filter(Boolean) : [];
+  const backendStates = new Map(codexBackend.states(selectedThread).map(row => [row.thread, row]));
+  for (const row of records) {
     const state = backendStates.get(row.id), workspace = localFilePath(row.cwd), key = projectId('codex', workspace, '', CODEX_BACKEND);
     const question = codexAdapter.backendQuestionState(row.id);
     const win = { projectId: key, win: 'codex', windowId: CODEX_BACKEND, app: 'codex', workspace, host: '', project: path.basename(workspace) };
@@ -119,9 +123,11 @@ export function overviewSnapshot(deviceId) {
   }
   const present = new Set(sessions.map(s => s.app + ':' + s.threadId));
   for (const app of Object.keys(APP)) {
+    if (selection && app !== selectedApp) continue;
     const rows = new Map((nativeSessionCatalog(app)?.rows || []).map(row => [sessionId(app, row.id), row]));
-    for (const [id, record] of Object.entries(readLibrary()[app] || {})) {
-      if (!record.favorite || record.archived || record.deleted || present.has(app + ':' + id) || rows.get(id)?.archived || excluded.sessions.has(app + ':' + id)) continue;
+    const library = readLibrary()[app] || {};
+    for (const [id, record] of selection ? [[selectedThread, library[selectedThread]]] : Object.entries(library)) {
+      if (!record?.favorite || record.archived || record.deleted || present.has(app + ':' + id) || rows.get(id)?.archived || excluded.sessions.has(app + ':' + id)) continue;
       const saved = storedProjectSession(app, id);
       const native = rows.get(id), row = { ...saved, ...native };
       const dormant = app !== 'codex' || !row.workspace || !codexAdapter.backendThread(id, row.host || '');
@@ -140,7 +146,7 @@ export function overviewSnapshot(deviceId) {
     if (status) Object.assign(row, { busy: status.busy, waiting: status.waiting, run: status.run,
       statusKnown: true, cachedStatusAt: status.at, startedAt: status.run?.startedAt || 0 });
   }
-  const fusion = allFusionRuns()
+  const fusion = selection ? [] : allFusionRuns()
     .filter(run => FUSION_ACTIVE.includes(run.status) || ['awaiting_user', 'blocked'].includes(run.status) || now - run.updated < FUSION_RECENT_MS)
     .sort((a, b) => b.updated - a.updated).slice(0, 8).map(fusionSummary);
   return { os: process.platform, now, ready: pendingWindows === 0 && errors.length === 0,
@@ -149,7 +155,7 @@ export function overviewSnapshot(deviceId) {
 }
 
 export function overviewSession(deviceId, { win, windowId, threadId }) {
-  const session = overviewSnapshot(deviceId).sessions.find(row => row.win === win && row.windowId === windowId && row.threadId === threadId);
+  const session = overviewSnapshot(deviceId, { win, threadId }).sessions.find(row => row.win === win && row.windowId === windowId && row.threadId === threadId);
   if (!session) throw new Error('会话已从目录移除，请刷新概览');
   const target = nativeTargets().find(row => row.app === session.app && (row.pageId || row.id) === windowId);
   return { session, target };

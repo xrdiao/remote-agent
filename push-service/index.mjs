@@ -302,8 +302,8 @@ async function liveToken(ip, body) {
     const s = await livePush(reg, pushId.slice(0, 6), token, p.event,
       liveAps(Math.floor(now / 1000), p.event, p.state, p.attributes, p.alert, p.dismissAt), p.event === 'update' ? p.priority : 10);
     if (s.res === 'fail') { save(); return [502, { error: s.r.reason || `APNs ${s.r.status}` }]; }
-    delete entry.pending;
-    if (p.event === 'end' || s.res === 'dead') delete reg.live[key];
+    if (entry.pending === p) delete entry.pending;
+    if (reg.live[key] === entry && entry.token === token && (p.event === 'end' || s.res === 'dead')) delete reg.live[key];
   }
   save();
   return [200, { ok: true }];
@@ -330,7 +330,7 @@ async function live(ip, body) {
     if (entry?.token) {
       const s = await livePush(reg, tag, entry.token, 'end', liveAps(nowSec, 'end', state, attributes, alert, dismissAt), 10);
       if (s.res === 'fail') { save(); return [502, { error: s.r.reason || `APNs ${s.r.status}` }]; }
-      delete reg.live[key];
+      if (reg.live[key] === entry) delete reg.live[key];
       return done(s.res === 'dead' ? { dropped: true } : {});
     }
     if (entry) { entry.pending = pending; return done({ skipped: 'pending' }); }
@@ -340,17 +340,24 @@ async function live(ip, body) {
   if (entry?.token) {
     const s = await livePush(reg, tag, entry.token, 'update', liveAps(nowSec, 'update', state, attributes, alert, dismissAt), priority);
     if (s.res === 'fail') { save(); return [502, { error: s.r.reason || `APNs ${s.r.status}` }]; }
-    if (s.res === 'dead') { delete reg.live[key]; return done({ dropped: true }); }
+    if (s.res === 'dead') {
+      if (reg.live[key] === entry) delete reg.live[key];
+      return done({ dropped: true });
+    }
     return done();
   }
   // The start went out and the app's update token has not arrived yet: keep the latest state, never start twice.
   if (entry && now - (entry.started || 0) < LIVE_TOKEN_WAIT) { entry.pending = pending; return done({ skipped: 'pending' }); }
-  if (reg.liveStart) {
-    const s = await livePush(reg, tag, reg.liveStart, 'start', liveAps(nowSec, 'start', state, attributes, alert, dismissAt), 10);
-    if (s.res === 'dead') { delete reg.liveStart; return done({ dropped: true }); }
-    if (s.res === 'fail') return [502, { error: s.r.reason || `APNs ${s.r.status}` }];
-    // The start was sent; track the key so later updates go pending while the app's update token is on its way.
-    reg.live[key] = { started: now };
+  const startToken = reg.liveStart;
+  if (startToken) {
+    const starting = reg.live[key] = { started: now };
+    const s = await livePush(reg, tag, startToken, 'start', liveAps(nowSec, 'start', state, attributes, alert, dismissAt), 10);
+    if (s.res !== 'ok' && reg.live[key] === starting && !starting.token) delete reg.live[key];
+    if (s.res === 'dead') {
+      if (reg.liveStart === startToken) delete reg.liveStart;
+      return done({ dropped: true });
+    }
+    if (s.res === 'fail') { save(); return [502, { error: s.r.reason || `APNs ${s.r.status}` }]; }
     return done();
   }
   return done({ skipped: 'no-start-token' });

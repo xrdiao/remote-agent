@@ -79,11 +79,15 @@ async function refreshSessionCatalog(source, changed) {
   read.at = Date.now();
   read.promise = (async () => {
     const sources = app === 'devin' ? [...new Set([source, ...[...windows.values()].filter(window => window.win?.app === app)])] : [source];
-    const catalogs = await Promise.all(sources.map(async window => {
+    const results = await Promise.allSettled(sources.map(async window => {
       await window.connect();
       if (app === 'codex') return readCodexCatalog(window, projectSessionIds(app));
-      return window.cdp.evaluate(helpersCall(`nativeSessionInfo(${JSON.stringify(app)}, ${JSON.stringify(projectSessionIds(app))}, true)`), { timeout: 30000 });
+      const result = await window.cdp.evaluate(helpersCall(`nativeSessionInfo(${JSON.stringify(app)}, ${JSON.stringify(projectSessionIds(app))}, true)`), { timeout: 30000 });
+      if (app === 'devin' && result.ready) window.devinCatalog = new Map(result.rows.map(row => [row.id, row]));
+      return result;
     }));
+    if (results.every(result => result.status === 'rejected')) throw results[0].reason;
+    const catalogs = results.map(result => result.status === 'fulfilled' ? result.value : { ready: false });
     const catalog = app === 'devin' ? mergeDevinCatalogs(catalogs) : catalogs[0];
     if (!catalog.ready) return;
     catalog.rows = catalog.rows.map(row => row.host || !row.workspace ? row : { ...row, workspace: localFilePath(row.workspace) });
@@ -156,6 +160,15 @@ export function cursorSource(thread, project = null) {
   }
   return selected;
 }
+export function devinSource(thread, preferred = '') {
+  const candidates = [...windows.values()].filter(source => source.win?.app === 'devin'
+    && source.cdp.ws?.readyState === 1
+    && (source.thread === thread || source.catalog?.some(row => row.id === thread)
+      || source.devinCatalog?.get(thread)?.archived === false));
+  return candidates.find(source => source.win.id === preferred)
+    || candidates.find(source => source.thread === thread)
+    || candidates[0];
+}
 export const nativeWindowAt = url => windows.get(url);
 export function configureNativeRetry(deviceId, source, settings) {
   for (const window of windows.values()) window.retrySettings.delete(deviceId);
@@ -190,6 +203,7 @@ export class NativeWindow {
     this.cdp.on('Runtime.executionContextsCleared', () => {
       this.contexts.clear();
       this.nativeApi = null;
+      this.devinCatalog = null;
       for (const view of this.conversations.values())
         for (const listener of [...view.listeners, ...view.management]) listener(new Error('原生页面已重载，需要核对后台会话与轮次'));
       if (!this.win) return;
@@ -207,9 +221,23 @@ export class NativeWindow {
     });
     return connecting.then(() => {
       if ((this.app || this.win?.app) !== 'devin') return;
-      return this.nativeApi ||= cdpRead.run(null, () => this.cdp.evaluate(`(async () => {
-        window.__remoteAgentDevinNative = await import('@exa/chat-client');
-      })()`));
+      if (!this.nativeApi) {
+        const loading = cdpRead.run(null, async () => {
+          await this.cdp.send('Runtime.enable');
+          await this.cdp.evaluate(`(async () => {
+            const map = () => [...document.querySelectorAll('script[type="importmap"]')].some(script => script.textContent.includes('@exa/chat-client'));
+            const deadline = Date.now() + 8000;
+            while (!map() && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 100));
+            if (!map()) throw new Error('Devin 原生会话模块尚未就绪');
+            window.__remoteAgentDevinNative = await import('@exa/chat-client');
+          })()`);
+        }).catch(error => {
+          if (this.nativeApi === loading) this.nativeApi = null;
+          throw error;
+        });
+        this.nativeApi = loading;
+      }
+      return this.nativeApi;
     });
   }
   async composerCall(call, context) {
@@ -324,9 +352,11 @@ export class NativeWindow {
     this.thread = thread;
     this.invalidate();
   }
-  overviewStates() {
-    const states = new Map((this.snapshot?.states || []).map(row => [row.thread, row]));
-    for (const [thread, run] of this.runStates) if (!states.get(thread)?.run) {
+  overviewStates(threadId) {
+    const rows = this.snapshot?.states || [];
+    const states = new Map((threadId ? rows.filter(row => row.thread === threadId) : rows).map(row => [row.thread, row]));
+    const runs = threadId ? (this.runStates.has(threadId) ? [[threadId, this.runStates.get(threadId)]] : []) : this.runStates;
+    for (const [thread, run] of runs) if (!states.get(thread)?.run) {
       const observed = states.get(thread), known = run.status !== 'running';
       states.set(thread, { ...observed, thread, busy: !!observed?.busy,
         run: known ? run : { ...run, status: 'unknown' }, statusKnown: known });
@@ -339,6 +369,7 @@ export class NativeWindow {
     return this.conversations.get(key);
   }
   forgetSession(id) {
+    this.devinCatalog?.delete(id);
     this.previews.delete(id);
     this.runStates.delete(id);
     this.itemCache.delete(id);

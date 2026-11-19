@@ -21,7 +21,7 @@ import { leaseWindow, windowOperationLocked } from './window-use.mjs';
 import {visualCapture, visualWindows, isWayland} from './visual/capture.mjs';
 import { rememberSelection, lastSelection } from '../lib/auth.mjs';
 import { editorRoots } from '../lib/files.mjs';
-import { NativeCdp, nativeWindow, nativeWindowAt, nativeTargets, nativeSessionCatalog, subscribeCatalog, cursorSource } from './native-windows.mjs';
+import { NativeCdp, nativeWindow, nativeWindowAt, nativeTargets, nativeSessionCatalog, subscribeCatalog, cursorSource, devinSource } from './native-windows.mjs';
 import { captureOperation } from './operations.mjs';
 import { terminalService } from './terminal-service.mjs';
 import { codexBackend, CODEX_BACKEND } from './codex/state.mjs';
@@ -308,7 +308,8 @@ export class Session extends AgentContext {
     }
     if (req.project && !req.projectSwitch) {
       // Bind only the app first. The saved project, not a fallback window, owns the thread.
-      const carrier = app === 'devin' && nativeTargets().find(win => win.app === app && win.id === req.windowId);
+      const carrier = app === 'devin' && (req.threadId && devinSource(req.threadId, req.windowId)?.win
+        || nativeTargets().find(win => win.app === app && win.id === req.windowId));
       await this.attach({ ...req, id: carrier?.id || app, windowId: carrier?.id || '', restore: false, project: null, threadId: '', projectSwitch: true }, windows);
       if (!this.cdp || this.app !== app) throw new Error('所选 Agent 尚未连接，请重试');
       if (!req.project.host) return this.useProject(req.project.root, false, req.threadId || '', '', req.windowId || '');

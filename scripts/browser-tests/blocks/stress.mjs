@@ -19,12 +19,14 @@ export default [
       note: '未设置 --max-open-ms 时只报告延迟，不把“未超时”视为速度合格' };
   } },
   { id: 'stress.menus', title: '重复模型菜单读取无卡死和身份漂移', refs: ['F08', 'S02'], mode: 'stress', apps: true, async run(c, app) {
-    const target = await c.target(app); await c.open(target);
+    const target = await c.target(app), times = []; await c.open(target);
     for (let i = 0; i < c.options.iterations; i++) {
-      const items = await c.menu('model'); c.check(items.length > 0, '模型菜单有真实候选 ' + i); await c.b.dismiss();
+      const start = performance.now(), items = await c.menu('model');
+      times.push(Math.round(performance.now() - start));
+      c.check(items.length > 0, '模型菜单有真实候选 ' + i); await c.b.dismiss();
       c.equal(await c.b.read('lastChat.thread'), target.thread, '菜单不切换会话 ' + i);
     }
-    return { iterations: c.options.iterations };
+    return { timingMs: distribution(times), samples: times };
   } },
   { id: 'stress.last-target', title: '快速连续 A/B 点击最终只打开最后目标', refs: ['F16', 'R02', 'S01', 'S03'], mode: 'stress', apps: true, async run(c, app) {
     const rows = (await c.rows(app)).filter(row => row.thread && row.state !== 'run');

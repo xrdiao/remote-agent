@@ -103,14 +103,20 @@
     if (selected) return fusionConfig() ? 'Fusion' : selected.familyLabel || selected.label;
     return normLabel(modelButton()?.innerText || '').split('\n')[0].slice(0, 60) || null;
   };
+  const devinAcpModelItems = (id = '') => {
+    const options = session => session?.configOptions?.find(option => option.category === 'model')?.options;
+    const models = id ? options(devinSessionRecord(id))
+      : devinSessions().filter(session => session.providerId === 'devin-cli').map(options).find(rows => rows?.length);
+    return models?.flatMap(group => group.options || [group]).map(option => ({
+      id: option.value, label: option.name, efforts: [], source: '原生 ACP 会话模型选项；型号包含其原生强度，金额未知',
+    }));
+  };
   const modelItemsFast = (capabilities = false) => {
     if (capabilities) {
       if (remoteContext?.app === 'devin') {
-        const config = devinSessionRecord(remoteContext.threadId)?.configOptions.find(option => option.category === 'model');
-        if (!config) throw new Error('该原生 Devin 会话尚未提供模型配置');
-        return config.options.flatMap(group => group.options || [group]).map(option => ({
-          id: option.value, label: option.name, efforts: [], source: '原生 ACP 会话模型选项；型号包含其原生强度，金额未知',
-        }));
+        const models = devinAcpModelItems(remoteContext.threadId);
+        if (models?.length) return models;
+        if (remoteContext.threadId) throw new Error('该原生 Devin 会话尚未提供模型配置');
       }
       const codex = codexPickerProps();
       if (codex) return (codex.modelOptions || []).filter(option => !option.disabled && !option.model?.hidden).map(option => ({
@@ -129,6 +135,7 @@
         .map(config => ({ id: config.modelUid, family: config.familyUid, label: config.familyLabel || config.label, pricing: devinPricing(config),
           efforts: devinConfigs(devin).filter(value => !value.disabled && value.familyUid === config.familyUid)
             .flatMap(value => { const effort = value.familyMetadata?.['Reasoning Effort'] || value.familyMetadata?.Effort; return effort ? [{ label: effort.name, pricing: devinPricing(value) }] : []; }) }));
+      if (remoteContext?.app === 'devin' || devinSurface()) return devinAcpModelItems();
     }
     if (remoteContext?.app === 'cursor') {
       const picker = cursorPickerProps(true), selected = picker.selections || picker.initialSelections || [];
@@ -189,8 +196,9 @@
   const devinPickerProps = (readOnly = false) => {
     const button = devinSurface() && devinModelButton(!readOnly);
     const props = button ? codexFiberProps(button, 40).find(p => p.visibleModelConfigs && p.onModelSelect) : null;
-    if (!props || remoteContext?.app !== 'devin') return props;
-    const session = devinSessionRecord(remoteContext.threadId), model = session.configOptions.find(option => option.category === 'model');
+    if (!props || remoteContext?.app !== 'devin' || !remoteContext.threadId) return props;
+    const session = devinSessionRecord(remoteContext.threadId), model = session?.configOptions?.find(option => option.category === 'model');
+    if (!model) return null;
     return { ...props, selectedModels: [model.currentValue], onModelSelect: async config => {
       return devinSend(session.providerId,
         { method: 'session/set_config_option', params: { sessionId: session.sessionId, configId: model.id, value: config.modelUid } });

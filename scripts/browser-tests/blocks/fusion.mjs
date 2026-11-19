@@ -36,7 +36,10 @@ async function create(c) {
   }
   const preparation = await current(c, run.id);
   if (preparation.main.error) throw new Error(preparation.main.error);
-  const model = await b.read("document.querySelector('#fusionConfigForm [name=model]')?.options[1]?.value");
+  const model = await b.read(app === 'devin'
+    ? "[...document.querySelector('#fusionConfigForm [name=model]').options].find(o=>/^swe-2-(flash-)?(high|medium|max)$/.test(o.value)&&!o.disabled)?.value"
+    : "document.querySelector('#fusionConfigForm [name=model]')?.options[1]?.value");
+  if (app === 'devin' && !model) throw new Unavailable('Devin 原生模型列表没有可以验收的免费 SWE-2');
   if (model) await b.select('#fusionConfigForm [name="model"]', model);
   const effort = await b.read("document.querySelector('#fusionConfigForm [name=effort]')?.options[1]?.value");
   if (effort) await b.select('#fusionConfigForm [name="effort"]', effort);

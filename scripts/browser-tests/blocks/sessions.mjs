@@ -5,6 +5,7 @@ import { listWindows, codexWindows } from '../../../server/windows.mjs';
 import { CODEX_CDP_URL } from '../../../server/config.mjs';
 import { helpersCall } from '../../../server/page/build.mjs';
 import { OpenCodeClient } from '../../../server/opencode/client.mjs';
+import { CodexClient } from '../../../server/codex/client.mjs';
 
 export default [
   { id: 'sessions.id-read', title: 'Devin 未在桌面展开的已有 ID 可读取摘要和正文', refs: ['F04', 'F07', 'R01'], mode: 'read', apps: ['devin'], async run(c, app) {
@@ -58,6 +59,13 @@ export default [
       row = await client.request(`/session/${target.thread}`, { directory: target.root });
       c.equal(row.id, target.thread, 'OpenCode 原生服务可按 ID 读取空会话');
       c.check((await client.sessions()).some(row => row.id === target.thread), 'OpenCode 原生界面会话目录含同一 ID');
+    } else if (app === 'codex' && target.window === 'backend') {
+      const client = new CodexClient();
+      try {
+        await client.connect();
+        ({ thread: row } = await client.request('thread/read', { threadId: target.thread, includeTurns: false }));
+        c.equal(row.id, target.thread, 'Codex app-server 可直接读取已保存的空会话');
+      } finally { client.close(); }
     } else {
       const page = app === 'codex' ? (await codexWindows(CODEX_CDP_URL)).find(page => page.chatWs)
         : (await listWindows(null, app)).find(page => page.id === target.window);

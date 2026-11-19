@@ -49,14 +49,16 @@
       const headers = (await services.data._storageService.collectionQuery('composerHeaders')).map(row => JSON.parse(row));
       const uris = cursorSessionWorkspaceUris(data, headers.find(row => row.composerId === id), workspace);
       const roots = (uris || []).map(uri => ({ root: uri.scheme === 'file' ? uriFilePath(uri) : uri.path, host: uri.scheme === 'file' ? '' : uri.authority.replace(/^ssh-remote\+/, '') }));
-      return { app, threadId: id, host: roots[0]?.host || '', cwd: roots[0]?.root || '', roots, projectless: uris?.length === 0 };
+      const agentWorkspace = !roots.length && cursorWorkspace(id);
+      if (agentWorkspace) roots.push(agentWorkspace);
+      return { app, threadId: id, host: roots[0]?.host || '', cwd: roots[0]?.root || '', roots, projectless: !roots.length && uris?.length === 0 };
     }
     let session = devinSessionRecord(id);
-    if (!session) throw new Error('Devin 原生目录中没有这个会话');
-    if (session.providerId === 'devin-cli' && !window.__remoteAgentDevinDirectory?.has(id)) {
+    if (devinNativeId(id).startsWith('devin-acp/devin-cli/') && !devinDirectoryRow(id)) {
       await nativeSessionCatalog('devin', [id]);
       session = devinSessionRecord(id);
     }
+    if (!session) throw new Error('Devin 原生目录中没有这个会话');
     if (session.providerId === 'devin-cli' && !session.cwd) throw new Error('Devin 原生目录尚未提供这个会话的项目路径');
     return { app, threadId: id, provider: session.providerId, host: '', cwd: localFilePath(session.cwd || ''), roots: session.cwd ? [{ root: localFilePath(session.cwd), host: '' }] : [] };
   };
@@ -559,6 +561,22 @@
     if (action === 'toolReply') return fusionNativeTools.reply(app, id, name);
     if (action === 'prepare' && app === 'codex') return nativeCodexCreation(id, name, true);
     if (action === 'createNative' && app === 'codex') return nativeCodexCreation(id, name, false);
+    if (action === 'createProjectChat' && app === 'cursor') {
+      const services = cursorSessionServices();
+      if (!services) throw new Error('Cursor 原生会话管理器尚未就绪');
+      const workbench = doc.defaultView.vscode?.context?.configuration?.()?.workspace;
+      const folders = services.composer.composerChatService._workspaceContextService.getWorkspace().folders;
+      const matches = uri => uri?.scheme === 'file' && samePath(uriFilePath(uri), name);
+      const workspace = workbench?.id && (matches(workbench.uri) || folders.some(folder => matches(folder.uri)))
+        ? workbench : cursorProjectPicker()?.recentProjects?.find(row => matches(row.workspaceIdentifier?.uri))?.workspaceIdentifier;
+      if (!workspace) throw new Error('Cursor 原生窗口尚未确认所选项目');
+      const placement = nativeValue({ workspaceIdentifier: workspace });
+      const created = await services.composer.createComposer(nativeValue({ skipSelect: true, skipShowAndFocus: true, partialState: placement }));
+      await services.data.persistComposerWorkspacePlacement(created.composerId, placement);
+      await services.data.syncComposerHeadersFromCanonicalStorage();
+      await services.composer.openComposer(created.composerId);
+      return created.composerId;
+    }
     if (action === 'release' && app === 'cursor') {
       const handles = window.__remoteAgentNativeHandles;
       const key = JSON.stringify([id, name]);
@@ -584,14 +602,19 @@
     }
     if (action === 'createNative' && app === 'devin') {
       const parent = devinSessionRecord(id || activeThread());
-      if (!parent) throw new Error('当前 Devin 窗口没有就绪的原生会话');
-      const created = await devinSend(parent.providerId,
+      const native = await import('@exa/chat-client');
+      const cli = native.tryGetAcpSingleton('connectorService')?.getConnectorById('devin-cli');
+      const provider = parent?.providerId || (cli?.status === 'connected' && cli.id);
+      if (!provider) throw new Error('当前 Devin 窗口没有就绪的原生连接');
+      const created = await devinSend(provider,
         { method: 'session/new', params: { cwd: localFilePath(name.root), mcpServers: name.mcp ? [name.mcp] : [],
           _meta: { 'cognition.ai/skipPreferenceSeeding': true } } });
       created.sessionId = created.sessionId.replace(/^devin-/, '');
       window.__remoteAgentNativeCreations.get(name.requestId).nativeThreadId = created.sessionId;
-      if (name.role === 'main' && name.model) await nativeSessionAction(app, created.sessionId, 'model', name.model);
-      return nativeSessionContext(app, created.sessionId);
+      return devinReadSession(created.sessionId, async () => {
+        if (name.role === 'main' && name.model) await nativeSessionAction(app, created.sessionId, 'model', name.model);
+        return nativeSessionContext(app, created.sessionId);
+      });
     }
     if (action === 'capacityTarget' && app === 'codex') {
       const scopes = codexHistoryScopes(), manager = codexNativeManager();
@@ -599,7 +622,8 @@
       const capacity = codexCapacityItem();
       return capacity?.b?.length ? codexPoint(capacity._retry) : null;
     }
-    if (action === 'queue' && app === 'devin') return devinNativeQueue(id, name);
+    if ((action === 'queue' || action === 'submitPrompt') && app === 'devin')
+      return devinSubmitComposer(id, action === 'submitPrompt' ? { submit: true } : name);
     if (action === 'questionText' && app === 'devin') return devinNativeQuestionText(id, name);
     if (action === 'send') {
       if (app === 'cursor' && name.requireActive && activeThread() !== id) throw new Error('会话已切换，消息未发送');

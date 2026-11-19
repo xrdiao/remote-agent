@@ -3,7 +3,7 @@ import { Unavailable } from '../browser.mjs';
 
 async function generating(c, app) {
   const target = await c.target(app, 'execution', true); await c.open(target);
-  await c.send(target, `在当前隔离测试目录执行一条等待约 20 秒再输出 ${c.marker} 的命令，不修改文件。`, { complete: false });
+  await c.send(target, `不要使用任何工具。先写出 ${c.marker}，再输出从 1 到 400 的编号，每个数字单独一行。`, { complete: false });
   if (!await c.b.read('lastChat.busy')) throw new Unavailable('模型已完成，未捕捉到真实生成窗口');
   return target;
 }
@@ -11,6 +11,13 @@ async function enqueue(c, marker) {
   if (!await c.b.read("document.getElementById('send').textContent.includes('排队')")) throw new Unavailable('当前原生软件未提供排队入口');
   await c.draft(`只回复 ${marker}，不运行工具。`); await c.b.click('#send');
   return c.b.wait(`lastChat.queued?.find(q=>q.t?.includes(${attr(marker)}))||null`, '队列原生接受');
+}
+async function stopGeneration(c) {
+  if (await c.b.read("document.getElementById('composerFold').getAttribute('aria-expanded')==='false'")) await c.b.click('#composerFold');
+  await c.b.click('#stop');
+  await c.b.wait("!!document.querySelector('#askOk')", '停止确认');
+  await c.b.click('#askOk');
+  await c.b.wait('!lastChat.busy', '原生停止', c.options.generationTimeout);
 }
 export default [
   { id: 'execution.queue-delivery', title: '排队后按顺序自然发送', refs: ['F06'], mode: 'generate', apps: ['codex', 'cursor', 'devin'], async run(c, app) {
@@ -31,11 +38,7 @@ export default [
   } },
   { id: 'execution.stop', title: '原生生成中停止并恢复可编辑', refs: ['F06', 'F17'], mode: 'generate', apps: true, async run(c, app) {
     const target = await generating(c, app);
-    if (await c.b.read("document.getElementById('composerFold').getAttribute('aria-expanded')==='false'")) await c.b.click('#composerFold');
-    await c.b.click('#stop');
-    await c.b.wait("!!document.querySelector('#askOk')", '停止确认');
-    await c.b.click('#askOk');
-    await c.b.wait('!lastChat.busy', '原生停止', c.options.generationTimeout);
+    await stopGeneration(c);
     if (app === 'codex') c.equal(await c.b.read('lastChat.run?.status'), 'stopped', 'Codex 本轮由停止操作结束');
     c.check(await c.b.read("!document.getElementById('text').disabled"), '停止后输入框可编辑');
     await c.draft(c.marker + '-AFTER-STOP'); c.equal(await c.b.read('text.value'), c.marker + '-AFTER-STOP', '停止后草稿可正常写入');
@@ -63,17 +66,22 @@ export default [
     const fields = await c.b.read("[...document.querySelectorAll('#perfPanel .perf-key')].map(e=>e.textContent)");
     for (const key of ['耗时', '输入 token', '输出 token', '推理 token', '模型']) c.check(fields.includes(key), '统计面板包含 ' + key);
     await c.b.click('#perfChip');
-    await c.b.wait('!lastChat.busy', '统计采样后结束', c.options.generationTimeout);
+    if (await c.b.read('lastChat.busy')) await stopGeneration(c);
     return { thread: target.thread, samples, note: '记录原生提供的计数及采样时间；不把未知速度视为速度测量通过' };
   } },
-  { id: 'execution.commands', title: '命令补全和 compact 菜单不误提交', refs: ['F06'], mode: 'write', apps: true, async run(c, app) {
+  { id: 'execution.commands', title: '命令补全和 compact 菜单不误提交', refs: ['F06'], mode: 'write', apps: ['codex', 'opencode'], async run(c, app) {
     const target = await c.target(app, 'commands', true); await c.open(target);
     try {
       await c.draft('/');
       await c.b.wait("!document.getElementById('mentionBox').hidden&&document.querySelectorAll('#mentionBox .mnRow').length>0", '原生斜杠菜单');
       const rows = await c.b.read("document.getElementById('mentionBox')._rows.map(r=>({label:r.label,section:r.section}))");
       c.check(rows.length>0, '原生命令列表非空');
-      if (app === 'codex' || app === 'opencode') c.check(rows.some(row => /compact|压缩/i.test(row.label)), '菜单含原生 compact 压缩命令');
+      const compact = rows.findIndex(row => /compact|压缩/i.test(row.label));
+      c.check(compact >= 0, '菜单含原生 compact 压缩命令');
+      if (app === 'opencode') {
+        await c.b.click(`#mentionBox [data-mi="${compact}"]`);
+        c.equal(await c.b.read('text.value.trim()'), '/compact', '选择命令后保留草稿，等用户提交');
+      }
       c.equal(await c.b.read('pendingSends.size'), 0, '只补全没有产生发送'); return { commands: rows };
     } finally { await c.draft(''); }
   } },

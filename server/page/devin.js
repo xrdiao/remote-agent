@@ -1,6 +1,7 @@
   // Devin's shared ACP engine owns sessions; Redux only retains window configuration.
   const devinClient = () => window.__remoteAgentDevinNative;
   const devinNativeId = id => id.startsWith('acp/') ? 'devin-' + id : id;
+  const devinDirectoryRow = id => window.__remoteAgentDevinDirectory?.get(id.replace(/^devin-/, ''));
   let devinUiHandles;
   const devinUiSession = id => {
     if (!devinUiHandles) {
@@ -10,7 +11,16 @@
     }
     return devinUiHandles.get(devinNativeId(id));
   };
-  const devinSessionHandle = id => devinUiSession(id) || devinClient().sharedAcpEngine.peekSession(devinNativeId(id));
+  const devinEngineHandle = (id, method) => {
+    const native = devinClient(), key = devinNativeId(id), engine = native.sharedAcpEngine;
+    const handle = engine[method](key);
+    if (handle) return handle;
+    const provider = window.__remoteAgentDevinCreated?.get(key)
+      || (native.isKnownSession(key) && native.sessionProviderId(key))
+      || (key.startsWith('devin-acp/devin-cli/') && devinDirectoryRow(id) && 'devin-cli');
+    return provider ? engine.hostFor(provider)[method](key) : null;
+  };
+  const devinSessionHandle = id => devinUiSession(id) || devinEngineHandle(id, 'peekSession');
   const devinSessionData = id => devinSessionHandle(id)?.store.getState();
   const devinMessages = (id, data = devinSessionData(id)) => {
     if (!data) return [];
@@ -20,12 +30,15 @@
   };
   const devinSessionRecord = id => {
     const native = devinClient(), key = devinNativeId(id);
-    if (!native.isKnownSession(key)) return null;
+    const directory = devinDirectoryRow(id);
+    const known = native.isKnownSession(key);
     const row = native.getSessionRow(key), data = devinSessionData(id), info = data?.sessionInfo;
-    const providerId = native.sessionProviderId(key), directory = window.__remoteAgentDevinDirectory?.get(id.replace(/^devin-/, ''));
+    if (!known && !directory && !info) return null;
+    const providerId = native.sessionProviderId(key);
     const active = data?.promptInFlight || data?.pendingPrompts > 0 || row && native.deriveAgentStatus(row).isWorking;
     return { ...info, sessionId: id.replace(/^devin-/, ''), providerId,
-      title: info?.title || native.sessionTitle(key) || '', cwd: providerId === 'devin-cli' ? directory?.workspace || '' : info?.cwd || native.sessionCwdOf(key) || '',
+      title: info?.title || native.sessionTitle(key) || directory?.title || '',
+      cwd: (providerId === 'devin-cli' ? directory?.workspace : info?.cwd) || native.sessionCwdOf(key) || '',
       configOptions: info?.configOptions || native.sessionConfigOptions(key), status: data?.loadStatus === 'failed' ? 'unknown_error' : active ? 'active' : 'idle',
       updatedAt: row?.updated_at, latest_message_event_at: row?.latest_message_event_at,
       _meta: { ...info?._meta, 'cognition.ai/isArchived': row?.is_archived === true } };
@@ -105,6 +118,7 @@
       if (request.method === 'session/set_config_option') handle.store.getState().replaceConfigOptions(result.configOptions);
       if (request.method === 'session/new') {
         const host = devinClient().sharedAcpEngine.hostFor(provider), created = host.adoptCreatedSession(result.sessionId, result);
+        (window.__remoteAgentDevinCreated ||= new Map()).set(devinNativeId(result.sessionId), provider);
         host.preloadSession(result.sessionId);
         created.release();
       }
@@ -124,7 +138,13 @@
     }));
   };
   const devinReadSession = async (id, read) => {
-    const ui = devinUiSession(id), handle = ui || devinClient().sharedAcpEngine.acquire(devinNativeId(id));
+    const ui = devinUiSession(id);
+    let handle = ui || devinEngineHandle(id, 'acquire');
+    if (!handle && devinNativeId(id).startsWith('devin-acp/devin-cli/')) {
+      await nativeSessionCatalog('devin', [id]);
+      handle = devinEngineHandle(id, 'acquire');
+    }
+    if (!handle) throw new Error('Devin 尚未在这个窗口提供该会话：' + id);
     try {
       handle.resumeSession();
       if (handle.store.getState().loadStatus === 'loading') await new Promise(resolve => {
@@ -141,10 +161,10 @@
       devinUiHandles = null;
       const id = thread || activeThread();
       const ui = id && devinUiSession(id);
-      if (id === selected && (!ui || ui === handle)) return;
+      if (id === selected && (!id || handle && (!ui || ui === handle))) return;
       stop?.(); if (owned) handle.release(); selected = id;
-      owned = !!id && !ui;
-      handle = id ? ui || native.sharedAcpEngine.acquire(devinNativeId(id)) : null;
+      handle = id ? ui || devinEngineHandle(id, 'acquire') : null;
+      owned = !!handle && !ui;
       stop = handle?.store.subscribe(changed); handle?.resumeSession();
     };
     const feed = native.subscribeSessionFeed(() => { refresh(); changed(); });
@@ -946,11 +966,12 @@
     const active = activeThread();
     if (active && active !== id) throw new Error('Devin 会话已切换，请重试');
   };
-  const devinNativeQueue = async (id, spec = {}) => {
+  const devinSubmitComposer = async (id, spec = {}) => {
     devinCheckSession(id);
     if (!devinSessionRecord(id)) throw new Error('Devin 原生目录中没有这个会话');
     const found = devinNativeSubmission(id);
     if (!found) throw new Error('Devin 原生输入框尚未就绪');
+    if (spec.submit) return found.props.onSubmit();
     const before = new Set(devinQueued(id).map(row => row.id));
     if (typeof found.props.onEnqueue !== 'function') {
       found.props.onSubmit();

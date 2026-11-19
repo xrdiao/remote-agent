@@ -1,7 +1,6 @@
-import { localFilePath } from '../../lib/platform.mjs';
+import { localFilePath, mod, samePath } from '../../lib/platform.mjs';
 import { cursorSource } from '../native-windows.mjs';
 import { windowRoots, editorRoots } from '../../lib/files.mjs';
-import { mod } from '../../lib/platform.mjs';
 import { helpersCall, PAGE_SRC } from '../page/build.mjs';
 import { cursorUsage } from '../agent/context.mjs';
 import { activateQueuedAction } from '../agent/queued-action.mjs';
@@ -20,24 +19,29 @@ export const capabilities = {
 };
 
 export const adapter = {
-  async newChat() {
-    const before = await this.cdp.evaluate(helpersCall('activeThread()'));
-    await this.pressControl('newChat');
+  async newChat(project = '') {
+    const before = project ? '' : await this.cdp.evaluate(helpersCall('activeThread()'));
+    const created = project ? await this.cdp.evaluate(helpersCall(`nativeSessionAction('cursor', '', 'createProjectChat', ${JSON.stringify(project)})`)) : '';
+    if (!project) await this.pressControl('newChat');
     for (let i = 0; i < 40; i++) {
       await new Promise(r => setTimeout(r, 150));
       const chat = await this.cdp.evaluate(helpersCall('extract()'));
-      if (!chat || (chat.thread === before && chat.items.length)) continue;
+      if (!chat || (project ? chat.thread !== created || chat.items.length : chat.thread === before && chat.items.length)) continue;
+      if (project) {
+        const context = await cursorThreadContext(this.cdp, created);
+        if (!context.roots.some(root => !root.host && samePath(root.root, project)))
+          throw new Error('Cursor 新会话的原生工作区与所选项目不一致');
+        rememberCursorSessionProject(created, project, this.windowId);
+      }
       this.clearViewState();
       this.threadId = chat.thread || '';
-      if (this.threadId && this.threadId !== before && this.pendingProject?.newSession)
-        rememberCursorSessionProject(this.threadId, this.pendingProject.root, this.windowId);
       await this.currentRoots();
       this.publishThread('已新建对话');
       this.lastChatAt = 0;
       await this.pollChat();
-      return;
+      return chat;
     }
-    throw new Error('新建对话没有生效');
+    throw new Error(project ? 'Cursor 新会话输入区尚未就绪' : '新建对话没有生效');
   },
 
   // A cold start keeps the native home/new-chat view.
@@ -100,7 +104,7 @@ export const adapter = {
 
   async currentRoots() {
     if (this.threadId) {
-      const context = await this.cdp.evaluate(helpersCall(`nativeSessionInfo('cursor', ${JSON.stringify(this.threadId)}, 'context')`));
+      const context = await cursorThreadContext(this.cdp, this.threadId);
       if (!context.roots.length && !context.projectless) {
         const saved = storedProjectSession('cursor', this.threadId);
         if (saved?.workspaceConfirmed) return [{ root: saved.workspace, host: '' }];
@@ -218,6 +222,10 @@ export const adapter = {
     this.emit({ t: 'settings', ...data });
   },
 };
+
+function cursorThreadContext(cdp, id) {
+  return cdp.evaluate(helpersCall(`nativeSessionInfo('cursor', ${JSON.stringify(id)}, 'context')`));
+}
 
 export const methods = {
 async readCursorMenu(kind, requestId) {

@@ -4,10 +4,14 @@ import { Unavailable } from '../browser.mjs';
 export default [
   { id: 'questions.answer', title: '真实问题、切换保留和回答', refs: ['F09', 'X06'], mode: 'generate', apps: true, async run(c, app) {
     const a = await c.target(app, 'questions', true), b = await c.target(app, 'B', true); await c.open(a);
-    if (app === 'codex' && await c.b.has('#pickPlan') && !await c.b.read('lastChat.codex?.plan')) {
-      await c.b.click('#pickPlan'); await c.b.wait('lastChat.codex?.plan===true', '原生计划模式回执');
+    if (app === 'codex' && !await c.b.read('lastChat.codex?.plan')) {
+      if (await c.b.read("document.getElementById('composerFold').getAttribute('aria-expanded')==='false'")) await c.b.click('#composerFold');
+      await c.b.click('#add');
+      if (!await c.b.has('#sheet [data-add="plan"]')) throw new Unavailable('当前 Codex 会话没有 Plan 入口');
+      await c.b.click('#sheet [data-add="plan"]');
+      await c.b.wait('lastChat.codex?.plan===true', '原生计划模式回执');
     }
-    await c.send(a, `请使用提问工具问一个问题：${c.marker} 选择哪个测试值？选项为 QA_ONE 和 QA_TWO。只提问并等待，不执行工具或修改文件。`, { complete: false });
+    await c.send(a, `请调用原生提问工具问一个问题：${c.marker} 选择哪个测试值？选项为 QA_ONE 和 QA_TWO。调用提问工具后等待回答。不要运行其他工具或修改文件。`, { complete: false });
     const outcome = await c.b.wait("(lastChat.questions?.requests?.length||lastChat.questions?.list?.length||lastChat.items.some(i=>i.k==='opencodeQuestion'))?'question':!lastChat.busy?'completed':null", '原生问题或本轮结束', c.options.generationTimeout);
     if (outcome === 'completed') throw new Unavailable('模型已完成但没有产生原生问题；普通文本问句不能计为问题卡片通过');
     if (app !== 'opencode') c.check(await c.b.has('#qnBar .qnCard'), '原生问题卡片实际可见');

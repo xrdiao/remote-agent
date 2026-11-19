@@ -10,7 +10,8 @@ import { CodexClient } from '../../../server/codex/client.mjs';
 
 export default [
   { id: 'composer.codex-writer', title: '桌面进程持有会话时手机使用同一写入者发送', refs: ['F06', 'F16', 'F17'], mode: 'generate', apps: ['codex'], async run(c, app) {
-    const page = (await codexWindows(CODEX_CDP_URL)).find(page => page.chatWs);
+    const writerWindow = c.options.targets?.codex?.writerWindow;
+    const page = (await codexWindows(CODEX_CDP_URL)).find(page => page.chatWs && (!writerWindow || page.pageId === writerWindow));
     if (!page) throw new Unavailable('此场景需要已打开的 Codex 桌面窗口');
     const target = await c.target(app, 'writer', true), native = new Cdp(page.chatWs);
     await native.connect();
@@ -114,7 +115,8 @@ export default [
     const marker = c.marker + '-SEND-' + app, prompt = `只回复 ${marker}，不读写文件、不运行命令。`;
     const result = await c.send(target, prompt);
     c.equal(result.pending, 0, '发送有确定回执'); c.equal(result.draftLength, 0, '发送成功清空本轮草稿');
-    c.check(await c.b.read(`lastChat.items.some(i=>i.k==='assistant'&&i.t?.includes(${attr(marker)}))`), '收到原生回复正文');
+    const reply = await c.b.wait(`lastChat.items.some(i=>i.k==='assistant'&&i.t?.includes(${attr(marker)}))`, '收到原生回复正文', c.options.generationTimeout);
+    c.check(reply, '收到原生回复正文');
     await c.open(target); c.equal(await c.b.read('text.value'), '', '重进没有已发送草稿残留');
     if (await c.b.read("document.getElementById('composerFold').getAttribute('aria-expanded')==='false'")) await c.b.click('#composerFold');
     await c.b.click('#inputPrev'); c.equal(await c.b.read('text.value'), prompt, '输入历史逐字保留已发送原文');
@@ -151,7 +153,10 @@ export default [
   { id: 'composer.long-history', title: '长文本发送与输入历史不增加斜杠', refs: ['F06', 'F07'], mode: 'generate', apps: ['codex'], async run(c, app) {
     const target = await c.target(app, 'A', true); await c.open(target);
     const value = c.marker + '\n' + '这是用于核对长文本的测试数据，不需要执行。\n'.repeat(150) + '只回复 RECEIVED';
-    await c.send(target, value); await c.b.click('#inputPrev');
+    await c.send(target, value);
+    if (await c.b.read("document.getElementById('composerFold').getAttribute('aria-expanded')==='false'")) await c.b.click('#composerFold');
+    await c.b.wait('!document.getElementById("inputPrev").hidden', '原生输入历史已出现');
+    await c.b.click('#inputPrev');
     c.equal(await c.b.read('text.value'), value, '取回的长文本和原输入逐字相同');
     c.check(await c.b.read(`lastChat.items.some(i=>i.k==='human'&&i.t?.trim()===${attr(value.trim())})`), '原生正文未追加斜杠或换行转义');
     await c.draft(''); return { characters: value.length };

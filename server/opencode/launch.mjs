@@ -10,6 +10,7 @@ import { OpenCodeClient } from './client.mjs';
 const client = new OpenCodeClient();
 const run = promisify(execFile);
 const log = path.join(DATA_DIR, 'start-opencode.log');
+let launching, startingChild;
 
 async function ready() {
   try { return (await client.request('/global/health', { signal: AbortSignal.timeout(1000) })).healthy === true; }
@@ -27,8 +28,13 @@ export async function detectOpenCode() {
   }
 }
 
-export async function launchOpenCode() {
+export function launchOpenCode() {
+  return launching ||= startOpenCode().finally(() => { launching = null; });
+}
+
+async function startOpenCode() {
   if (await ready()) return { app: 'opencode', status: 'reused' };
+  if (startingChild) return { app: 'opencode', status: 'timeout', log };
   const url = new URL(client.url);
   fs.mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
   const output = fs.openSync(log, 'a', 0o600);
@@ -43,6 +49,10 @@ export async function launchOpenCode() {
     await new Promise((resolve, reject) => { child.once('error', reject); child.once('spawn', resolve); });
   } catch (error) {
     return { app: 'opencode', status: error.code === 'ENOENT' ? 'missing' : 'failed', reason: error.message, log };
+  }
+  if (child.exitCode === null && !child.signalCode) {
+    startingChild = child;
+    child.once('exit', () => { startingChild = null; });
   }
   child.unref();
   const deadline = Date.now() + 30000;

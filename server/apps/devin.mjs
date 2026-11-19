@@ -198,12 +198,11 @@ export const adapter = {
   },
 
   async submitPrompt(now, busy, when, queued) {
-    if (queued || now || when === 'queue') {
-      return this.submitPromptKey(null, queued, () => this.cdp.evaluate(helpersCall(
-        `nativeSessionAction('devin', ${JSON.stringify(this.threadId || '')}, 'queue', ${JSON.stringify({ now: !!now })})`,
-      )));
-    }
-    return this.submitPromptKey('Enter', queued);
+    const id = this.threadId || '', action = queued || now || when === 'queue' ? 'queue' : 'submitPrompt';
+    if (!id && action === 'submitPrompt') return this.submitPromptKey('Enter', queued);
+    return this.submitPromptKey(null, queued, () => this.cdp.evaluate(helpersCall(
+      `nativeSessionAction('devin', ${JSON.stringify(id)}, ${JSON.stringify(action)}, ${JSON.stringify({ now: !!now })})`,
+    )));
   },
 
   async fileAgentMarks(f, text) {
@@ -704,8 +703,8 @@ async confirmDevinThread(id, statusMsg = '已切换 Agent', tries = 12, interval
   for (let i = 0; i <= tries; i++) {
     const thread = await this.cdp.evaluate(helpersCall('activeThread()'));
     if (thread === id) {
-      await this.cdp.evaluate(helpersCall(`nativeSessionInfo('devin', ${JSON.stringify(id)}, 'bind')`));
       if (!await this.cdp.evaluate(helpersCall('hasComposer()'))) continue;
+      if (id) await this.cdp.evaluate(helpersCall(`nativeSessionInfo('devin', ${JSON.stringify(id)}, 'bind')`));
       if (this.threadId !== thread) this.clearViewState();
       this.threadId = this.selectedThread = thread;
       this.publishThread(statusMsg);

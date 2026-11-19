@@ -100,14 +100,15 @@ export class FusionAgent {
       } finally { projectSession.dispose(); }
     }
     const cdp = new NativeCdp(page.ws, app);
-    await cdp.connect();
-    const source = nativeWindow(cdp);
-    source.win ||= { app, id: page.id, pageId: page.id, ws: page.ws, editorWs: page.editorWs };
-    const threadId = await cdp.evaluate(helpersCall('activeThread()')) || '';
-    let native;
-    if (threadId) native = await cdp.evaluate(helpersCall(`nativeSessionInfo(${JSON.stringify(app)}, ${JSON.stringify(threadId)}, 'context')`));
-    else native = { app, threadId: '', host: project.host || '', cwd: '', roots: [] };
-    return { app, page, cdp, source, native, leaseId: crypto.randomUUID() };
+    try {
+      await cdp.connect();
+      const source = nativeWindow(cdp);
+      source.win ||= { app, id: page.id, pageId: page.id, ws: page.ws, editorWs: page.editorWs };
+      const threadId = await cdp.evaluate(helpersCall('activeThread()')) || '';
+      const native = threadId ? await cdp.evaluate(helpersCall(`nativeSessionInfo(${JSON.stringify(app)}, ${JSON.stringify(threadId)}, 'context')`))
+        : { app, threadId: '', host: project.host || '', cwd: '', roots: [] };
+      return { app, page, cdp, source, native, leaseId: crypto.randomUUID() };
+    } catch (error) { cdp.close(); throw error; }
   }
   call(context, code, native = context.native) {
     return context.app === 'codex' ? context.source.composerCall(code, native) : context.cdp.evaluate(helpersCall(code, native));
@@ -171,11 +172,23 @@ export class FusionAgent {
         await nativeAgentProvider(app).info(this, context, 'bind', context.leaseId);
         context.pinned = app === 'cursor';
       }
-      const models = await nativeAgentProvider(app).models(this, context);
-      if (!models?.length) throw new Error('未读取到当前窗口实际原生模型候选');
+      let models = await nativeAgentProvider(app).models(this, context), sourceWindow = context.page.id;
+      let catalogError;
+      if (app === 'devin' && !context.native.threadId && !models?.length) {
+        for (const page of (await this.carriers('devin')).filter(row => row.id !== context.page.id)) {
+          const cdp = new NativeCdp(page.ws, 'devin');
+          try {
+            await cdp.connect();
+            models = await cdp.evaluate(helpersCall('modelItemsFast(true)', context.native), { timeout: 5000 });
+            if (models?.length) { sourceWindow = page.id; break; }
+          } catch (error) { catalogError = error; }
+          finally { cdp.close(); }
+        }
+      }
+      if (!models?.length) throw catalogError || new Error('未读取到当前窗口实际原生模型候选');
       if (knowledge) await this.catalog.refresh(models.map(model => ({ app, model: model.id })));
       return this.catalog.enrich(nativeCostSnapshot(app, models, { available: false, reason: '未读取账号账单；不能推算子任务费用' },
-        { windowId: context.page.id, host: context.native.host, read: 'native-model-catalog' }));
+        { windowId: sourceWindow, host: context.native.host, read: 'native-model-catalog' }));
     } finally { await this.close(context); }
   }
   async createBinding(controller, owner, app, project, role, spec, preferred = '') {

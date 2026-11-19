@@ -93,7 +93,10 @@ function confirmSent(m, render = true) {
     return;
   }
   const echo = pendingEchoes.find(p => p.requestId === m.requestId);
-  if (echo) {
+  if (echo && m.hasUserMessage === false) {
+    pendingEchoes = pendingEchoes.filter(row => row !== echo);
+    if (render) queueChatRender();
+  } else if (echo) {
     echo.confirmed = true;
     if (m.messageId) echo.messageId = m.messageId;
     if (m.queueId) echo.queueId = m.queueId;
@@ -303,10 +306,15 @@ function insertComposerText(value, input = composerInput(), start = input.select
   input.focus();
 }
 function mentionToken(input = composerInput()) {
-  if (questionCompose || mode !== 'chat' || !supportsCapability('fileReferences', currentApp === 'devin' || currentApp === 'codex')) return null;
+  if (questionCompose || mode !== 'chat') return null;
   const caret = input.selectionStart ?? input.value.length;
   const value = input.value, head = value.slice(0, caret);
   const end = (() => { let i = caret; while (i < value.length && !/[\s@]/.test(value[i])) i++; return i; })();
+  if (currentApp === 'opencode') {
+    const m = /^\s*\/([^\s/@]*)$/.exec(head);
+    return m ? { start: caret - m[1].length - 1, caret, end, q: m[1], trigger: '/' } : null;
+  }
+  if (!supportsCapability('fileReferences', currentApp === 'devin' || currentApp === 'codex')) return null;
   if (currentApp === 'codex') {
     const m = /(^|\s)([@/])([^\s@]*)$/.exec(head);
     return m ? { start: caret - m[3].length - 1, caret, end, q: m[3], trigger: m[2] } : null;
@@ -416,6 +424,11 @@ function pickMention(e, input = composerInput()) {
 }
 function selectComposerMention(r, input, t = mentionToken(input)) {
   if (!r || (!t && !MN.parent)) return;
+  if (currentApp === 'opencode' && t?.trigger === '/') {
+    insertComposerText(r.label + (input.value[t.end] === ' ' ? '' : ' '), input, t.start, t.end);
+    mentionHide(input);
+    return;
+  }
   if (MN.root) return mentionAsk({ cat: r.label }, input);
   if (currentApp === 'codex' && (r.key === 'context-action:pick-local-files' || (r.section === 'context-actions' && r.label === 'Files and folders'))) {
     return openCodexFilePicker(t, input);

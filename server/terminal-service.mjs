@@ -9,6 +9,7 @@ export const TERMINAL_SIZE = { cols: 120, rows: 50 };
 export const TERMINAL_SCROLLBACK = 1000;
 const shellMarker = '\x1b]777;RA;';
 const INPUT_QUERY_TIMEOUT = 5000;
+const SHELL_READY_TIMEOUT = 15000;
 const runtime = await import(IS_WIN ? './terminal/windows.mjs' : './terminal/posix.mjs');
 
 function terminalSize(cols, rows) {
@@ -167,7 +168,6 @@ export class TerminalService {
     const shellReady = new Promise((resolve, reject) => { terminal.shellReady = resolve; exitedBeforeReady = reject; });
     let confirmExit;
     terminal.exit = new Promise(resolve => { confirmExit = resolve; });
-    this.terminals.set(terminal.id, terminal);
     // A single terminal screen answers protocol queries, including when no phone is watching.
     screen.onData(data => { if (!terminal.closed && !terminal.exited) process.write(data); });
     process.onData(data => {
@@ -192,7 +192,16 @@ export class TerminalService {
         this.publish(terminal, { t: 'termExit', exitCode, signal });
       });
     });
-    await shellReady;
+    const timer = setTimeout(() => exitedBeforeReady(new Error('Shell 尚未完成终端初始化')), SHELL_READY_TIMEOUT);
+    try {
+      await shellReady;
+      this.terminals.set(terminal.id, terminal);
+    } catch (error) {
+      terminal.closed = true;
+      try { if (!terminal.exited) await runtime.closePty(terminal); }
+      finally { await terminal.pending; screen.dispose(); }
+      throw error;
+    } finally { clearTimeout(timer); }
     return this.metadata(terminal);
   }
 

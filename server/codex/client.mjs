@@ -5,6 +5,8 @@ import { readdir, access } from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 
+const REQUEST_TIMEOUT_MS = 30000;
+
 export async function codexBinary() {
   if (process.env.CODEX_BIN) { await access(process.env.CODEX_BIN); return process.env.CODEX_BIN; }
   const directory = process.env.VSCODE_EXTENSIONS || path.join(os.homedir(), '.vscode', 'extensions');
@@ -55,9 +57,15 @@ export class CodexClient extends EventEmitter {
       child.once('error', closed);
       child.stdin.once('error', closed);
       child.once('exit', (code, signal) => closed(new Error(`Codex 后台已退出（${signal || code}）${this.stderr ? ': ' + this.stderr : ''}`)));
-      await this.request('initialize', { clientInfo: { name: 'remote-agent', version: '1.0' }, capabilities: { experimentalApi: true } });
-      this.notify('initialized');
-      this.ready = true;
+      try {
+        await this.request('initialize', { clientInfo: { name: 'remote-agent', version: '1.0' }, capabilities: { experimentalApi: true } });
+        this.notify('initialized');
+        this.ready = true;
+      } catch (error) {
+        child.kill();
+        closed(error);
+        throw error;
+      }
     })().finally(() => { this.connecting = null; });
     return this.connecting;
   }
@@ -74,12 +82,19 @@ export class CodexClient extends EventEmitter {
   }
 
   write(packet) { this.child.stdin.write(JSON.stringify(packet) + '\n'); }
-  request(method, params = {}) {
+  request(method, params = {}, { onLateResult, timeout = REQUEST_TIMEOUT_MS } = {}) {
     const id = ++this.nextId;
     return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
+      const timer = setTimeout(() => {
+        if (onLateResult) this.pending.set(id, { resolve: onLateResult, reject() {} });
+        else this.pending.delete(id);
+        reject(Object.assign(new Error(`Codex 后台尚未确认 ${method} 的结果，请先核对原生状态`), { code: 'CODEX_RPC_TIMEOUT' }));
+      }, timeout);
+      timer.unref();
+      const finish = callback => value => { clearTimeout(timer); callback(value); };
+      this.pending.set(id, { resolve: finish(resolve), reject: finish(reject) });
       try { this.write({ id, method, params }); }
-      catch (error) { this.pending.delete(id); reject(error); }
+      catch (error) { this.pending.delete(id); finish(reject)(error); }
     });
   }
   notify(method, params) { this.write({ method, ...(params === undefined ? {} : { params }) }); }

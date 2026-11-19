@@ -23,13 +23,16 @@ export async function transferApi(req, res, route, device) {
       if (location.atRoots) return json(req, res, 200, { ...location, entries: location.roots.map(root => ({ name: root, path: root, directory: true, selectable: true })) });
       if (browsing && (await fsp.stat(directory)).isFile()) return json(req, res, 200, { file: directory });
       const entries = await fsp.readdir(directory, { withFileTypes: true });
-      const rows = await Promise.all(entries.map(async entry => {
+      const entryRow = async entry => {
         const file = filePlatform.joinPath(directory, entry.name);
         try {
           const stat = await fsp.stat(file);
           return { name: entry.name, path: file, directory: stat.isDirectory(), size: stat.size, link: entry.isSymbolicLink(), selectable: stat.isDirectory() || stat.isFile() };
         } catch { return { name: entry.name, path: file, selectable: false }; }
-      }));
+      };
+      const rows = [];
+      for (let offset = 0; offset < entries.length; offset += 32)
+        rows.push(...await Promise.all(entries.slice(offset, offset + 32).map(entryRow)));
       rows.sort((a, b) => Number(!!b.directory) - Number(!!a.directory) || a.name.localeCompare(b.name));
       return json(req, res, 200, { ...location, entries: rows });
     }

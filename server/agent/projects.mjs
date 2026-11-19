@@ -229,6 +229,11 @@ export const methods = {
       this.bindingReady = false;
       try {
         await this.adapter.openAgent.call(this, native.threadId);
+        if (newSession && this.cdp.nativeWindow) {
+          const source = this.cdp.nativeWindow;
+          source.devinCatalog ||= new Map();
+          source.devinCatalog.set(native.threadId, { id: native.threadId, archived: false });
+        }
         this.pendingProject = null;
         this.bindingReady = true;
         this.projectReady({ root: real, newSession, threadId: selected });
@@ -519,8 +524,10 @@ export const methods = {
       const state = await this.waitFor('agentStartupState("cursor", true)', 250);
       if (!state) throw new Error('Cursor 项目已切换，会话面板尚未就绪');
       if (!pending.threadId && !pending.newSession) {
-        if (this.threadId !== state.thread) this.clearViewState();
-        this.threadId = this.selectedThread = state.thread || '';
+        const context = state.thread && await this.cdp.evaluate(helpersCall(`nativeSessionInfo('cursor', ${JSON.stringify(state.thread)}, 'context')`));
+        const thread = context?.roots.some(root => !root.host && samePath(root.root, pending.root)) ? state.thread : '';
+        if (this.threadId !== thread) this.clearViewState();
+        this.threadId = this.selectedThread = thread;
       }
     }
     if (this.app === 'devin' && !pending.threadId && !pending.newSession) {
@@ -557,15 +564,12 @@ export const methods = {
       }
     }
     if (pending.newSession) {
-      const roots = this.app === 'cursor' && this.winTitle === 'Cursor Agents'
-        ? await this.currentRoots() : await (IS_WIN && this.app === 'devin' ? this.devinWindowRoots() : editorRoots(this.editorCdp, this.app));
-      if (!roots.some(w => !w.host && fusionProject(w.root)?.id === fusionProject(pending.root)?.id)) throw new Error('当前窗口不属于所选项目，尚未创建会话');
-      if (this.app === 'cursor' && !await this.waitFor('control("newChat")', 250))
-        throw new Error('Cursor 项目已切换，Agent 新建入口尚未就绪');
-      await this.adapter.newChat.call(this);
-      if (this.app === 'cursor' && this.winTitle === 'Cursor Agents')
-        await this.cdp.evaluate(helpersCall(`cursorSelectProject(${JSON.stringify(pending.root)})`));
-      const expected = this.app === 'devin' ? this.threadId : '';
+      if (this.app !== 'cursor' || this.winTitle !== 'Cursor Agents') {
+        const roots = await (IS_WIN && this.app === 'devin' ? this.devinWindowRoots() : editorRoots(this.editorCdp, this.app));
+        if (!roots.some(w => !w.host && samePath(w.root, pending.root))) throw new Error('当前窗口不属于所选项目，尚未创建会话');
+      }
+      await this.adapter.newChat.call(this, this.app === 'cursor' ? pending.root : undefined);
+      const expected = this.threadId;
       for (let i = 0; i < 20; i++) {
         chat = await this.cdp.evaluate(helpersCall('extract()'));
         const ready = chat && !chat.items?.length && await this.cdp.evaluate(helpersCall('hasComposer()'))

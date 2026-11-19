@@ -110,7 +110,8 @@ export default [
     if (!await c.b.has('#older')) throw new Unavailable('所选会话没有更早历史；需要 --targets 配置 long 会话');
     const backend = app === 'codex' && await c.b.read("viewSel.startsWith('codex|backend|')");
     if (backend) c.equal(before.ids.length, 60, 'Codex 后台首屏保持 60 项');
-    await c.b.click('#older'); await c.b.wait('!historyRequest&&!historyRendering', '历史分页');
+    await c.b.click('#older');
+    await c.b.wait(`!historyRequest&&!historyRendering&&lastChat.items.length > ${before.ids.length}`, '新增历史条目');
     const after = await c.b.read('({ids:lastChat.items.map(i=>i.i),thread:lastChat.thread,cursor:historyCursor})');
     c.equal(after.thread, target.thread, '分页不改变会话'); c.equal(new Set(after.ids).size, after.ids.length, '历史按 ID 去重');
     c.check(after.ids.length > before.ids.length, '加载后确实增加历史条目');

@@ -30,6 +30,11 @@ function attached(s, initial = false) {
 }
 
 const PAGE_SIZE = 30;
+const COMPACT = { name: 'compact', description: '压缩当前会话的上下文' };
+async function commands(directory, signal) {
+  const rows = await openCode.client.request('/command', { directory, signal });
+  return rows.some(row => row.name === COMPACT.name) ? rows : [COMPACT, ...rows];
+}
 const messageKey = row => ({ created: row.info.time?.created || 0, id: row.info.id });
 const beforeMessage = (row, key) => (row.info.time?.created || 0) < key.created
   || (row.info.time?.created || 0) === key.created && row.info.id.localeCompare(key.id) < 0;
@@ -56,6 +61,7 @@ function publish(s, sent) {
 }
 
 function confirmSend(s, requestID, pending) {
+  if (s.openCodeSends.get(requestID) !== pending) return;
   const files = [...openCode.messages.get(pending.threadID)?.get(pending.messageID)?.parts.values() || []].filter(part => part.type === 'file');
   for (const expected of pending.attachments) {
     const index = files.findIndex(part => part.filename === expected.filename && part.mime === expected.mime);
@@ -64,7 +70,7 @@ function confirmSend(s, requestID, pending) {
   }
   const message = openCode.messages.get(pending.threadID)?.get(pending.messageID);
   const text = [...message?.parts.values() || []].filter(part => part.type === 'text' && !part.synthetic).map(part => part.text).join('\n');
-  if (text !== pending.text) return;
+  if (!pending.command && text !== pending.text) return;
   const item = openCode.chat(pending.threadID, { rows: message ? [message] : [] }).items.find(row => row.i === pending.messageID && row.k === 'human');
   if (!item) return;
   pending.unsubscribe();
@@ -199,15 +205,18 @@ const routes = {
     const model = openCode.selection(this.threadId || this.openCodeDirectory), native = openCode.models.get(model.key);
     const sel = this.selectionKey();
     const files = pendingUploads(sel);
-    const parts = m.text?.trim() ? [{ type: 'text', text: m.text }] : [];
-    parts.push(...await Promise.all(files.map(([, file]) => openCodeAttachment(file))));
+    const signal = cdpRead.getStore(), match = /^\s*\/([^\s/]+)(?:\s+([\s\S]*))?$/.exec(m.text || '');
+    const command = match && (await commands(this.openCodeDirectory, signal)).find(row => row.name === match[1]);
+    if (command === COMPACT && (files.length || match[2]?.trim())) throw new Error('压缩命令不接受参数或附件');
+    const parts = await Promise.all(files.map(([, file]) => openCodeAttachment(file)));
+    if (!command && m.text?.trim()) parts.unshift({ type: 'text', text: m.text });
     cdpRead.getStore()?.throwIfAborted();
     await ensureSession(this);
     const messageID = createMessageID();
     this.openCodeSends ||= new Map();
     const pending = { messageID, threadID: this.threadId, text: m.text?.trim() ? m.text : '', draft: m.draft,
       attachments: parts.filter(part => part.type === 'file').map(({ filename, mime }) => ({ filename, mime })),
-      sel: this.selectionKey(), operation: currentOperation() };
+      command: !!command, sel: this.selectionKey(), operation: currentOperation() };
     if (pending.operation) pending.operation.pending = true;
     pending.unsubscribe = openCode.subscribe(id => { if (!id || id === pending.threadID) confirmSend(this, m.requestId, pending); });
     this.openCodeSends.set(m.requestId, pending);
@@ -215,10 +224,29 @@ const routes = {
       cdpRead.getStore()?.throwIfAborted();
       if (pending.operation) pending.operation.submitted = true;
       if (cdpRead.getStore()) cdpRead.getStore().submitted = true;
-      await openCode.client.request(`/session/${this.threadId}/prompt_async`, { directory: this.openCodeDirectory, method: 'POST', body: {
-        messageID, model: { providerID: native.providerID, modelID: native.id },
-        ...(model.variant ? { variant: model.variant } : {}), parts,
-      }, signal: cdpRead.getStore() });
+      const directory = this.openCodeDirectory, id = pending.threadID;
+      const selected = { providerID: native.providerID, modelID: native.id };
+      const variant = model.variant ? { variant: model.variant } : {};
+      if (command === COMPACT) {
+        if (!await openCode.client.request(`/session/${id}/summarize`, {
+          directory, method: 'POST', body: { ...selected, auto: false }, signal,
+        })) throw new Error('OpenCode 尚未接受压缩命令');
+        pending.unsubscribe();
+        this.openCodeSends.delete(m.requestId);
+        if (pending.operation) pending.operation.pending = false;
+        this.emit({ t: 'sent', requestId: m.requestId, draft: pending.draft, sel: pending.sel, queued: false, hasUserMessage: false });
+      } else if (command) {
+        await openCode.client.request(`/session/${id}/command`, {
+          directory, method: 'POST', body: {
+            messageID, command: command.name, arguments: match[2] || '', model: `${native.providerID}/${native.id}`, ...variant, parts,
+          }, signal,
+        });
+        confirmSend(this, m.requestId, pending);
+      } else {
+        await openCode.client.request(`/session/${id}/prompt_async`, {
+          directory, method: 'POST', body: { messageID, model: selected, ...variant, parts }, signal,
+        });
+      }
     } catch (error) {
       pending.unsubscribe(); this.openCodeSends.delete(m.requestId);
       if (pending.operation) pending.operation.pending = false;
@@ -387,6 +415,13 @@ const routes = {
 export const adapter = {
   attach(req) { return bind(this, req); },
   routes,
+  async mentionQuery(q, _cat, seq, trigger) {
+    const sel = this.selectionKey();
+    const rows = trigger === '/' ? (await commands(this.openCodeDirectory, cdpRead.getStore()))
+      .filter(row => row.name.toLowerCase().includes(q.toLowerCase()))
+      .map(row => ({ label: '/' + row.name, sub: row.description || '', section: 'commands' })) : [];
+    this.emit({ t: 'mentions', sel, seq, q, rows });
+  },
   currentRoots() { return [{ root: this.openCodeDirectory, host: '' }]; },
   terminalProject() { return { root: this.openCodeDirectory, host: '' }; },
   async setMode() {

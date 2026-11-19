@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import { IS_WIN, localFilePath, samePath } from '../../lib/platform.mjs';
 import path from 'node:path';
+import { randomUUID } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { CodexClient } from './client.mjs';
 import { DATA_DIR } from '../../lib/auth.mjs';
@@ -12,7 +13,8 @@ import { generatedImageSource } from './images.mjs';
 
 export const CODEX_BACKEND = 'backend';
 const textInput = input => input.filter(part => part.type === 'text').map(part => part.text).join('\n');
-const busyTurn = thread => thread.turns.findLast(turn => turn.status === 'inProgress');
+const busyTurn = thread => thread?.turns.findLast(turn => turn.status === 'inProgress');
+const mergeTurnItems = (first, second) => [...new Map([...first, ...second].map(item => [item.id, item])).values()];
 const capacityFailure = turn => turn?.status === 'failed' && !turn.nativeRetrying
   && ['serverOverloaded', 'policyCapacityUnavailable'].includes(turn.error?.codexErrorInfo);
 const requestKey = row => (row.method === 'item/tool/requestUserInput' ? 'async:' : 'approval:')
@@ -22,12 +24,29 @@ const reasoningText = item => (item.summary?.length ? item.summary : item.conten
 const chatTypes = new Set(['userMessage', 'todo-list', 'imageGeneration', 'imageView', 'contextCompaction',
   'commandExecution', 'fileChange', 'collabAgentToolCall', 'mcpToolCall']);
 
+function readCatalog(file) {
+  if (!file || !fs.existsSync(file)) return [];
+  const json = fs.readFileSync(file, 'utf8');
+  try {
+    const rows = JSON.parse(json);
+    if (!Array.isArray(rows) || rows.some(row => !row?.id || typeof row.cwd !== 'string'))
+      throw new SyntaxError('会话目录格式无效');
+    return rows;
+  } catch (error) {
+    if (!(error instanceof SyntaxError)) throw error;
+    const backup = file + '.invalid-' + randomUUID();
+    fs.renameSync(file, backup);
+    console.error(`[codex] 会话目录已损坏，原文件已保留在 ${backup}：${error.message}`);
+    return [];
+  }
+}
+
 export class CodexState extends EventEmitter {
   constructor({ client = new CodexClient(), file = path.join(DATA_DIR, 'codex-backend.json') } = {}) {
     super();
     this.client = client;
     this.file = file;
-    this.records = new Map(file && fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')).map(row => [row.id, { ...row, cwd: localFilePath(row.cwd) }]) : []);
+    this.records = new Map(readCatalog(file).map(row => [row.id, { ...row, cwd: localFilePath(row.cwd) }]));
     this.statistics = new Map([...this.records].map(([id, row]) => [id, row.statistics || {}]));
     this.threads = new Map();
     this.childChats = new Map();
@@ -70,7 +89,11 @@ export class CodexState extends EventEmitter {
   save() {
     if (!this.file) return;
     fs.mkdirSync(path.dirname(this.file), { recursive: true });
-    fs.writeFileSync(this.file, JSON.stringify([...this.records.values()]), { mode: 0o600 });
+    const temporary = this.file + '.pending-' + randomUUID();
+    try {
+      fs.writeFileSync(temporary, JSON.stringify([...this.records.values()]), { mode: 0o600 });
+      fs.renameSync(temporary, this.file);
+    } finally { fs.rmSync(temporary, { force: true }); }
   }
   owns(id) { return this.records.has(id); }
   hasWriter(id) { return this.writers.has(id); }
@@ -93,7 +116,9 @@ export class CodexState extends EventEmitter {
   }
   canRelease(id) {
     const parent = this.childParents.get(id);
-    return this.writers.has(id) && !this.using.has(id) && !busyTurn(this.threads.get(id)) && !this.queues.get(id)?.length
+    const thread = this.threads.get(id);
+    return this.writers.has(id) && !this.using.has(id) && !busyTurn(thread) && thread?.status?.type !== 'active'
+      && !this.queueReads.has(id) && !this.queues.get(id)?.length
       && !this.manualCompactions.has(id) && !this.retrying.has(id) && ![...this.requests.values()].some(row => row.params.threadId === id)
       && !(parent && this.hasWriter(parent) && busyTurn(this.threads.get(parent)));
   }
@@ -107,6 +132,11 @@ export class CodexState extends EventEmitter {
       if (this.releasing.has(id)) return this.releasing.get(id).promise;
       if (!this.canRelease(id)) return;
     }
+    return this.releaseWriter(id);
+  }
+
+  async releaseWriter(id) {
+    if (this.releasing.has(id)) return this.releasing.get(id).promise;
     let resolve, reject;
     const promise = new Promise((yes, no) => { resolve = yes; reject = no; });
     const release = { promise, resolve, reject };
@@ -125,6 +155,28 @@ export class CodexState extends EventEmitter {
     finally {
       clearTimeout(timer);
       if (this.releasing.get(id) === release) this.releasing.delete(id);
+    }
+  }
+  async acquireWriter(method, params, prepare) {
+    const result = await this.client.request(method, params, {
+      onLateResult: ({ thread }) => {
+        const id = thread?.id;
+        if (id && !this.writers.has(id) && !this.loading.has(id)) {
+          this.writers.add(id);
+          this.releaseWriter(id).catch(error => this.changed(id, error));
+        }
+      },
+    });
+    const thread = { ...result.thread, settings: threadSettings(result), generation: this.client.generation };
+    try {
+      await prepare(thread);
+      this.writers.add(thread.id);
+      this.threads.set(thread.id, thread);
+      return thread;
+    } catch (error) {
+      this.writers.add(thread.id);
+      await this.releaseWriter(thread.id).catch(releaseError => this.changed(thread.id, releaseError));
+      throw error;
     }
   }
   threadClosed(id) {
@@ -231,19 +283,18 @@ export class CodexState extends EventEmitter {
   async create(cwd) {
     cwd = localFilePath(cwd);
     await this.client.connect();
-    const result = await this.client.request('thread/start', { cwd });
-    const thread = { ...result.thread, settings: threadSettings(result), generation: this.client.generation };
-    if (!samePath(path.resolve(localFilePath(thread.cwd)), path.resolve(cwd))) throw new Error('Codex 返回的会话项目与所选目录不一致');
-    // Native naming commits an empty thread before it can be restored after process exit.
-    await this.client.request('thread/name/set', { threadId: thread.id, name: '新会话' });
-    thread.name = '新会话';
-    this.threads.set(thread.id, thread);
-    this.writers.add(thread.id);
-    this.records.set(thread.id, { untitled: true });
-    this.remember(thread);
-    this.changed(thread.id);
-    await this.releaseIdle(thread.id);
-    return thread;
+    const thread = await this.acquireWriter('thread/start', { cwd }, async thread => {
+      if (!samePath(path.resolve(localFilePath(thread.cwd)), path.resolve(cwd))) throw new Error('Codex 返回的会话项目与所选目录不一致');
+      // Native naming commits an empty thread before it can be restored after process exit.
+      await this.client.request('thread/name/set', { threadId: thread.id, name: '新会话' });
+      thread.name = '新会话';
+    });
+    try {
+      this.records.set(thread.id, { untitled: true });
+      this.remember(thread);
+      this.changed(thread.id);
+      return thread;
+    } finally { await this.releaseIdle(thread.id); }
   }
 
   load(id) {
@@ -254,13 +305,11 @@ export class CodexState extends EventEmitter {
       await this.releasing.get(id)?.promise;
       let thread = this.threads.get(id);
       if (!this.writers.has(id)) {
-        const result = await this.client.request('thread/resume', { threadId: id });
-        thread = { ...result.thread, settings: threadSettings(result), generation: this.client.generation };
-        if (thread.id !== id) throw new Error('Codex 返回的会话 ID 与所选会话不一致');
-        const previous = this.records.get(id);
-        if (previous && !samePath(path.resolve(localFilePath(thread.cwd)), path.resolve(localFilePath(previous.cwd)))) throw new Error('Codex 原生会话项目已变化，请重新选择项目');
-        this.threads.set(id, thread);
-        this.writers.add(id);
+        thread = await this.acquireWriter('thread/resume', { threadId: id }, thread => {
+          if (thread.id !== id) throw new Error('Codex 返回的会话 ID 与所选会话不一致');
+          const previous = this.records.get(id);
+          if (previous && !samePath(path.resolve(localFilePath(thread.cwd)), path.resolve(localFilePath(previous.cwd)))) throw new Error('Codex 原生会话项目已变化，请重新选择项目');
+        });
         this.remember(thread);
       }
       await this.readQueue(id);
@@ -272,17 +321,24 @@ export class CodexState extends EventEmitter {
   async refresh(id) {
     await this.client.connect();
     const revision = this.threads.get(id)?.revision || 0;
+    const status = this.threads.get(id)?.status;
     const { thread } = await this.client.request('thread/read', { threadId: id, includeTurns: true });
     thread.cwd = localFilePath(thread.cwd);
     const old = this.threads.get(id);
     if ((old?.revision || 0) !== revision) {
       const current = new Map(old.turns.map(turn => [turn.id, turn]));
       const historical = new Set(thread.turns.map(turn => turn.id));
-      thread.turns = [...thread.turns.map(turn => current.get(turn.id) || turn), ...old.turns.filter(turn => !historical.has(turn.id))];
+      thread.turns = [...thread.turns.map(turn => {
+        const live = current.get(turn.id);
+        if (!live) return turn;
+        live.items = mergeTurnItems(turn.items, live.items);
+        return live;
+      }), ...old.turns.filter(turn => !historical.has(turn.id))];
+      if (old.status !== status) thread.status = old.status;
     }
     const settings = { ...this.records.get(id)?.settings, ...old?.settings,
       ...(thread.model ? { model: thread.model } : {}), ...(thread.reasoningEffort ? { effort: thread.reasoningEffort } : {}) };
-    this.threads.set(id, { ...old, ...thread, settings });
+    this.threads.set(id, Object.assign(old || {}, thread, { settings }));
     delete this.threads.get(id).disconnected;
     this.remember(this.threads.get(id));
     this.changed(id);
@@ -295,25 +351,38 @@ export class CodexState extends EventEmitter {
     return this.reading.get(id);
   }
 
-  async fork(id, turnId) {
+  async readModelState(id) {
+    if (this.hasWriter(id)) return this.threads.get(id);
+    await this.client.connect();
+    const { thread } = await this.client.request('thread/read', { threadId: id, includeTurns: false });
+    return { ...thread, settings: {
+      ...this.records.get(id)?.settings, ...this.threads.get(id)?.settings,
+      ...(thread.modelProvider ? { modelProvider: thread.modelProvider } : {}),
+      ...(thread.model ? { model: thread.model } : {}),
+      ...(thread.reasoningEffort ? { effort: thread.reasoningEffort } : {}),
+    } };
+  }
+
+  async fork(id, turnId, defaultEffort) {
     return this.withWriter(id, async source => {
       const settings = source.settings;
-      const result = await this.client.request('thread/fork', { threadId: id, lastTurnId: turnId, deferGoalContinuation: true,
+      const effort = settings.effort || source.reasoningEffort || await defaultEffort?.(source);
+      const thread = await this.acquireWriter('thread/fork', { threadId: id, lastTurnId: turnId, deferGoalContinuation: true,
         cwd: source.cwd, model: settings.model || source.model,
+        modelProvider: settings.modelProvider || source.modelProvider, serviceTier: settings.serviceTier,
         approvalPolicy: settings.approvalPolicy, approvalsReviewer: settings.approvalsReviewer,
         sandbox: { readOnly: 'read-only', workspaceWrite: 'workspace-write', dangerFullAccess: 'danger-full-access' }[settings.sandboxPolicy?.type],
-        config: { model_reasoning_effort: settings.effort ?? settings.reasoningEffort ?? null } });
-      const thread = { ...result.thread, settings: threadSettings(result), generation: this.client.generation };
-      if (!samePath(path.resolve(localFilePath(thread.cwd)), path.resolve(localFilePath(source.cwd)))) throw new Error('Codex 分叉会话的项目与源会话不一致');
-      const original = this.statisticsFor(id), early = this.statisticsFor(thread.id);
-      this.statistics.set(thread.id, Object.fromEntries(thread.turns.filter(turn => original[turn.id] || early[turn.id]).map(turn =>
-        [turn.id, structuredClone({ ...original[turn.id], ...early[turn.id], model: original[turn.id]?.model || early[turn.id]?.model })])));
-      this.threads.set(thread.id, thread);
-      this.writers.add(thread.id);
-      this.remember(thread);
-      this.changed(thread.id);
-      await this.releaseIdle(thread.id);
-      return thread;
+        ...(effort ? { config: { model_reasoning_effort: effort } } : {}) }, thread => {
+        if (!samePath(path.resolve(localFilePath(thread.cwd)), path.resolve(localFilePath(source.cwd)))) throw new Error('Codex 分叉会话的项目与源会话不一致');
+      });
+      try {
+        const original = this.statisticsFor(id), early = this.statisticsFor(thread.id);
+        this.statistics.set(thread.id, Object.fromEntries(thread.turns.filter(turn => original[turn.id] || early[turn.id]).map(turn =>
+          [turn.id, structuredClone({ ...original[turn.id], ...early[turn.id], model: original[turn.id]?.model || early[turn.id]?.model })])));
+        this.remember(thread);
+        this.changed(thread.id);
+        return thread;
+      } finally { await this.releaseIdle(thread.id); }
     });
   }
 
@@ -338,7 +407,9 @@ export class CodexState extends EventEmitter {
           cursor = result.nextCursor;
         } while (cursor);
       } while (revision !== this.queueRevisions.get(id));
+      const removed = this.queues.get(id)?.some(row => !rows.some(current => current.id === row.id));
       this.queues.set(id, rows);
+      if (removed) await this.refresh(id);
       this.changed(id);
     })().finally(() => this.queueReads.delete(id)));
     return this.queueReads.get(id);
@@ -387,9 +458,7 @@ export class CodexState extends EventEmitter {
     else if (method === 'turn/started' || method === 'turn/completed') {
       const old = thread.turns.find(turn => turn.id === p.turn.id);
       if (old) {
-        const items = new Map(old.items.map(item => [item.id, item]));
-        for (const item of p.turn.items) items.set(item.id, item);
-        Object.assign(old, p.turn, { items: [...items.values()] });
+        Object.assign(old, p.turn, { items: mergeTurnItems(old.items, p.turn.items) });
       }
       else thread.turns.push(p.turn);
       if (method === 'turn/started') {
@@ -495,16 +564,17 @@ export class CodexState extends EventEmitter {
     const queued = this.queues.get(id)?.find(row => row.id === queueId);
     if (!queued) throw new Error('排队消息已不存在');
     if (turn) {
-      let stop;
+      let stop, timer;
       const ended = new Promise((resolve, reject) => {
         stop = this.subscribe(id, error => {
           if (error) reject(error);
           else if (turn.status !== 'inProgress') resolve();
         });
+        timer = setTimeout(() => reject(new Error('Codex 尚未确认原轮次停止，请先核对队列')), 15000);
       });
       try {
         await Promise.all([this.client.request('turn/interrupt', { threadId: id, turnId: turn.id }), ended]);
-      } finally { stop(); }
+      } finally { clearTimeout(timer); stop(); }
       await this.readQueue(id);
       if (!this.queues.get(id)?.some(row => row.id === queueId)) {
         if (queued.clientUserMessageId && thread.turns.some(turn => turn.items.some(item => item.type === 'userMessage' && item.clientId === queued.clientUserMessageId))) return;
@@ -533,9 +603,12 @@ export class CodexState extends EventEmitter {
       if (result.turn) {
         const old = thread.turns.find(row => row.id === result.turn.id);
         if (!old) thread.turns.push(result.turn);
+        else old.items = mergeTurnItems(result.turn.items, old.items);
         delete thread.error;
       }
       this.changed(id);
+      if (!thread.turns.some(row => row.items.some(item => item.type === 'userMessage' && item.clientId === requestId)))
+        this.refresh(id).catch(error => this.changed(id, error));
       return { queued: false, thread: id, turnId: result.turn?.id || result.turnId,
         messageId: `${id}:user-message:${requestId}` };
     });
@@ -667,8 +740,9 @@ export class CodexState extends EventEmitter {
       this.changed(id);
     });
   }
-  states() {
-    return [...this.threads.keys()].filter(id => !this.childParents.has(id)).map(id => {
+  states(threadId) {
+    const ids = threadId ? (this.threads.has(threadId) ? [threadId] : []) : [...this.threads.keys()];
+    return ids.filter(id => !this.childParents.has(id)).map(id => {
       const chat = this.chat(id);
       return { thread: id, title: chat.title, busy: chat.busy, waiting: chat.waiting, waitingText: chat.waitingText,
         last: chat.items.findLast(item => item.k === 'assistant')?.t || '', generation: chat.generation,

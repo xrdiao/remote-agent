@@ -4,7 +4,7 @@ import { desktopAction as isDesktopAction } from '../lib/shared-rules.mjs';
 // Native results belong to the paired entry, not to its current WebSocket.
 const entries = new Map();
 const context = new AsyncLocalStorage();
-const results = new Set(['status', 'sent', 'sendFailed', 'queueDone', 'questionDone', 'menuPicked', 'saved', 'computerFileDone', 'sessionBatchProgress', 'codexArchived', 'clickDone', 'overviewManaged', 'termCreated', 'termRemoved', 'termError']);
+const results = new Set(['status', 'sent', 'sendFailed', 'queueDone', 'questionDone', 'opencodeQuestionDone', 'menuPicked', 'saved', 'computerFileDone', 'sessionBatchProgress', 'codexArchived', 'clickDone', 'overviewManaged', 'termCreated', 'termRemoved', 'termError']);
 const entry = id => {
   if (!entries.has(id)) entries.set(id, { clients: new Set(), requests: new Map() });
   return entries.get(id);
@@ -64,19 +64,19 @@ export function captureOperation(session, message) {
   return true;
 }
 
-export function subscribeOperations(deviceId, client) {
+export function subscribeOperations(deviceId, client, replay = true) {
   const owner = entry(deviceId);
   owner.clients.add(client);
-  for (const operation of owner.requests.values()) operation.publish(client);
+  if (replay) for (const operation of owner.requests.values()) operation.publish(client);
   return () => owner.clients.delete(client);
 }
 
-export function lookupOperations(deviceId, client, ids, kinds) {
+export function lookupOperations(deviceId, client, ids, kinds = null) {
   const requests = entry(deviceId).requests;
   for (const id of ids) {
     if (typeof id !== 'string') continue;
     const request = requests.get(id);
-    if (kinds.includes(request?.kind)) request.publish(client);
-    else if (client.readyState === 1) client.send(JSON.stringify({ t: 'operation', id, kind: kinds[0], unknown: true, done: true, events: [] }));
+    if (request && (!kinds || kinds.includes(request.kind))) request.publish(client);
+    else if (client.readyState === 1) client.send(JSON.stringify({ t: 'operation', id, kind: kinds?.[0], unknown: true, done: true, events: [] }));
   }
 }
