@@ -88,29 +88,59 @@ export class CodexState extends EventEmitter {
     finally {
       const remaining = this.using.get(id) - 1;
       if (remaining) this.using.set(id, remaining); else this.using.delete(id);
-      await this.releaseIdle(id);
+      this.releaseIdle(id).catch(error => this.changed(id, error));
     }
+  }
+  canRelease(id) {
+    const parent = this.childParents.get(id);
+    return this.writers.has(id) && !this.using.has(id) && !busyTurn(this.threads.get(id)) && !this.queues.get(id)?.length
+      && !this.manualCompactions.has(id) && !this.retrying.has(id) && ![...this.requests.values()].some(row => row.params.threadId === id)
+      && !(parent && this.hasWriter(parent) && busyTurn(this.threads.get(parent)));
   }
   async releaseIdle(id) {
     if (this.releasing.has(id)) return this.releasing.get(id).promise;
-    if (!this.writers.has(id) || this.using.has(id) || busyTurn(this.threads.get(id)) || this.queues.get(id)?.length
-      || this.manualCompactions.has(id) || this.retrying.has(id) || [...this.requests.values()].some(row => row.params.threadId === id)) return Promise.resolve();
-    const parent = this.childParents.get(id);
-    if (parent && this.hasWriter(parent) && busyTurn(this.threads.get(parent))) return;
+    if (!this.canRelease(id)) return;
     const children = [...this.childParents].filter(([, parent]) => parent === id).map(([child]) => child);
     if (children.length) {
       await Promise.all(children.map(child => this.releaseIdle(child)));
       if (children.some(child => this.hasWriter(child))) return;
       if (this.releasing.has(id)) return this.releasing.get(id).promise;
-      if (this.using.has(id) || busyTurn(this.threads.get(id))) return;
+      if (!this.canRelease(id)) return;
     }
     let resolve, reject;
     const promise = new Promise((yes, no) => { resolve = yes; reject = no; });
-    this.releasing.set(id, { promise, resolve, reject });
-    this.client.request('thread/unsubscribe', { threadId: id }).then(result => {
-      if (result.status === 'notLoaded') { this.writers.delete(id); this.releasing.delete(id); resolve(); }
-    }, error => { this.releasing.delete(id); reject(error); });
-    return promise;
+    const release = { promise, resolve, reject };
+    this.releasing.set(id, release);
+    const timer = setTimeout(() => reject(new Error('Codex 尚未确认释放会话写入权')), 15000);
+    this.client.request('thread/unsubscribe', { threadId: id }).then(async ({ status }) => {
+      if (this.releasing.get(id) !== release || status === 'unsubscribed') return;
+      if (status === 'notSubscribed') {
+        const { data } = await this.client.request('thread/loaded/list');
+        if (this.releasing.get(id) !== release) return;
+        if (data.includes(id)) throw new Error('Codex 会话已取消订阅，但后台仍在加载该会话');
+      } else if (status !== 'notLoaded') throw new Error('Codex 返回了未知的会话释放状态');
+      this.threadClosed(id);
+    }).catch(reject);
+    try { await promise; }
+    finally {
+      clearTimeout(timer);
+      if (this.releasing.get(id) === release) this.releasing.delete(id);
+    }
+  }
+  threadClosed(id) {
+    this.childChats.delete(id);
+    this.writers.delete(id);
+    const release = this.releasing.get(id);
+    this.releasing.delete(id);
+    release?.resolve();
+    const parent = this.childParents.get(id);
+    this.childParents.delete(id);
+    if (parent) {
+      this.threads.delete(id);
+      this.statistics.delete(id);
+      this.queues.delete(id);
+      this.releaseIdle(parent).catch(error => this.changed(parent, error));
+    }
   }
   async trackChild(parent, id) {
     if (this.childParents.has(id)) return;
@@ -314,21 +344,14 @@ export class CodexState extends EventEmitter {
     return this.queueReads.get(id);
   }
 
+  refreshQueue(id) {
+    this.readQueue(id).then(() => this.releaseIdle(id)).catch(error =>
+      this.changed(id, new Error('Codex 队列列表刷新失败：' + error.message)));
+  }
+
   notification({ method, params: p }) {
     if (method === 'thread/closed') {
-      this.childChats.delete(p.threadId);
-      this.writers.delete(p.threadId);
-      const release = this.releasing.get(p.threadId);
-      this.releasing.delete(p.threadId);
-      release?.resolve();
-      const parent = this.childParents.get(p.threadId);
-      this.childParents.delete(p.threadId);
-      if (parent) {
-        this.threads.delete(p.threadId);
-        this.statistics.delete(p.threadId);
-        this.queues.delete(p.threadId);
-        this.releaseIdle(parent).catch(error => this.changed(parent, error));
-      }
+      this.threadClosed(p.threadId);
       return;
     }
     if (method === 'thread/started' || method === 'thread/name/updated') {
@@ -347,6 +370,7 @@ export class CodexState extends EventEmitter {
       }
       return;
     }
+    if (method === 'serverRequest/resolved' && this.requests.get(p.requestId)?.params.threadId === id) this.requests.delete(p.requestId);
     if (!thread) return;
     thread.revision = (thread.revision || 0) + 1;
     if (method === 'thread/settings/updated') thread.settings = { ...thread.settings, ...p.threadSettings };
@@ -354,9 +378,8 @@ export class CodexState extends EventEmitter {
     else if (method === 'thread/name/updated') { thread.name = p.threadName; this.remember(thread); }
     else if (method === 'thread/queue/changed') {
       this.queueRevisions.set(id, (this.queueRevisions.get(id) || 0) + 1);
-      this.readQueue(id).then(() => this.releaseIdle(id)).catch(error => this.changed(id, error));
-    } else if (method === 'serverRequest/resolved') this.requests.delete(p.requestId);
-    else if (method === 'turn/plan/updated') {
+      this.refreshQueue(id);
+    } else if (method === 'turn/plan/updated') {
       const rows = this.statisticsFor(id);
       rows[p.turnId] = { ...rows[p.turnId], plan: p.plan };
       this.remember(thread);
@@ -438,11 +461,11 @@ export class CodexState extends EventEmitter {
       return { id: requestKey(row), text: [p.command, p.reason, p.message, p.cwd, permission ? JSON.stringify(p.permissions) : ''].filter(Boolean).join('\n'),
         buttons: (elicitation ? ['accept', 'decline', 'cancel'] : permission ? ['accept', 'decline'] : p.availableDecisions || ['accept', 'acceptForSession', 'decline', 'cancel'])
           .map(decision => ({ label: typeof decision === 'string' ? decision : Object.keys(decision)[0] })),
-        fields: elicitation ? elicitationFields(p.requestedSchema) : [] };
+        fields: elicitation ? elicitationFields(p.requestedSchema) : [], submitOnly: elicitation };
     });
   }
 
-  answer(id, requestId, n, fields = []) {
+  async answer(id, requestId, n, fields = []) {
     const request = [...this.requests.values()].find(row => requestKey(row) === requestId && row.params.threadId === id);
     if (!request) throw new Error('这条请求已处理或不属于当前会话');
     const p = request.params;
@@ -464,9 +487,7 @@ export class CodexState extends EventEmitter {
       if (decision === undefined) throw new Error('请求选项已变化');
       result = { decision };
     }
-    this.client.reply(request.id, result);
-    this.requests.delete(request.id);
-    this.changed(id);
+    await this.client.replyToRequest(request, result);
   }
 
   async startQueued(id, queueId) {
@@ -503,7 +524,7 @@ export class CodexState extends EventEmitter {
         const result = await this.client.request('thread/queue/add', { threadId: id, input, clientUserMessageId: requestId });
         const row = result.queuedSubmission;
         if (row.clientUserMessageId !== requestId || textInput(row.input) !== textInput(input) || row.input.length !== input.length) throw new Error('Codex 队列回执与发送内容不一致');
-        await this.readQueue(id);
+        this.refreshQueue(id);
         return { queued: true, queueId: row.id, messageId: `${id}:user-message:${row.clientUserMessageId}`, thread: id };
       }
       const result = await this.client.request(turn ? 'turn/steer' : 'turn/start', {

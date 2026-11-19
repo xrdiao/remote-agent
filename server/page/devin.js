@@ -44,7 +44,7 @@
       const blocks = message.content || [];
       if (blocks.some(block => block._meta?.['cognition.ai/isOptimistic'])) return [];
       const text = devinMessageText(blocks);
-      const images = blocks.filter(block => block.content?.type === 'image').map(block => `data:${block.content.mimeType};base64,${block.content.data}`);
+      const images = devinMessageImages(message);
       const at = Date.parse(blocks.find(block => block._meta?.['cognition.ai/timestamp'])?._meta['cognition.ai/timestamp'] || '') || 0;
       if (message.kind === 'agent_thought') items.push({ i: id + ':think', k: 'thinking', t: `Thoughts\n${text}` });
       else if (text || images.length) items.push(nativeMarkdownItem(id, message.kind === 'user_message' ? 'human' : 'assistant', text, at, images));
@@ -164,6 +164,8 @@
     }
     return text;
   };
+  const devinMessageImages = message => (message?.content || []).filter(block => block.content?.type === 'image')
+    .map(block => `data:${block.content.mimeType};base64,${block.content.data}`);
   const THINKING_ROOT = '.ui-thinking-collapsible, .chat-thinking-box, .highlight-wrapper';
   const ROW_SEL = `${ITEM_SEL}, ${THINKING_ROOT}`;
   const topItems = panel => [...panel.querySelectorAll(ROW_SEL)].filter(e => vis(e) && !e.parentElement?.closest(ROW_SEL));
@@ -517,9 +519,13 @@
       || /\d+\s+messages?\s+queued/i.test(text) || /排队(?:中)?\s*\d+\s*条/.test(text);
   });
   const devinQueueCount = () => devinQueued().length;
-  const devinQueued = (thread = remoteContext?.app === 'devin' ? remoteContext.threadId : activeThread()) => {
+  const devinQueued = (thread = remoteContext?.app === 'devin' ? remoteContext.threadId : activeThread(), messageId = null) => {
     const data = devinSessionData(thread);
-    return (data?.localQueuedMessages.length ? data.localQueuedMessages : data?.queuedMessages || []).map(row => ({
+    if (messageId !== null) {
+      const row = [...(data?.localQueuedMessages || []), ...(data?.queuedMessages || [])].find(row => String(row.id) === messageId);
+      return row && devinMessageText(row.content);
+    }
+    return (data?.localQueuedMessages?.length ? data.localQueuedMessages : data?.queuedMessages || []).map(row => ({
       id: String(row.id), t: devinMessageText(row.content).slice(0, 4000), src: 'devin',
     }));
   };
@@ -957,8 +963,9 @@
     if (!row) throw new Error('Devin 原生队列没有接受这条消息');
     if (spec.now === true) {
       if (!devinQueueTarget(row.id, 'send')) throw new Error('Devin 原生立即发送入口尚未就绪');
+      return { queued: true, now: true };
     }
-    return { queued: true, now: spec.now === true };
+    return { queued: true, now: false, queueId: row.id };
   };
   const devinNativeQuestionText = async (id, spec = {}) => {
     const text = String(spec.text ?? '');

@@ -7,7 +7,7 @@ import { PAGE_SRC, helpersCall } from './page/build.mjs';
 import { AgentContext, appPlans } from './agent/index.mjs';
 import { resetThinkingCaches } from './agent/thinking-cache.mjs';
 import { hasLaunched, takeLaunched } from './launch.mjs';
-import { fusionViewers, savedFusion, allFusionRuns, rememberFusionMainWindow } from './fusion/state.mjs';
+import { fusionViewers, savedFusion, allFusionRuns, rememberFusionMainWindow, assertFusionReady } from './fusion/state.mjs';
 import { FUSION_OWNER, fusionControllerView } from './fusion/owner.mjs';
 import { fusionRunner } from './fusion/runner.mjs';
 import { resolveRoute, SKIP, flag } from './routes.mjs';
@@ -354,7 +354,10 @@ export class Session extends AgentContext {
         throw new Error(`读取 Codex 调试接口失败，请重试：${error.message}`);
       }
     }
-    if (AGENT_REGISTRY[appId]?.kind === 'orchestrator') return AGENT_REGISTRY[appId].adapter.attach.call(this, req);
+    if (AGENT_REGISTRY[appId]?.kind === 'orchestrator') {
+      assertFusionReady();
+      return AGENT_REGISTRY[appId].adapter.attach.call(this, req);
+    }
     const targetApp = Object.keys(AGENT_REGISTRY).find(app => appId === app || appId.startsWith(app + ':'));
     const wins = windows || (codexPages ? codexPages.length ? [{id: 'codex', app: 'codex', title: 'Codex', ws: codexPages[0].ws, port: CODEX_CDP_URL, kind: 'local'}] : [] : targetApp ? await AGENT_REGISTRY[targetApp].discover() : await listWindows());
     if (!appId && wins[0]?.app === 'codex') return this.attach({ ...req, id: 'codex' }, wins);
@@ -682,20 +685,21 @@ export class Session extends AgentContext {
       msg = await this.followCodexOwner(msg);
     if (this.app !== app || this.threadId !== thread) throw new Error('会话已切换，操作未执行');
     const route = resolveRoute(this, msg.t);
-    if (route?.native && this.app !== 'opencode') return this.dispatch(msg, route);
+    const execute = async () => {
+      if (msg.t === 'draft' && msg.sel !== this.selectionKey()) throw new Error('会话已切换，草稿未同步');
+      if (route?.native) return this.dispatch(msg, route);
+      if (route?.pre) {
+        const r = await route.pre(this, msg);
+        if (r !== SKIP) return r;
+      }
+      const readOnly = flag(route?.readOnly, this, msg);
+      return await (readOnly || this.codexBackend ? this.dispatch(msg) : this.withFocus(() => this.dispatch(msg)));
+    };
+    if (route?.native && this.app !== 'opencode') return execute();
     const target = /^(?:project|thread):/.test(msg.id || '') ? parseAgentRef(msg.id).windowId : this.windowId;
     if (windowOperationLocked(this.app, target, this)) throw new Error('窗口正在批量处理会话，请稍后操作');
     const release = leaseWindow(this.app, this.windowId, this);
     if (!['ping', 'visible', 'usage', 'agents', 'connAgents', 'windows', 'sessionLibrary', 'sessionActions'].includes(msg.t)) touchProjectWindow(this.app, this.windowId);
-    const execute = async () => {
-    if (route?.native) return this.dispatch(msg, route);
-    if (route?.pre) {
-      const r = await route.pre(this, msg);
-      if (r !== SKIP) return r;
-    }
-    const readOnly = flag(route?.readOnly, this, msg);
-    return await (readOnly || this.codexBackend ? this.dispatch(msg) : this.withFocus(() => this.dispatch(msg)));
-    };
     try {
       const source = nativeWindow(this.cdp);
       if (source && route && !route.connection && !route.navigation && !flag(route.readOnly, this, msg))

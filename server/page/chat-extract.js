@@ -336,14 +336,21 @@
       return { stop: fusionDevinWatch(remoteContext.threadId, changed), refresh() {} };
     if (!remoteContext && devinSurface()) return devinWatch(changed);
     if (remoteContext?.app === 'codex') {
-      const manager = codexNativeManager(), stop = manager.addConversationCallback(remoteContext.threadId, changed), subscribed = new Map();
+      const { threadId } = remoteContext, subscribed = new Map();
+      let manager, stop;
       const refresh = () => {
-        const { sources } = codexAsyncQuestionState(remoteContext.threadId, remoteContext.host || 'local');
+        const current = codexNativeManager();
+        if (current !== manager) {
+          stop?.();
+          manager = current;
+          stop = manager?.addConversationCallback(threadId, changed);
+        }
+        const sources = manager ? codexAsyncQuestionState(threadId, manager.hostId).sources : new Map();
         for (const [key, unsubscribe] of subscribed) if (!sources.has(key)) { unsubscribe(); subscribed.delete(key); }
         for (const [key, source] of sources) if (!subscribed.has(key)) subscribed.set(key, source.subscribe(changed));
       };
       refresh();
-      return watchDraft({ refresh, stop() { stop(); for (const unsubscribe of subscribed.values()) unsubscribe(); } });
+      return watchDraft({ refresh, stop() { stop?.(); for (const unsubscribe of subscribed.values()) unsubscribe(); } });
     }
     if (remoteContext?.app === 'cursor' || !remoteContext && cursorSessionServices()) {
       const data = cursorSessionServices().data;
@@ -947,7 +954,25 @@
       const edit = devinEdit(row, i);
       if (edit) { items.push(edit); return; }
     });
-    const thread = devinNodeSessionId(log);
+    const thread = devinNodeSessionId(log) || activeThread();
+    const messages = devinMessages(thread);
+    for (const item of items) if (item.k === 'human' && !item.images?.length) {
+      const index = /^acp(\d+)$/.exec(item.i)?.[1];
+      const message = messages[index];
+      if (message?.kind !== 'user_message' || message.content?.some(block => block._meta?.['cognition.ai/isOptimistic'])) continue;
+      const images = devinMessageImages(message);
+      if (images.length) item.images = images;
+    }
+    // A pure image need not have a mounted user bubble in the desktop transcript.
+    const latestUser = messages.findLastIndex(message => message.kind === 'user_message');
+    const latest = messages[latestUser], latestId = `acp${latestUser}`;
+    if (latest && !devinMessageText(latest.content) && !items.some(item => item.i === latestId)) {
+      const [photo] = devinMessageItems([latest], 'acp', latestUser);
+      if (photo?.images?.length) {
+        const next = items.findIndex(item => Number(/^acp(\d+)/.exec(item.i)?.[1]) > latestUser);
+        items.splice(next < 0 ? items.length : next, 0, photo);
+      }
+    }
     if (devinSessionRecord(thread)?.status === 'unknown_error') {
       const banner = [...doc.querySelectorAll('[data-slot="banner-icon"]')].map(icon => icon.parentElement)
         .find(el => vis(el) && devinNodeSessionId(el) === thread);

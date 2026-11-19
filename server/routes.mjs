@@ -13,7 +13,7 @@ import { computerId } from '../lib/auth.mjs';
 import { scanProjectWindows, projectWindowSettings } from './project-windows.mjs';
 import { nativeWindow, configureNativeRetry } from './native-windows.mjs';
 import { manageOverviewSession } from './overview-actions.mjs';
-import { withOperation } from './operations.mjs';
+import { withOperation, lookupOperations } from './operations.mjs';
 import { realpath } from 'node:fs/promises';
 import { writeTextFile } from '../lib/files.mjs';
 import { fileAction } from '../lib/file-actions.mjs';
@@ -106,8 +106,9 @@ function readAllPlans(session, windows) {
   return plansRead;
 }
 
-const questionDone = (s, m) => s.emit({ t: 'questionDone', requestId: m.requestId, sel: s.selectionKey(), ok: true });
-const questionFailed = (s, m) => s.emit({ t: 'questionDone', requestId: m.requestId, sel: s.selectionKey(), ok: false });
+const questionDone = (s, m, result) => s.emit({ t: 'questionDone', requestId: m.requestId, sel: s.selectionKey(), ok: true,
+  ...(result === 'advanced' ? { advanced: true } : {}) });
+const questionFailed = (s, m, error) => s.emit({ t: 'questionDone', requestId: m.requestId, sel: s.selectionKey(), ok: false, error: error?.message });
 
 const terminalRoute = run => ({ fast: true, connection: true, fastRun: run, errorStatus: false,
   fail: (s, m, error) => s.emit({ t: 'termError', requestId: m.requestId, id: m.id,
@@ -119,6 +120,10 @@ const terminalInputTarget = (s, m) => {
 };
 
 export const ROUTES = {
+  operationLookup: { fast: true, connection: true, fastRun: (s, m) => {
+    if (Array.isArray(m.ids)) lookupOperations(s.deviceId, s.client, m.ids, ['send']);
+    if (Array.isArray(m.questionIds)) lookupOperations(s.deviceId, s.client, m.questionIds, ['question', 'codexRequest']);
+  } },
   computerFileAction: { fast: true, connection: true,
     fastRun: async (s, m) => s.emit({ t: 'computerFileDone', requestId: m.requestId, ok: true,
       ...await fileAction({ action: m.action, directory: m.directory, paths: m.paths, name: m.name, mode: m.collision }) }),
@@ -238,6 +243,7 @@ export const ROUTES = {
   },
   lang: { connection: true,  pre: (s, m) => { updateDevice(s.deviceId, { lang: m.v === 'en' ? 'en' : 'zh' }); } },
   draft: {
+    fail: (s, m) => s.emit({ t: 'draftAck', sel: m.sel, ok: false, draftEpoch: m.draftEpoch || '', revision: m.revision }),
     pre: async (s, m) => {
       if ((m.draftEpoch || '') !== (s.draftEpoch || '')) return;
       if (s.queueEditing) { s.queueEditing.request = m; return; }
@@ -463,17 +469,19 @@ export const ROUTES = {
       if (s.app === 'devin') return s.adapter.answerRequest.call(s, m);
       if (s.app !== 'codex') return;
       const call = method => nativeWindow(s.cdp).composerCall(method);
+      let result;
       if (m.field != null) {
         if (!await call(`codexRequestField(${JSON.stringify(String(m.id))}, ${Number(m.field)}, ${JSON.stringify(String(m.value || ''))})`)) throw new Error('请求输入框已不存在');
       } else {
-        const acted = await call(`codexRequestAction(${JSON.stringify(String(m.id))}, ${Number(m.n)}, ${JSON.stringify(m.fields || [])}, ${m.advance === true})`);
-        if (!acted) {
+        result = await call(`codexRequestAction(${JSON.stringify(String(m.id))}, ${Number(m.n)}, ${JSON.stringify(m.fields || [])}, ${m.advance === true})`);
+        if (!result) {
           const pos = await s.cdp.evaluate(helpersCall(`codexRequestTarget(${JSON.stringify(String(m.id))}, ${Number(m.n)})`));
           if (!pos) throw new Error('请求已经处理或不存在');
           await s.tapCss(pos.x, pos.y);
         }
       }
       s.pollChat(true).catch(() => {});
+      return result;
     },
     after: questionDone, fail: questionFailed,
   },

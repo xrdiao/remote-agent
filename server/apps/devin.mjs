@@ -199,9 +199,9 @@ export const adapter = {
 
   async submitPrompt(now, busy, when, queued) {
     if (queued || now || when === 'queue') {
-      return this.submitPromptKey(null, queued, async () => {
-        await this.cdp.evaluate(helpersCall(`nativeSessionAction('devin', ${JSON.stringify(this.threadId || '')}, 'queue', ${JSON.stringify({ now: !!now })})`));
-      });
+      return this.submitPromptKey(null, queued, () => this.cdp.evaluate(helpersCall(
+        `nativeSessionAction('devin', ${JSON.stringify(this.threadId || '')}, 'queue', ${JSON.stringify({ now: !!now })})`,
+      )));
     }
     return this.submitPromptKey('Enter', queued);
   },
@@ -216,6 +216,7 @@ export const adapter = {
     if (!await this.cdp.evaluate(helpersCall(`pickDevinModel(${JSON.stringify(String(label))})`))) return false;
     await this.waitModel(label);
     await this.closeMenus();
+    this.fusion = await this.cdp.evaluate(helpersCall('fusionConfig(true)'));
     this.refreshModelChat().catch(() => {});
     return true;
   },
@@ -243,7 +244,7 @@ async pickWindowsDevinMode(label) {
 // sees a sliding window of acp-indexed rows. Merge each window into per-session history
 // keyed by the stable acp ids; remembered rows keep their last seen content. Sorted by
 // acp index (a thinking item `acpN:think` travels with row N) and capped at ~1500 items.
-mergeDevinHistory(chat, prepend = false) {
+mergeDevinHistory(chat) {
   if (!chat?.items) return;
   this.syncSession(chat);
   if (chat.empty) { this.devinHist.clear(); this.devinCmds?.clear(); this.devinCmdTried?.clear(); chat.earlier = false; return; }
@@ -257,7 +258,7 @@ mergeDevinHistory(chat, prepend = false) {
   const mounted = chat.items.map(it => num(it.i)).filter(n => n >= 0);
   const minM = mounted.length ? Math.min(...mounted) : Infinity;
   const maxM = mounted.length ? Math.max(...mounted) : -1;
-  if (!prepend && hist.size && mounted.length) {
+  if (hist.size && mounted.length) {
     const known = [...hist.keys()].map(num).filter(n => n >= 0);
     if (known.length) {
       const minR = Math.min(...known), maxR = Math.max(...known);
@@ -269,7 +270,6 @@ mergeDevinHistory(chat, prepend = false) {
   }
   // Sticky thoughts: a remounted collapsed thought has no body; keep the body we already have.
   for (const it of chat.items) {
-    if (prepend && hist.has(it.i)) continue;
     const next = it.src === 'devin' ? it : { ...it, src: 'devin' };
     const prev = hist.get(it.i);
     const pb = prev?.k === 'thinking' ? this.thinkingBody(prev) : '';
@@ -319,10 +319,15 @@ async devinQueueAction(id, action) {
 
 // Devin "edit": take the queued message out of the queue and hand its text to the phone's input box.
 async devinTakeOut(id) {
-  const q = (await this.cdp.evaluate(helpersCall('devinQueued()')) || []).find(x => x.id === id);
-  if (!q || !q.t) throw new Error('这条排队消息已经不在了（可能刚被发出）');
-  await this.devinQueueAction(id, 'remove');
-  this.emit({ t: 'unqueued', id, text: q.t });
+  const text = await this.cdp.evaluate(`(() => {
+    const h = ${PAGE_SRC}, id = ${JSON.stringify(String(id))}, thread = ${JSON.stringify(this.threadId)};
+    if (h.activeThread() !== thread) throw new Error('会话已切换，请重新读取队列');
+    const text = h.devinQueued(thread, id);
+    if (!text || !h.devinQueueTarget(id, 'remove')) throw new Error('这条排队消息已执行或当前不可操作');
+    return text;
+  })()`);
+  this.emit({ t: 'unqueued', id, text, sel: this.selectionKey() });
+  this.pollChat(true).catch(() => {});
 },
 
 async devinClearQueue() {

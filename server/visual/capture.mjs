@@ -42,6 +42,7 @@ class VisualCapture {
   state = {state: 'idle', title: '', message: '请选择绘图或仿真窗口'};
   frame = null;
   child = null;
+  revision = 0;
   subscribe(session) { this.viewers.add(session); this.publish(session); }
   unsubscribe(session) { this.viewers.delete(session); if (!this.viewers.size) this.stop(); }
   publish(session) {
@@ -56,19 +57,24 @@ class VisualCapture {
     this.frame = frame;
     for (const viewer of this.viewers) this.publishFrame(viewer, frame);
   }
-  stop() { const child = this.child; this.child = null; child?.kill(); this.frame = null; this.state = {...this.state, state: 'idle'}; }
+  stop() { this.revision++; const child = this.child; this.child = null; child?.kill(); this.frame = null; this.state = {...this.state, state: 'idle'}; }
   async restore(windows) {
-    if (this.child) return;
+    if (this.child || !this.viewers.size) return;
+    const revision = this.revision;
     if (isWayland()) { if (saved().restoreToken) return this.start('restore'); return; }
     const list = windows || await visualWindows();
+    if (revision !== this.revision) return;
     if (!list.length) return this.update({state: 'idle', title: '', message: '当前没有窗口'});
     return this.start((list.find(w => w.id === saved().id) || list[0]).id);
   }
   async start(id) {
+    if (!this.viewers.size) return;
+    const revision = ++this.revision;
     const wayland = isWayland();
     let target;
     if (!wayland) {
       target = (await visualWindows()).find(w => w.id === id);
+      if (revision !== this.revision) return;
       if (!target) throw new Error('绘图或仿真窗口已关闭，请重新选择');
     }
     const command = wayland ? '/usr/bin/python3' : findBin('ffmpeg');

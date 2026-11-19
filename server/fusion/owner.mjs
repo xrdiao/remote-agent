@@ -4,7 +4,7 @@ import { computerId } from '../../lib/auth.mjs';
 import { workspaces } from '../../lib/files.mjs';
 import { safeHomePath, projectList, createProjectFolder } from '../agent/projects.mjs';
 import { fusionRuns, fusionViewers, fusionLive, savedFusion, findFusionRun, allFusionRuns, newFusionRun, fusionProject,
-  publishFusion, subscribeFusion, fusionSummary, fusionEvent, NATIVE_UNSETTLED } from './state.mjs';
+  publishFusion, subscribeFusion, fusionSummary, fusionEvent, NATIVE_UNSETTLED, assertFusionReady } from './state.mjs';
 import { fusionRunner } from './runner.mjs';
 import { FUSION_TIERS, validateExecution } from './cost.mjs';
 import { fusionPendingReviews } from './control.mjs';
@@ -251,6 +251,7 @@ export async function manageFusionWorkbench(body) {
 }
 export const FUSION_OWNER = {
   async fusionWorkspace(message = {}) {
+    assertFusionReady();
     this.fusionDetail = null;
     const projects = [...new Map(workspaces().map(workspace => {
       const project = fusionProject(workspace.root, workspace.host || '');
@@ -263,6 +264,7 @@ export const FUSION_OWNER = {
       ...(message.path !== undefined ? { browse: projectList(message.path) } : {}) });
   },
   fusionCreate(message, emit = true) {
+    assertFusionReady();
     if (message.computer !== computerId()) throw new Error('新建主工作台前必须明确执行电脑');
     if (!message.requestId) throw new Error('新建主工作台缺少请求身份');
     const previous = fusionRuns[this.deviceId]?.runs.find(run => run.createRequestId === message.requestId);
@@ -277,6 +279,7 @@ export const FUSION_OWNER = {
     return run;
   },
   async fusionProject(message) {
+    assertFusionReady();
     if (message.computer !== computerId()) throw new Error('打开主项目之前必须明确执行电脑');
     let run;
     if (message.runId) {

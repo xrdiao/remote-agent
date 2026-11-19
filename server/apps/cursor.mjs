@@ -5,6 +5,7 @@ import { mod } from '../../lib/platform.mjs';
 import { helpersCall, PAGE_SRC } from '../page/build.mjs';
 import { cursorUsage } from '../agent/context.mjs';
 import { activateQueuedAction } from '../agent/queued-action.mjs';
+import { rememberCursorSessionProject, storedProjectSession } from '../project-windows.mjs';
 
 // Phone viewers of the same window share its native menu/thought UI.
 const cursorUiReads = new Map();
@@ -28,6 +29,8 @@ export const adapter = {
       if (!chat || (chat.thread === before && chat.items.length)) continue;
       this.clearViewState();
       this.threadId = chat.thread || '';
+      if (this.threadId && this.threadId !== before && this.pendingProject?.newSession)
+        rememberCursorSessionProject(this.threadId, this.pendingProject.root, this.windowId);
       await this.currentRoots();
       this.publishThread('已新建对话');
       this.lastChatAt = 0;
@@ -98,6 +101,10 @@ export const adapter = {
   async currentRoots() {
     if (this.threadId) {
       const context = await this.cdp.evaluate(helpersCall(`nativeSessionInfo('cursor', ${JSON.stringify(this.threadId)}, 'context')`));
+      if (!context.roots.length && !context.projectless) {
+        const saved = storedProjectSession('cursor', this.threadId);
+        if (saved?.workspaceConfirmed) return [{ root: saved.workspace, host: '' }];
+      }
       return context.roots.filter(root => !root.host).map(root => ({ ...root, root: localFilePath(root.root) }));
     }
     if (this.winTitle === 'Cursor Agents') {
@@ -178,11 +185,11 @@ export const adapter = {
     await this.typeText(text);
   },
 
-  async submitPrompt(now, busy, when, queued, mentions, receipt) {
-    return this.submitPromptKey('', queued, async () => {
-      const text = await this.cdp.evaluate(helpersCall('composerDraft()'));
-      await this.cdp.evaluate(helpersCall(`nativeSessionAction('cursor', ${JSON.stringify(this.threadId)}, 'send', ${JSON.stringify({ text, requestId: receipt.requestId, when: when || '' })})`));
-    });
+  async submitPrompt(now, busy, when, queued, mentions, receipt, files, text, target) {
+    const { cdp, thread } = target;
+    return this.submitPromptKey('', queued, () => cdp.evaluate(helpersCall(
+      `nativeSessionAction('cursor', ${JSON.stringify(thread)}, 'send', ${JSON.stringify({ text, requestId: receipt.requestId, when: when || '', requireActive: true })})`,
+    )), { text, thread });
   },
 
   async fileAgentMarks(f, text, changes, diff) {

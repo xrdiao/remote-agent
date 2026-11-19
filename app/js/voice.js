@@ -19,10 +19,12 @@ async function shrinkImage(file, canvas, app) {
 }
 
 const imageUploads = new Map(), editableImages = new Map();
+const documentUploads = new Set();
 let desktopAttachments = [], editBeforeUpload = false, imageBatchScope = '';
 let imageUploadQueue = Promise.resolve();
 const imageUploadScope = () => [currentComputer()?.id || '', viewSel].join('|');
 function pendingImageUploads() { return imageBatchScope === imageUploadScope() || [...imageUploads.values()].some(f => f.scope === imageUploadScope() && !f.cancelled); }
+function pendingDocumentUploads() { return [...documentUploads].some(upload => upload.scope === imageUploadScope()); }
 function renderAttachments(list) {
   desktopAttachments = list;
   for (const [id, image] of editableImages) {
@@ -137,13 +139,18 @@ async function uploadDocument(file, sel, image) {
 }
 async function attachDocumentFile(file) {
   if (file.size > 20 * 1024 * 1024) return status('文件不能超过 20 MB', false);
-  const sel = viewSel;
+  const sel = viewSel, upload = { scope: imageUploadScope() };
+  documentUploads.add(upload);
   status('正在上传文件…');
   try {
     await uploadDocument(file, sel);
-    if (sel === viewSel) send({ t: 'attachments' });
-    status('文件已上传，写好文字后点发送');
-  } catch (error) { status(error.name === 'AbortError' ? '文件上传超时' : error.message, false); }
+    if (upload.scope === imageUploadScope()) {
+      send({ t: 'attachments' });
+      status('文件已上传，写好文字后点发送');
+    }
+  } catch (error) {
+    if (upload.scope === imageUploadScope()) status(error.name === 'AbortError' ? '文件上传超时' : error.message, false);
+  } finally { documentUploads.delete(upload); }
 }
 $('docFile').accept = RemoteAgentRules.uploadAccept;
 $('docFile').onchange = async () => {

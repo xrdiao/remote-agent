@@ -16,10 +16,23 @@ export const fusionLive = new Map();
 export const FUSION_ACTIVE = ['running', 'waiting', 'recovering', 'stopping'];
 export const NATIVE_UNSETTLED = ['preparing', 'submitting', 'running', 'unknown', 'stopping'];
 const subscribers = new Set();
+let fusionStartupError;
 
 export function saveFusionRuns() { fusionStore.write(); }
 
-export function initializeFusionState() {
+export function initializeFusionState(clearLegacyWindows) {
+  try {
+    migrateLegacyFusionState();
+    clearLegacyWindows();
+  } catch (error) { fusionStartupError = error; }
+  return fusionStartupError;
+}
+
+export function assertFusionReady() {
+  if (fusionStartupError) throw fusionStartupError;
+}
+
+function migrateLegacyFusionState() {
   const state = readState();
   const legacy = state.fusionRuns;
   if (!legacy && state.fusionHistory === undefined) return;
@@ -36,6 +49,7 @@ export function initializeFusionState() {
 
 export function savedFusion(deviceId) { return fusionRuns[deviceId] ||= { current: '', runs: [] }; }
 export function findFusionRun(id) {
+  assertFusionReady();
   const controller = allFusionRuns().find(row => row.id === id);
   if (!controller) throw new Error('没有这个 Fusion 工作台，请重新选择');
   return controller;

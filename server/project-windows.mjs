@@ -79,6 +79,12 @@ export function storedProjectSession(app, value) {
   const row = saved.sessions[app + ':' + id];
   return row && { ...row, dormant: !!saved.windows[key(app, row.ownerWindow)]?.closed };
 }
+export function rememberCursorSessionProject(id, root, windowId) {
+  const k = 'cursor:' + sessionId('cursor', id), previous = saved.sessions[k];
+  if (previous?.workspaceConfirmed && samePath(previous.workspace, root)) return;
+  saved.sessions[k] = { ...previous, id, workspace: localFilePath(root), host: '', ownerWindow: windowId, workspaceConfirmed: true };
+  persist();
+}
 export function projectSessionIds(app) {
   return Object.entries(saved.sessions).filter(([k, row]) => k.startsWith(app + ':') && !row.host).map(([k]) => k.slice(app.length + 1));
 }
@@ -108,10 +114,12 @@ export function reconcileSessionCatalog(app, catalog) {
   let changed = false;
   for (const row of catalog.rows) {
     const id = sessionId(app, row.id), k = app + ':' + id;
-    if (!readLibrary()[app]?.[id]?.favorite || !row.workspace || row.host) continue;
     const previous = saved.sessions[k];
-    if (previous && samePath(previous.workspace, row.workspace) && !previous.host) continue;
-    saved.sessions[k] = { ...previous, id: previous?.id || row.id, workspace: localFilePath(row.workspace), host: '' };
+    if (!row.workspace || row.host || app === 'cursor' && !row.workspaceConfirmed) continue;
+    if (!readLibrary()[app]?.[id]?.favorite && !(app === 'cursor' && previous?.workspaceConfirmed)) continue;
+    if (previous && samePath(previous.workspace, row.workspace) && !previous.host && (app !== 'cursor' || previous.workspaceConfirmed)) continue;
+    saved.sessions[k] = { ...previous, id: previous?.id || row.id, workspace: localFilePath(row.workspace), host: '',
+      ...(app === 'cursor' ? { workspaceConfirmed: true } : {}) };
     changed = true;
   }
   for (const [id, state] of states) if (state === 'deleted' && readLibrary()[app]?.[id]?.deleted && saved.sessions[app + ':' + id]) {
@@ -131,9 +139,13 @@ export function catalogSessions(app, rows, currentWindow) {
     if (row.ui || row.dormant) continue;
     const id = sessionId(app, row.id);
     const win = /^(?:project|thread):/.test(row.id) ? parseAgentRef(row.id).windowId : currentWindow;
-    const root = row.workspace || saved.windows[key(app, win)]?.root;
+    const previous = saved.sessions[app + ':' + id];
+    const root = app === 'cursor'
+      ? (row.workspaceConfirmed ? row.workspace : (row.projectless ? '' : previous?.workspaceConfirmed && previous.workspace))
+      : row.workspace || saved.windows[key(app, win)]?.root;
     if (!id || !root || row.host) continue;
-    const value = { ...row, workspace: localFilePath(root), ownerWindow: win, id: row.id };
+    const value = { ...row, workspace: localFilePath(root), ownerWindow: win, id: row.id,
+      ...(app === 'cursor' ? { workspaceConfirmed: true } : {}) };
     if (JSON.stringify(saved.sessions[app + ':' + id]) !== JSON.stringify(value)) { saved.sessions[app + ':' + id] = value; changed = true; }
   }
   if (changed) persist();

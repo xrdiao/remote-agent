@@ -356,10 +356,9 @@ export class NativeWindow {
     const revision = view.revision;
     view.reading = cdpRead.run(null, async () => {
       await this.connect();
-      const [chat, composer] = await Promise.all([
-        this.cdp.evaluate(helpersCall(`extract(false, [], ${context.app === 'codex' ? 120 : 0})`, context)),
-        context.app === 'codex' ? this.composerCall(`nativeSessionInfo('codex', ${JSON.stringify(context.threadId)}, 'composer')`, context) : null,
-      ]);
+      const chat = await this.cdp.evaluate(helpersCall(`extract(false, [], ${context.app === 'codex' ? 120 : 0})`, context));
+      const composer = chat && context.app === 'codex'
+        ? await this.composerCall(`nativeSessionInfo('codex', ${JSON.stringify(context.threadId)}, 'composer')`, context) : null;
       if (chat && composer) chat.codex = { ...chat.codex,
         run: composer.composerMode[0].toUpperCase() + composer.composerMode.slice(1),
         ide: { on: composer.isAutoContextOn, file: composer.ideContext?.activeFile || null } };

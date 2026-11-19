@@ -119,10 +119,15 @@ export class FusionRunner {
       for (const attempt of this.run.attempts.filter(row => row.status === 'cancelled')) this.scheduler.cancelAttempt(attempt.id);
       for (const effect of this.run.effects.filter(row => row.status === 'pending' && !this.effects.has(row.id))) {
         if (effect.kind === 'execute') { this.schedule(effect.data.attemptId); continue; }
-        this.effects.add(effect.id);
+        const id = effect.id;
+        const finish = (status, error) => {
+          const current = this.run.effects.find(row => row.id === id);
+          Object.assign(current, { status, endedAt: Date.now(), ...(error ? { error: error.message } : {}) });
+        };
+        this.effects.add(id);
         Promise.resolve().then(() => effect.kind === 'stop' ? this.stopAttempt(effect.data.attemptId) : null)
-          .then(() => { effect.status = 'done'; effect.endedAt = Date.now(); }, error => { effect.status = 'failed'; effect.error = error.message; })
-          .finally(() => { this.effects.delete(effect.id); this.publish(); });
+          .then(() => finish('done'), error => finish('failed', error))
+          .finally(() => { this.effects.delete(id); this.publish(); });
       }
       this.scheduler.drain();
       if (this.run.stopRequested) { this.finishStop(); return; }
@@ -352,9 +357,9 @@ export class FusionRunner {
       && (row.status === 'queued' || NATIVE_UNSETTLED.includes(row.status)));
     for (const task of run.tasks.filter(row => (!workId || row.workId === workId) && (!taskId || row.id === taskId))) task.stopRequested = true;
     this.publish();
-    await Promise.allSettled(targets.map(async attempt => {
-      try { await this.stopAttempt(attempt.id); }
-      catch (error) { attempt.stopError = error.message; this.publish(); }
+    await Promise.allSettled(targets.map(async ({ id }) => {
+      try { await this.stopAttempt(id); }
+      catch (error) { run.attempts.find(row => row.id === id).stopError = error.message; this.publish(); }
     }));
     this.finishStop();
   }

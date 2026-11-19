@@ -232,12 +232,12 @@ async function withBackendSettings(s, action) {
   }
 }
 
-async function withCodexModelOwner(s, action) {
+async function withCodexModelOwner(s, action, readOnly = false) {
   const id = s.threadId;
   if (!id) throw new Error('Codex 会话尚未加载');
   if (!s.codexBackend) return action({ id, cdp: s.cdp });
-  const owner = await s.adapter.backendOwner(id);
-  if (!owner) return codexBackend.withWriter(id, thread => action({ id, thread }));
+  const owner = await s.adapter.backendOwner(id, !readOnly);
+  if (!owner) return readOnly ? action({ id, thread: await codexBackend.read(id) }) : codexBackend.withWriter(id, thread => action({ id, thread }));
   const cdp = new Cdp(owner.chatWs), context = { app: 'codex', threadId: id, host: '', cwd: owner.cwd };
   try {
     await cdp.connect();
@@ -277,7 +277,7 @@ async function readCodexModelMenu(kind, requestId) {
   const { settings, models } = await withCodexModelOwner(this, async owner => {
     const settings = await codexModelSettings(owner);
     return { settings, models: await codexModelList(owner, settings) };
-  });
+  }, true);
   if (this.selectionKey() !== sel || this.threadId !== id || this.sel !== generation) return;
   this.codexModelCatalog = { id, provider: settings.modelProvider || null, models };
   const current = models.find(row => codexModelId(row) === settings.model);
@@ -309,7 +309,6 @@ async function pickCodexModelMenu(kind, label, name) {
       update = { model: codexModelId(model), effort };
     } else if (kind === 'effort') {
       if (!current?.supportedReasoningEfforts.some(row => row.reasoningEffort === label)) throw new Error('当前模型不支持这个思考强度');
-      if (label === 'max' && !this.codexBackend) await this.enableCodexMax();
       update = { effort: label };
     } else {
       const tier = codexFastTier(current);
@@ -465,16 +464,18 @@ const backendRoutes = {
   },
   async codexRequest(m) {
     if (codexBackend.requestRows(this.threadId).some(row => row.id === m.id)) {
-      if (m.field == null) codexBackend.answer(this.threadId, m.id, m.n, m.fields);
+      if (m.field == null) await codexBackend.answer(this.threadId, m.id, m.n, m.fields);
       return;
     }
     const [source, value] = [...this.codexNativeQuestions || []].find(([, value]) => value.requests.some(row => row.id === m.id)) || [];
     if (!source) throw new Error('这条请求已处理或不属于当前会话');
     const call = m.field != null ? `codexRequestField(${JSON.stringify(m.id)}, ${Number(m.field)}, ${JSON.stringify(m.value || '')})`
       : `codexRequestAction(${JSON.stringify(m.id)}, ${Number(m.n)}, ${JSON.stringify(m.fields || [])}, ${m.advance === true})`;
-    if (!await source.composerCall(call, value.context)) throw new Error('原生问题操作未完成');
+    const result = await source.composerCall(call, value.context);
+    if (!result) throw new Error('原生问题操作未完成');
     await source.readConversation(value.context, true);
     backendPublish(this);
+    return result;
   },
   async queue(m) {
     const id = this.threadId;
@@ -491,7 +492,7 @@ const backendRoutes = {
         input: [{ type: 'text', text: m.text }, ...row.input.filter(part => part.type !== 'text')] });
       else if (m.action === 'send') await codexBackend.startQueued(id, m.id);
       else await codexBackend.client.request('thread/queue/delete', { threadId: id, queuedSubmissionId: m.id });
-      await codexBackend.readQueue(id);
+      codexBackend.refreshQueue(id);
       return { queued: m.action !== 'send' };
     });
   },
@@ -639,8 +640,8 @@ export const adapter = {
   readModelMenu: readCodexModelMenu,
   pickModelSetting: pickCodexModelMenu,
   routes: { toolDetails: backendRoutes.toolDetails },
-  async backendOwner(id) {
-    await codexBackend.releasing.get(id)?.promise;
+  async backendOwner(id, waitForRelease = true) {
+    if (waitForRelease) await codexBackend.releasing.get(id)?.promise;
     if (codexBackend.hasWriter(id)) return null;
     const pages = await codexWindows(CODEX_CDP_URL);
     const matches = await Promise.all(pages.filter(page => page.chatWs).map(async page => {
@@ -1309,41 +1310,6 @@ async codexThreadRows(cdp = this.cdp) {
   const merged = new Map(recent.map(row => [row.id, row]));
   for (const row of rows) merged.set(row.id, { ...merged.get(row.id), ...row });
   return [...merged.values()];
-},
-
-async enableCodexMax() {
-  try {
-    await this.withCodexSettings(async cdp => {
-      let data = await cdp.evaluate(helpersCall('codexSettingsData()'));
-      const previous = data.nav.find(n => n.current);
-      const navigate = async item => {
-        const before = JSON.stringify(data);
-        const pos = await cdp.evaluate(helpersCall(`codexSettingPoint(${JSON.stringify(item.id)})`));
-        await this.tapCss(pos.x, pos.y, 'left', cdp);
-        data = await cdp.evaluate(helpersCall(`waitSettings('codex', ${JSON.stringify(before)})`));
-      };
-      try {
-        const config = data.nav.find(n => /^(Configuration|配置)$/.test(n.label));
-        if (!config) throw new Error('没有找到 Codex 原生配置入口');
-        if (!config.current) await navigate(config);
-        const row = data.rows.find(r => /^(Available reasoning efforts|可用推理强度)$/.test(r.label));
-        if (!row) throw new Error('没有找到 Codex 思考强度设置');
-        const pos = await cdp.evaluate(helpersCall(`codexSettingPoint(${JSON.stringify(row.controls[0].id)})`));
-        await this.tapCss(pos.x, pos.y, 'left', cdp);
-        const choice = await cdp.evaluate(`(() => { const doc = document.getElementById('active-frame').contentDocument; const option = [...doc.querySelectorAll('[role=menuitemcheckbox]')].find(el => el.textContent.trim() === 'Max'); if (!option || option.getAttribute('aria-disabled') === 'true') return null; option.dataset.remoteSetting ||= crypto.randomUUID(); return { id: option.dataset.remoteSetting, enabled: option.getAttribute('aria-checked') === 'true' }; })()`);
-        if (!choice) throw new Error('当前 Codex 无法启用 Max');
-        if (!choice.enabled) {
-          const target = await cdp.evaluate(helpersCall(`codexSettingPoint(${JSON.stringify(choice.id)})`));
-          await this.tapCss(target.x, target.y, 'left', cdp);
-          const checked = await cdp.evaluate(`new Promise(resolve => { const doc = document.getElementById('active-frame').contentDocument, started = Date.now(); const read = () => { const el = [...doc.querySelectorAll('[role=menuitemcheckbox]')].find(el => el.textContent.trim() === 'Max'); if (el?.getAttribute('aria-checked') === 'true') return resolve(true); if (Date.now() - started >= 2000) return resolve(false); setTimeout(read, 30); }; read(); })`);
-          if (!checked) throw new Error('Codex 原生 Max 设置尚未生效');
-        }
-        await this.key('Escape', { cdp });
-      } finally {
-        if (previous && !data.nav.some(n => n.id === previous.id && n.current)) await navigate(previous);
-      }
-    });
-  } finally { await cdpRead.run(null, () => this.closeCodexSettings()); }
 },
 
 async withCodexSettings(fn) {

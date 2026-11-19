@@ -20,12 +20,12 @@
       nativeHost: accessor.get(ids.get('nativeHostService')),
     }));
   };
-  const cursorSessionWorkspaceUris = (id, current, header, workspace) => {
-    const selected = current.workspaceIdentifier || header?.workspaceIdentifier;
+  const cursorSessionWorkspaceUris = (current, header, workspace) => {
+    const selected = header?.workspaceIdentifier || current.workspaceIdentifier;
     if (selected?.id === 'empty-window') return [];
     if (selected?.uri) return [selected.uri];
-    if (header?.workspaceIdentifier?.uri && (!selected || selected.id === header.workspaceIdentifier.id)) return [header.workspaceIdentifier.uri];
-    return selected?.id === workspace.id || !selected && id === activeThread()
+    if (current.workspaceIdentifier?.uri && selected?.id === current.workspaceIdentifier.id) return [current.workspaceIdentifier.uri];
+    return selected?.id && selected.id === workspace.id
       ? workspace.folders.map(folder => folder.uri) : null;
   };
   const nativeSessionContext = async (app, id) => {
@@ -47,10 +47,9 @@
       if (!handle) throw new Error('Cursor 原生目录中没有这个会话');
       const data = handle.data, workspace = services.composer.composerChatService._workspaceContextService.getWorkspace();
       const headers = (await services.data._storageService.collectionQuery('composerHeaders')).map(row => JSON.parse(row));
-      const uris = cursorSessionWorkspaceUris(id, data, headers.find(row => row.composerId === id), workspace);
-      if (!uris) throw new Error('尚未读取到这个 Cursor 会话的项目目录');
-      const roots = uris.map(uri => ({ root: uri.scheme === 'file' ? uriFilePath(uri) : uri.path, host: uri.scheme === 'file' ? '' : uri.authority.replace(/^ssh-remote\+/, '') }));
-      return { app, threadId: id, host: roots[0]?.host || '', cwd: roots[0]?.root || '', roots, projectless: uris.length === 0 };
+      const uris = cursorSessionWorkspaceUris(data, headers.find(row => row.composerId === id), workspace);
+      const roots = (uris || []).map(uri => ({ root: uri.scheme === 'file' ? uriFilePath(uri) : uri.path, host: uri.scheme === 'file' ? '' : uri.authority.replace(/^ssh-remote\+/, '') }));
+      return { app, threadId: id, host: roots[0]?.host || '', cwd: roots[0]?.root || '', roots, projectless: uris?.length === 0 };
     }
     let session = devinSessionRecord(id);
     if (!session) throw new Error('Devin 原生目录中没有这个会话');
@@ -89,10 +88,12 @@
       const workspace = services.composer.composerChatService._workspaceContextService.getWorkspace();
       return { ready: true, complete: true, rows: rows.map(row => {
         const current = loaded.get(row.composerId) || row;
-        const uri = cursorSessionWorkspaceUris(row.composerId, current, row, workspace)?.[0];
+        const uris = cursorSessionWorkspaceUris(current, row, workspace), uri = uris?.[0];
         return { id: row.composerId, archived: !!row.isArchived, title: current.name || row.name || '',
           workspace: uri?.scheme === 'file' ? uriFilePath(uri) : uri?.path || '', host: uri && uri.scheme !== 'file' ? uri.authority.replace(/^ssh-remote\+/, '') : '',
-          workspaceId: row.workspaceIdentifier?.id || '', lastUsed: current.lastUpdatedAt || row.createdAt || 0, running: running.has(row.composerId) };
+          workspaceId: (row.workspaceIdentifier || current.workspaceIdentifier)?.id || '', projectless: uris?.length === 0,
+          workspaceConfirmed: !!uri,
+          lastUsed: current.lastUpdatedAt || row.createdAt || 0, running: running.has(row.composerId) };
       }) };
     }
     if (app === 'devin') {
@@ -601,6 +602,7 @@
     if (action === 'queue' && app === 'devin') return devinNativeQueue(id, name);
     if (action === 'questionText' && app === 'devin') return devinNativeQuestionText(id, name);
     if (action === 'send') {
+      if (app === 'cursor' && name.requireActive && activeThread() !== id) throw new Error('会话已切换，消息未发送');
       const submissions = window.__remoteAgentNativeSubmissions ||= new Map();
       if (submissions.has(name.requestId)) return true;
       const record = { threadId: id, status: 'submitting', at: Date.now() };
@@ -727,7 +729,9 @@
         if (session.createdFromBackgroundAgent?.bcId) await services.background.renameBackgroundComposer(session.createdFromBackgroundAgent.bcId, name);
         else {
           await services.composer.renameComposer(id, name, { throwOnFailure: true });
-          await services.data.persistComposerWorkspacePlacement(id, { name });
+          const [stored] = await services.data._storageService.collectionQuery('composerHeaders', { where: { composerId: id } });
+          const workspaceIdentifier = stored ? JSON.parse(stored).workspaceIdentifier : session.workspaceIdentifier;
+          await services.data.persistComposerWorkspacePlacement(id, { name, workspaceIdentifier });
           await services.data.syncComposerHeadersFromCanonicalStorage();
         }
       } else if (action === 'delete') {

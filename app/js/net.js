@@ -1100,6 +1100,7 @@ function receiveDesktopOperation(link, result) {
   if (!pending) { link.operations.delete(result.id); return; }
   if (pending.computer !== link.expectedId) return;
   if (pending.complete && pending.device !== link.auth.device) return;
+  if (result.unknown && link.receive && currentComputer()?.id === pending.computer && !windowReady) return;
   if (result.kind !== 'send' && !pending.complete && (!link.receive || currentComputer()?.id !== pending.computer)) return;
   for (const event of result.events.slice().sort((a, b) => a.revision - b.revision)) {
     if (event.revision <= pending.revision) continue;
@@ -1110,11 +1111,23 @@ function receiveDesktopOperation(link, result) {
     else if (link.receive && currentComputer()?.id === pending.computer && (m.t !== 'status' || result.sel === viewSel)) link.receive({ data: JSON.stringify(m) });
     pending.revision = event.revision;
   }
-  if (result.done) { desktopRequests.delete(result.id); link.operations.delete(result.id); }
+  if (result.done) {
+    if (pending.kind === 'send' && pendingSends.has(pending.requestId))
+      failPendingSend(pending.requestId, '发送结果无法确认。草稿已保留，请先核对对话再重试。');
+    if (pending.kind === 'question' || pending.kind === 'codexRequest')
+      finishQuestion({ requestId: pending.requestId, ok: false, error: '回答结果无法确认，请核对卡片后重试' });
+    desktopRequests.delete(result.id); link.operations.delete(result.id);
+  }
 }
 function replayDesktopOperations(link) {
-  for (const request of desktopRequests.values()) if (request.computer === link.expectedId && request.message && request.device === link.auth.device)
-    link.socket.send(JSON.stringify(request.message));
+  const ids = [], questionIds = [];
+  for (const [id, request] of desktopRequests) {
+    if (request.computer !== link.expectedId || request.device !== link.auth.device) continue;
+    if (request.message) link.send(request.message);
+    else if (request.kind === 'send') ids.push(id);
+    else if ((request.kind === 'question' || request.kind === 'codexRequest') && questionSubmissions.has(request.requestId)) questionIds.push(id);
+  }
+  if (ids.length || questionIds.length) link.send({ t: 'operationLookup', ids, questionIds });
 }
 async function warmComputerSocket(computer) {
   if (pending || navigator.onLine === false || computerSockets.get(computer.key)?.phase === 'paused'
@@ -1532,7 +1545,11 @@ async function connect(resumeLink = null) {
     else if (m.t === 'mentions') onMentions(m);
     else if (m.t === 'codexSkills') showCodexSkills(m.rows || []);
     else if (m.t === 'unqueued') {
-      text.value = text.value.trim() ? `${text.value.replace(/\s+$/, '')}\n${m.text}` : m.text;
+      if (m.sel && m.sel !== viewSel) return;
+      const scope = messageScope();
+      const original = submittedMessages.findLast(row => row.scope === scope && row.queueId === m.id);
+      const recovered = original?.text || m.text;
+      text.value = text.value.trim() ? `${text.value.replace(/\s+$/, '')}\n${recovered}` : recovered;
       if (currentApp === 'devin') text.dispatchEvent(new Event('input', { bubbles: true }));
       else autosize();
       text.focus();
@@ -1570,6 +1587,7 @@ async function connect(resumeLink = null) {
       ovRender();
     }
     if (link.binding) link.receive({ data: JSON.stringify({ ...link.binding, keepQuota: false, initial: !ready }) }, ready);
+    if (ready) for (const result of link.operations.values()) receiveDesktopOperation(link, result);
     for (const message of link.metadata.values()) link.receive({ data: JSON.stringify(message) });
     if (preload?.outcome) link.receive({ data: JSON.stringify(preload.outcome) });
     if (preload) send({ t: 'sessionLibrary', entries: legacyAgentLibrary() });

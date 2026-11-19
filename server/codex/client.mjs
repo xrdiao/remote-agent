@@ -84,6 +84,28 @@ export class CodexClient extends EventEmitter {
   }
   notify(method, params) { this.write({ method, ...(params === undefined ? {} : { params }) }); }
   reply(id, result) { this.write({ id, result }); }
+  async replyToRequest(request, result) {
+    const { threadId, turnId } = request.params;
+    let received, failed;
+    const confirmation = new Promise((resolve, reject) => { received = resolve; failed = reject; });
+    const notify = ({ method, params }) => {
+      if (params?.threadId !== threadId) return;
+      if (method === 'serverRequest/resolved' && params.requestId === request.id) received();
+      if (method === 'thread/closed' || method === 'turn/completed' && params.turn.id === turnId)
+        failed(new Error('Codex 会话已结束，未确认收到回答'));
+    };
+    this.on('notification', notify);
+    this.once('disconnected', failed);
+    const timer = setTimeout(() => failed(new Error('Codex 尚未确认收到回答，请核对卡片后重试')), 15000);
+    try {
+      this.reply(request.id, result);
+      await confirmation;
+    } finally {
+      clearTimeout(timer);
+      this.off('notification', notify);
+      this.off('disconnected', failed);
+    }
+  }
   reject(id, message) { this.write({ id, error: { code: -32601, message } }); }
   close() { this.child?.kill(); }
 }

@@ -70,3 +70,13 @@ export function subscribeOperations(deviceId, client) {
   for (const operation of owner.requests.values()) operation.publish(client);
   return () => owner.clients.delete(client);
 }
+
+export function lookupOperations(deviceId, client, ids, kinds) {
+  const requests = entry(deviceId).requests;
+  for (const id of ids) {
+    if (typeof id !== 'string') continue;
+    const request = requests.get(id);
+    if (kinds.includes(request?.kind)) request.publish(client);
+    else if (client.readyState === 1) client.send(JSON.stringify({ t: 'operation', id, kind: kinds[0], unknown: true, done: true, events: [] }));
+  }
+}

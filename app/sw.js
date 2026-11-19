@@ -1,11 +1,11 @@
 // Caches the app shell so the installed app opens instantly; live data (url.json, relay) always goes to the network.
 importScripts('push-sw.js?v=478');
 const CACHE_PREFIX = 'remote-agent:' + self.registration.scope + ':';
-const CACHE = CACHE_PREFIX + 'v486'; // keep in sync with APP_VERSION in js/core.js
+const CACHE = CACHE_PREFIX + 'v490'; // keep in sync with APP_VERSION in js/core.js
 const SHELL = ['push-sw.js?v=478', 'js/shared-rules.js?v=465', 'js/ui-helpers.js?v=449', './', 'index.html',   'app.css?v=485', 'i18n.js?v=433', 'manifest.webmanifest', 'icon-192.png', 'icon-512.png', 'logo.png',
-  'js/core.js?v=486', 'js/fusion.js?v=453', 'js/gate.js?v=430', 'js/auth.js?v=207', 'js/net.js?v=486',   'js/sheets.js?v=486', 'js/notify.js?v=486', 'js/mode.js?v=386', 'js/chat.js?v=481',
-  'js/history.js?v=485', 'js/files.js?v=481', 'js/screen.js?v=382',   'js/terminal.js?v=466', 'js/composer.js?v=472', 'js/voice.js?v=449', 'js/local-voice.js?v=391', 'js/voice-worklet.js?v=133',
-  'js/transfer.js?v=481', 'js/scanner.js',
+  'js/core.js?v=490', 'js/fusion.js?v=453', 'js/gate.js?v=430', 'js/auth.js?v=207', 'js/net.js?v=490',   'js/sheets.js?v=486', 'js/notify.js?v=486', 'js/mode.js?v=386', 'js/chat.js?v=481',
+  'js/history.js?v=490', 'js/files.js?v=481', 'js/screen.js?v=382',   'js/terminal.js?v=466', 'js/composer.js?v=488', 'js/voice.js?v=488', 'js/local-voice.js?v=391', 'js/voice-worklet.js?v=133',
+  'js/transfer.js?v=487', 'js/scanner.js',
   'js/latency.js?v=367', 'js/image-editor.js?v=447', 'js/overview.js?v=475',
   'markdown-it/markdown-it-15.0.3.min.js', 'js/markdown.js?v=449',
   'vendor/xterm.js?v=6.0.0', 'vendor/xterm.css?v=6.0.0',
@@ -24,6 +24,7 @@ const SHELL = ['push-sw.js?v=478', 'js/shared-rules.js?v=465', 'js/ui-helpers.js
   'logo-devin-dark.svg', 'logo-devin-light.svg',
   'logo-codex-dark.svg', 'logo-codex-light.svg'];
 const SHELL_ASSETS = new Set(SHELL.filter(path => path !== './' && path !== 'index.html').map(path => new URL(path, self.registration.scope).href));
+const SHELL_ENTRIES = new Set(['./', 'index.html'].map(path => new URL(path, self.registration.scope).pathname));
 
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(CACHE).then(c => c.addAll(SHELL.map(path => new Request(path, { cache: 'reload' })))).then(() => self.skipWaiting()));
@@ -39,20 +40,24 @@ self.addEventListener('activate', e => {
 
 self.addEventListener('fetch', e => {
   const url = new URL(e.request.url);
-  if (e.request.method !== 'GET' || url.origin !== location.origin || url.pathname.endsWith('url.json')) return;
-  const entry = e.request.mode === 'navigate' || url.pathname.endsWith('/index.html');
+  if (e.request.method !== 'GET' || url.origin !== location.origin) return;
+  const entry = SHELL_ENTRIES.has(url.pathname);
+  if (!entry && !SHELL_ASSETS.has(url.href)) return;
   e.respondWith((async () => {
-    // The current shell is installed as one version; a slow network must not delay its cached assets.
-    if (!entry && SHELL_ASSETS.has(url.href)) {
-      const cached = await (await caches.open(CACHE)).match(e.request);
+    const cache = await caches.open(CACHE);
+    const cacheKey = entry ? url.origin + url.pathname : e.request;
+    if (!entry) {
+      const cached = await cache.match(cacheKey);
       if (cached) return cached;
     }
-    return fetch(e.request, entry ? { cache: 'no-cache' } : undefined)
-    .then(res => {
-      const copy = res.clone();
-      caches.open(CACHE).then(c => c.put(e.request, copy));
-      return res;
-    })
-    .catch(() => caches.open(CACHE).then(cache => cache.match(e.request)));
+    try {
+      const response = await fetch(e.request, entry ? { cache: 'no-cache' } : undefined);
+      if (response.ok) e.waitUntil(cache.put(cacheKey, response.clone()));
+      return response;
+    } catch (error) {
+      const cached = await cache.match(cacheKey);
+      if (cached) return cached;
+      throw error;
+    }
   })());
 });

@@ -229,7 +229,7 @@ export async function handleApi(req, res, route) {
     const id = crypto.randomUUID();
     const dir = path.join(DATA_DIR, 'uploads', id);
     const filePath = localFilePath(path.join(dir, name));
-    const file = { name, path: filePath, sel: query.get('sel') || '', deviceId: device.id, pending: !image, request: req, complete: false };
+    const file = { name, path: filePath, sel: query.get('sel') || '', deviceId: device.id, pending: false, request: req, complete: false };
     if (image) Object.assign(file, { image: true, clientImageId: image, type });
     try {
       registerUpload(path.join(DATA_DIR, 'uploads'), id, file);
@@ -242,7 +242,7 @@ export async function handleApi(req, res, route) {
       }
       fs.writeFileSync(filePath, Buffer.concat(chunks));
       delete file.request;
-      updateUpload(file, { size, complete: true });
+      updateUpload(file, { size, complete: true, pending: !image });
       return json(req, res, 200, { id, name, size });
     } catch (error) {
       removeUpload(id);

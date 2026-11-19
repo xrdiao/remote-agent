@@ -122,7 +122,7 @@ export const methods = {
       return this.adapter.readModelMenu.call(this, kind, requestId);
     const sel = this.sel;
     if (kind === 'effort') {
-      let items = await this.cdp.evaluate(helpersCall(`effortItems(true, ${this.app === 'codex'})`));
+      let items = await this.cdp.evaluate(helpersCall('effortItems(true)'));
       let fast = await this.cdp.evaluate(helpersCall('fastInfo()'));
       if (!items.length) {
         await this.pressControl('model');
@@ -142,7 +142,7 @@ export const methods = {
       return;
     }
     if (kind === 'model') {
-      // Prop-driven lists (Codex options, Devin visibleModelConfigs) need no visible menu.
+      // Devin can read the picker options without opening the menu.
       const [items, fast, fusion] = await Promise.all([
         this.cdp.evaluate(helpersCall('modelItemsFast()')),
         this.cdp.evaluate(helpersCall('fastInfo()')),
@@ -155,8 +155,7 @@ export const methods = {
         return;
       }
     }
-    const modelOpen = kind === 'model' && this.app === 'cursor' && await this.cdp.evaluate(`(() => { const h = ${PAGE_SRC}; return !!h.modelListTrigger() || !!h.menuItems('model').length; })()`);
-    if (!modelOpen) await this.pressControl(kind);
+    await this.pressControl(kind);
     let items = [];
     let fast = null;
     for (let i = 0; i < 12 && !items.length; i++) {
@@ -173,7 +172,7 @@ export const methods = {
       fusion = await this.cdp.evaluate(helpersCall('fusionConfig(true)'));
       if (fusion) this.fusion = fusion;
     }
-    if (!modelOpen) await this.closeMenus();
+    await this.closeMenus();
     if (kind === 'model' && !items.length) throw new Error('模型列表未加载，请确认电脑端模型菜单可以打开');
     if (this.sel === sel) this.emit({ t: 'menu', kind, items, max, fusion, fast, requestId, sel: this.selectionKey() });
   },
@@ -191,7 +190,7 @@ export const methods = {
 
   async waitModel(label) {
     const name = JSON.stringify(String(label));
-    const selected = await this.waitFor(this.app === 'codex'
+    const selected = await this.waitFor(this.app === 'devin' || this.app === 'codex'
       ? `modelItemsFast()?.some(item => item.checked && item.label === ${name})`
       : `agentModelName() === ${name}`);
     if (!selected) throw new Error(`尚未确认切换到 ${label}，请重新读取模型列表`);
@@ -290,8 +289,8 @@ export const methods = {
     if (kind === 'codex-run') return this.codexRunPick(String(label || ''));
     if (kind === 'codex-chat') return this.codexChatPick(String(label || ''), name ? String(name).slice(0, 80) : '');
     if (kind === 'model' && await this.adapter.pickModelMenu.call(this, label)) return;
-    if (!(kind === 'model' && this.app === 'cursor' && await this.cdp.evaluate(`(() => { const h = ${PAGE_SRC}; return !!h.modelListTrigger() || !!h.menuItems('model').length; })()`))) await this.pressControl(kind);
-    if (kind === 'model' && this.app !== 'codex') {
+    await this.pressControl(kind);
+    if (kind === 'model') {
       for (let i = 0; i < 8; i++) {
         if (await this.cdp.evaluate(helpersCall('menuItems("model").length'))) break;
         if (await this.openModelList()) break;
@@ -308,9 +307,10 @@ export const methods = {
       throw new Error(`没找到选项：${label}`);
     }
     await this.tapCss(pos.x, pos.y);
-    if (kind === 'model' && label !== 'Fusion') {
+    if (kind === 'model') {
       await this.waitModel(label);
       await this.closeMenus();
+      if (this.app === 'devin') this.fusion = await this.cdp.evaluate(helpersCall('fusionConfig(true)'));
       this.refreshModelChat().catch(() => {});
       return;
     }
@@ -320,14 +320,6 @@ export const methods = {
       pending = (await this.cdp.evaluate(helpersCall('codexRequestData()'))).length > 0;
     }
     this.emit({ t: 'status', ok: true, msg: pending ? '请在下方确认权限变更' : `已切换到 ${label}` });
-    if (kind === 'model' && label === 'Fusion') {
-      this.fusion = null;
-      this.fusionMiss = false;
-      await new Promise(r => setTimeout(r, 300));
-      await this.closeMenus();
-      await this.pollChat(true);
-      return;
-    }
     this.refreshSoon(500);
   }
 };

@@ -28,9 +28,10 @@ function scDb() {
   return scDbP;
 }
 const scReq = (mode, fn) => scDb().then(db => new Promise((res, rej) => {
-  const rq = fn(db.transaction('s', mode).objectStore('s'));
-  rq.onsuccess = () => res(rq.result);
-  rq.onerror = () => rej(rq.error);
+  const transaction = db.transaction('s', mode);
+  const request = fn(transaction.objectStore('s'));
+  transaction.oncomplete = () => res(request.result);
+  transaction.onabort = () => rej(transaction.error);
 })).catch(() => null);
 const idbGet = k => scReq('readonly', s => s.get(k));
 const idbPut = (k, v) => scTrackWrite(k, scReq('readwrite', s => s.put(v, k)));
@@ -177,17 +178,24 @@ function scSave(key, items, collapsed) {
     if (size === undefined) { size = JSON.stringify(it).length; scItemBytes.set(it, size); }
     return sum + size;
   }, 0);
-  return Promise.all([idbPut('h:' + key, { items, collapsed }), idbPut('m:' + key, { n: items.length, bytes, updated })]);
+  return scTrackWrite('h:' + key, scReq('readwrite', s => {
+    s.put({ n: items.length, bytes, updated }, 'm:' + key);
+    return s.put({ items, collapsed }, 'h:' + key);
+  }).then(result => result !== null));
 }
 // Sessions saved before the native database existed (IndexedDB) are copied over once.
 async function scMigrate() {
   const n = nativeHist();
   if (!n || store.get('histMig1')) return;
-  for (const mk of (await idbKeys() || []).map(String).filter(k => k.startsWith('m:'))) {
+  const keys = await idbKeys();
+  if (!keys) return;
+  let migrated = true;
+  for (const mk of keys.map(String).filter(k => k.startsWith('m:'))) {
     const key = mk.slice(2), version = scVersion(key), h = await idbGet('h:' + key);
-    if (version === scVersion(key) && !scClearing(key) && h?.items && !n.histGet(key)) await scSave(key, h.items, h.collapsed || []);
+    if (version !== scVersion(key) || scClearing(key) || n.histGet(key)) continue;
+    if (!h?.items || !await scSave(key, h.items, h.collapsed || [])) migrated = false;
   }
-  store.set('histMig1', 1);
+  if (migrated) store.set('histMig1', 1);
 }
 setTimeout(scMigrate, 2000);
 const scKeyFor = sess => `${currentComputer()?.id || '-'}|${currentApp || '?'}|${currentComputer()?.windowId || ''}|${sess}`;
@@ -238,9 +246,9 @@ function scDrain(force = false) {
     if (scClearing(key)) continue;
     if (pending.saving) { saves.push(pending.saving); continue; }
     const { items, collapsed } = scSnapshot(pending);
-    pending.saving = Promise.resolve(scSave(key, items, collapsed)).then(() => {
-      if (scPending.get(key) === pending) scPending.delete(key);
-    });
+    pending.saving = Promise.resolve(scSave(key, items, collapsed)).then(saved => {
+      if (saved && scPending.get(key) === pending) scPending.delete(key);
+    }).finally(() => { pending.saving = null; });
     saves.push(pending.saving);
   }
   return Promise.all(saves);
@@ -997,11 +1005,18 @@ function sendQuestion(message) {
   if (qnPending) return;
   if (!ws || ws.readyState !== 1 || !authed || !windowReady) { status('未连接', false); return; }
   const requestId = [...crypto.getRandomValues(new Uint32Array(4))].join('-');
-  qnPending = { requestId, sel: viewSel, scope: questionScope(), message };
+  const answerKey = message.id ? [currentComputer()?.id || '', viewSel, 'chat', message.id].join('|') : '';
+  qnPending = { requestId, scope: questionScope(), answerKey, message };
   questionSubmissions.set(requestId, qnPending);
   questionBusy();
   status('正在提交回答…');
-  send({ ...message, requestId });
+  const action = { ...message, requestId };
+  try {
+    if (send(action)) return;
+  } catch {
+    desktopRequests.delete(action.operationId);
+  }
+  finishQuestion({ requestId, ok: false, error: '连接已断开，回答未发送' });
 }
 function setQuestionCompose(id) {
   if (questionCompose?.id === id && questionCompose.sel === viewSel || !questionCompose && !id) return;
@@ -1024,31 +1039,28 @@ function finishQuestion(m) {
   if (!pending) return;
   questionSubmissions.delete(m.requestId);
   if (qnPending === pending) qnPending = null;
-  if (m.ok && pending.message.id) clearQuestionDraft(pending.message.id, pending.scope);
-  if (m.ok && pending.message.qkey) qnDrafts.delete(pending.message.qkey);
-  if (pending.sel !== viewSel || pending.scope !== questionScope()) return;
-  const request = qnState?.requests?.find(r => r.id === pending.message.id);
-  if (pending.message.id && !request) {
-    qnSig = '';
-    renderQuestions(qnState);
-    finishPending(['正在提交回答…']);
+  const submitted = m.ok && !m.advanced;
+  if (submitted && pending.message.id) clearQuestionDraft(pending.message.id, pending.scope);
+  if (submitted && pending.message.qkey) qnDrafts.delete(pending.message.qkey);
+  if (pending.scope !== questionScope()) {
+    if (submitted && pending.answerKey) { drafts.delete(pending.answerKey); draftMentions.delete(pending.answerKey); }
     return;
   }
-  if (m.ok && request) {
+  const request = qnState?.requests?.find(r => r.id === pending.message.id);
+  if (submitted && pending.message.id) {
     const answerKey = [currentComputer()?.id || '', viewSel, 'chat', pending.message.id].join('|');
-    drafts.delete(answerKey); draftMentions.delete(answerKey);
-    if (pending.message.id.startsWith('async:') && (pending.message.advance || pending.message.n >= request.buttons.length - 2)) {
+    if (request && pending.message.id.startsWith('async:') && (pending.message.advance || pending.message.n >= request.buttons.length - 2)) {
       qnState = { ...qnState, requests: qnState.requests.filter(r => r.id !== pending.message.id) };
     }
     if (questionCompose?.id === pending.message.id) {
       if (mode === 'chat') text.value = '';
       setQuestionCompose(null);
     }
+    for (const key of new Set([pending.answerKey, answerKey])) { drafts.delete(key); draftMentions.delete(key); }
   }
-  if (m.ok && pending.message.qkey) qnDrafts.delete(pending.message.qkey);
   qnSig = '';
   renderQuestions(qnState);
-  status(m.ok ? '已提交' : '回答提交失败', m.ok);
+  if (!qnPending) status(m.ok ? m.advanced ? '已进入下一题' : '已提交' : m.error || '回答提交失败', m.ok);
 }
 function renderQuestions(qs) {
   const bar = $('qnBar');
@@ -1057,11 +1069,14 @@ function renderQuestions(qs) {
     : (value?.list || []).map(q => JSON.stringify([!!value.devin, value.pager?.cur, q.text]));
   const known = new Set(keys(qnState));
   const open = qnView !== viewSel || keys(qs).some(key => !known.has(key)) || bar.querySelector('.qnCard')?.open !== false;
-  if (qnView !== viewSel) { qnView = viewSel; qnSig = ''; qnPending = [...questionSubmissions.values()].find(pending => pending.scope === questionScope()) || null; }
-  if (qnPending && (qnPending.message.id ? !qs?.requests?.some(r => r.id === qnPending.message.id) : !qs?.list?.length)) {
-    qnPending = null;
-    finishPending(['正在提交回答…']);
-    questionBusy();
+  if (qnView !== viewSel) { qnView = viewSel; qnSig = ''; }
+  const scope = questionScope();
+  const pending = [...questionSubmissions.values()].find(row => row.scope === scope
+    && (row.message.id ? qs?.requests?.some(request => request.id === row.message.id) : qs?.list?.length)) || null;
+  if (pending !== qnPending) {
+    qnPending = pending;
+    qnSig = '';
+    if (!pending) finishPending(['正在提交回答…']);
   }
   qnState = qs;
   if (!chatStale && !navigationPending) syncQuestionDrafts([
@@ -1103,7 +1118,8 @@ function renderQuestions(qs) {
           submit.disabled = !el.value.trim();
         }
       };
-      el.onchange = () => { if (qs.src !== 'devin' && !el.dataset.request.startsWith('async:')) send({ t: 'codexRequest', id: el.dataset.request, field: Number(el.dataset.field), value: questionFieldValue(el) }); };
+      if (qs.src !== 'devin' && !el.dataset.request.startsWith('async:') && !qs.requests.find(r => r.id === el.dataset.request).submitOnly)
+        el.onchange = () => send({ t: 'codexRequest', id: el.dataset.request, field: Number(el.dataset.field), value: questionFieldValue(el) });
       if (qnDrafts.has(key)) el.oninput();
       if (key === focusKey && !qnPending) {
         if (el.classList.contains('qnChoices')) el.querySelector(`input[value="${CSS.escape(focused.value)}"]`)?.focus();

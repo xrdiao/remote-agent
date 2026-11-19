@@ -291,9 +291,9 @@ wss.on('connection', (ws, req) => {
       if (metadataKind && owner !== binding) return;
       const readOnly = route?.switchRead === true && !switching;
       if ((!switching && owner !== (readOnly ? binding : activeBinding) || staleSelection) && route?.connection !== true) {
-        if (msg.t === 'saveFile') session.emit({ t: 'saved', requestId: msg.requestId, ok: false, error: '窗口已切换，保存未执行', path: msg.path, host: msg.host || '' });
-        else route?.fail?.(session, msg);
-        if (operation && !route?.fail && msg.t !== 'saveFile') session.emit({ t: 'status', ok: false, msg: '会话已切换，操作未执行' });
+        const error = new Error('会话已切换，操作未执行');
+        route?.fail?.(session, msg, error);
+        if (operation && !route?.fail) session.emit({ t: 'status', ok: false, msg: error.message });
         if (imageTransfer) session.imageTransfers.delete(msg.clientImageId);
         return;
       }
@@ -358,10 +358,13 @@ wss.on('connection', (ws, req) => {
       }
     };
     const executeRequest = () => run(execute);
+    const enqueue = tail => track(tail.then(executeRequest)).catch(error => {
+      console.error(`[ws:${msg.t}] ${error.stack || error.message}`);
+    });
     if (imageAction) imageActions.push({ group, execute: executeRequest });
-    if (flag(route?.background, session, msg)) track(queue.then(executeRequest));
-    else if (msg.t === 'question' || msg.t === 'codexRequest') track(questionQueue = questionQueue.then(executeRequest));
-    else track(queue = (switching ? Promise.all([queue, questionQueue]) : queue).then(executeRequest));
+    if (flag(route?.background, session, msg)) enqueue(queue);
+    else if (msg.t === 'question' || msg.t === 'codexRequest') questionQueue = enqueue(questionQueue);
+    else queue = enqueue(switching ? Promise.all([queue, questionQueue]) : queue);
   });
   ws.on('close', code => {
     clearTimeout(authTimer);

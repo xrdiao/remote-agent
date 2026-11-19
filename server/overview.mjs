@@ -48,18 +48,23 @@ export function overviewSnapshot(deviceId) {
       projectRows.set(key, { ...rows.get(key), ...row, lastUsed: row.lastUsed || rows.get(key)?.lastUsed || 0 });
     for (const state of source.overviewStates()) {
       const key = sessionId(win.app, state.thread), row = projectRows.get(key), known = rows.get(key) || local.get(key);
-      if (row || key === sessionId(win.app, snap?.chat?.thread) && (!known?.workspace || belongs(known)))
-        projectRows.set(key, { ...row, ...state, id: key, title: state.title || row?.title || '', lastUsed: state.lastUsed || row?.lastUsed || 0 });
+      if (row || key === sessionId(win.app, snap?.chat?.thread) && (!known?.workspace || belongs(known))) {
+        const value = { ...row, ...state, id: key, title: state.title || row?.title || '', lastUsed: state.lastUsed || row?.lastUsed || 0 };
+        if (win.app === 'cursor' && known?.workspaceConfirmed) value.workspace = known.workspace;
+        projectRows.set(key, value);
+      }
     }
     for (const [key, row] of projectRows) {
       if (win.app === 'codex' && codexBackend.owns(key)) continue;
       const record = readLibrary()[win.app]?.[key];
       if (!key || row.archived || record?.archived || record?.deleted || excluded.sessions.has(win.app + ':' + key)) continue;
       const s = { ...row, busy: row.busy ?? row.running };
-      const workspace = localFilePath(row.workspace || (roots.length === 1 ? roots[0].root : ''), !row.host && IS_WIN), host = row.host || '';
+      const saved = win.app === 'cursor' && !row.workspace && !row.projectless && storedProjectSession('cursor', key);
+      const fallback = win.app === 'cursor' ? (saved?.workspaceConfirmed ? saved.workspace : '') : (roots.length === 1 ? roots[0].root : '');
+      const workspace = localFilePath(row.workspace || fallback, !row.host && IS_WIN), host = row.host || '';
       const project = projectId(win.app, workspace, host, windowId);
       if (!projects.has(project)) projects.set(project, { projectId: project, win: id, windowId, app: win.app,
-        workspace, host, project: path.posix.basename(workspace) || workspace, loading: false });
+        workspace, host, project: path.posix.basename(workspace) || workspace || windowName(win.title, APP[win.app]), loading: false });
       const cachedPreview = source.previews.get(key);
       const preview = key !== sessionId(win.app, snap?.chat?.thread) || cachedPreview?.at >= source.updatedAt ? cachedPreview?.value : null;
       const value = {
@@ -76,7 +81,7 @@ export function overviewSnapshot(deviceId) {
       const identity = JSON.stringify([project, key]), previous = collected.get(identity);
       const quality = Number(!!s.run && s.run.status !== 'unknown') * 4 + Number(!!s.run) * 2
         + Number(key === sessionId(win.app, snap?.chat?.thread));
-      const owner = win.app === 'devin' ? Number(belongs(row)) : 0;
+      const owner = win.app === 'codex' ? 0 : Number(belongs({ ...row, workspace }));
       if (!previous || owner > previous.owner || owner === previous.owner && ((s.run?.startedAt || 0) > (previous.value.run?.startedAt || 0)
         || (s.run?.startedAt || 0) === (previous.value.run?.startedAt || 0)
           && (quality > previous.quality || quality === previous.quality && source.updatedAt > previous.updatedAt)))

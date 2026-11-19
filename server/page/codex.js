@@ -72,10 +72,10 @@
     ? Promise.all([...(window.__remoteAgentCodexSubmissions || [])]).then(() => codexViewState())
     : { thread: codexThread(), turns: [...doc.querySelectorAll('[data-turn-key]')].filter(vis).length };
   // In-page waits: resolve as soon as the condition holds instead of round-trip polling.
-  const codexWaitThread = (id, ms = 1800) => new Promise(resolve => {
+  const codexWaitThread = (id, ms = 1800, read = codexThread) => new Promise(resolve => {
     const t0 = Date.now();
     const tick = () => {
-      if (codexThread() === id) return resolve(true);
+      if (read() === id) return resolve(true);
       if (Date.now() - t0 >= ms) return resolve(false);
       setTimeout(tick, 30);
     };
@@ -396,7 +396,7 @@
         const source = codexHistoryBinding(scope, binding), value = source?.get();
         if (!value?.question || value.question.id !== key.itemId) continue;
         sources.set(source.key, source);
-        if (!value.isSkipped && (value.lastSubmission == null || value.draft.trim() !== value.lastSubmission))
+        if (value.status === 'inProgress' && !value.isSkipped && (value.lastSubmission == null || value.draft.trim() !== value.lastSubmission))
           questions.set(key.itemId, { ...value, key, selected: key.itemId === group?.selectedQuestionKey?.itemId });
       }
     }
@@ -412,14 +412,18 @@
       fields: [{ label: '回答', value: state.draft || '', type: 'text', options: null }] }));
   };
   const codexOpenQuestion = async id => {
-    const thread = codexRequestThread(), manager = codexNativeManager();
-    const questions = codexAsyncQuestionState(thread, manager.hostId).questions;
-    const question = questions.find(state => 'async:' + state.question.id === id);
-    if (!question) throw new Error('这条问题已不在所选会话的待回答列表中');
-    if (codexVisibleThread() !== thread && !await openCodexThread(thread)) throw new Error('未能打开问题所属的会话');
+    const thread = codexRequestThread(), host = codexNativeManager()?.hostId;
+    const find = questions => questions.find(state => 'async:' + state.question.id === id);
+    if (!host || !find(codexAsyncQuestionState(thread, host).questions))
+      throw new Error('这条问题已不在所选会话的待回答列表中');
+    if (codexVisibleThread() !== thread && (!await openCodexThread(thread) || !await codexWaitThread(thread, undefined, codexVisibleThread)))
+      throw new Error('未能打开问题所属的会话');
     const [native, { scope }] = await Promise.all([codexNativeModule('questions'), codexComposerScope(thread)]);
-    if (thread !== codexRequestThread()) throw new Error('会话已切换，请重新打开问题');
-    scope.set(native.groups, manager.hostId, current => {
+    const owner = codexNativeManager();
+    if (codexVisibleThread() !== thread || owner?.hostId !== host) throw new Error('会话已切换，请重新打开问题');
+    const { questions } = codexAsyncQuestionState(thread, host), question = find(questions);
+    if (!question) throw new Error('这条问题已不在所选会话的待回答列表中');
+    scope.set(native.groups, host, current => {
       const groups = new doc.defaultView.Map(current);
       groups.set(thread, nativeValue({ selectedQuestionKey: question.key,
         questionIds: questions.filter(state => state.key.entityKey === question.key.entityKey).map(state => state.key.itemId) }));
@@ -427,7 +431,8 @@
     });
     const started = Date.now();
     do {
-      if (thread !== codexRequestThread()) throw new Error('会话已切换，请重新打开问题');
+      const visible = codexVisibleThread(), current = codexNativeManager();
+      if (visible && visible !== thread || current && current !== owner) throw new Error('会话已切换，请重新打开问题');
       if (codexRequests().find(row => row.id === id)?.buttons.some(button => button.action)) return;
       await new Promise(resolve => setTimeout(resolve, 16));
     } while (Date.now() - started < 1200);
@@ -439,6 +444,26 @@
   };
   const codexNativeRequestId = request => (request.method === 'item/tool/requestUserInput' ? 'async:' : 'approval:')
     + JSON.stringify([codexRequestThread(), request.params.turnId, request.id]);
+  const codexNativeApproval = (manager, request) => {
+    const p = request.params, thread = p.threadId, id = request.id;
+    const decisions = p.availableDecisions || ['accept', 'acceptForSession', 'decline', 'cancel'];
+    switch (request.method) {
+      case 'item/commandExecution/requestApproval':
+        return { decisions, reply: decision => manager.replyWithCommandExecutionApprovalDecision(thread, id, nativeValue(decision)) };
+      case 'item/fileChange/requestApproval':
+        return { decisions, reply: decision => manager.replyWithFileChangeApprovalDecision(thread, id, nativeValue(decision)) };
+      case 'item/permissions/requestApproval':
+        if (typeof manager.replyWithPermissionsRequestApprovalResponse !== 'function') return null;
+        return { decisions: ['accept', 'decline'], reply: decision => manager.replyWithPermissionsRequestApprovalResponse(thread, id,
+          nativeValue({ permissions: decision === 'accept' ? p.permissions : {}, scope: 'turn' })) };
+      case 'mcpServer/elicitation/request':
+        if (p.mode === 'url' || typeof manager.replyWithMcpServerElicitationResponse !== 'function') return null;
+        return { decisions: ['accept', 'decline', 'cancel'], schema: p.requestedSchema,
+          reply: (action, fields) => manager.replyWithMcpServerElicitationResponse(thread, id,
+            nativeValue({ action, content: action === 'accept' ? RemoteAgentRules.elicitationFields(p.requestedSchema, fields) : null })) };
+      default: return null;
+    }
+  };
   const codexNativeRequestRows = () => codexNativeRequests().filter(request => request.method !== 'item/tool/call').map(request => {
     const p = request.params, id = codexNativeRequestId(request);
     if (request.method === 'item/tool/requestUserInput') {
@@ -450,9 +475,13 @@
         fields: questions.map(q => ({ label: questions.length > 1 ? q.question : '回答', value: '', type: q.isSecret ? 'password' : 'text',
           options: !q.isOther && q.options?.length ? q.options.map(o => ({ value: o.label, label: o.label })) : null })) };
     }
-    const decisions = p.availableDecisions || ['accept', 'acceptForSession', 'decline', 'cancel'];
-    return { id, text: [p.command || p.reason || p.grantReason || request.method, p.cwd].filter(Boolean).join('\n'),
-      buttons: decisions.map(decision => ({ label: typeof decision === 'string' ? decision : Object.keys(decision)[0] })), fields: [] };
+    const approval = codexNativeApproval(codexNativeManager(), request);
+    const title = p.command || p.reason || p.grantReason || p.message || request.method;
+    const text = [approval ? title : '请在电脑端处理 · ' + title, p.cwd, p.permissions && JSON.stringify(p.permissions)].filter(Boolean).join('\n');
+    if (!approval) return { id, text, buttons: [], fields: [] };
+    return { id, text,
+      buttons: approval.decisions.map(decision => ({ label: typeof decision === 'string' ? decision : Object.keys(decision)[0] })),
+      fields: approval.schema ? RemoteAgentRules.elicitationFields(approval.schema) : [], submitOnly: !!approval.schema };
   });
   const codexNativeRequestAction = async (id, n, fields) => {
     const request = codexNativeRequests().find(request => codexNativeRequestId(request) === id);
@@ -467,11 +496,11 @@
       }));
       await manager.replyWithUserInputResponse(thread, request.id, nativeValue({ answers }));
     } else {
-      const decision = (p.availableDecisions || ['accept', 'acceptForSession', 'decline', 'cancel'])[n];
+      const approval = codexNativeApproval(manager, request);
+      if (!approval) throw new Error('这个原生请求需要在电脑端处理');
+      const decision = approval.decisions[n];
       if (decision == null) throw new Error('请求选项已更新');
-      if (request.method === 'item/commandExecution/requestApproval') await manager.replyWithCommandExecutionApprovalDecision(thread, request.id, nativeValue(decision));
-      else if (request.method === 'item/fileChange/requestApproval') await manager.replyWithFileChangeApprovalDecision(thread, request.id, nativeValue(decision));
-      else throw new Error('这个原生请求需要在电脑端处理');
+      await approval.reply(decision, fields);
     }
     return true;
   };
@@ -513,7 +542,8 @@
       let props = fiber?.memoizedProps;
       if (!props) continue;
       asyncSkips.add(skip);
-      if (Array.isArray(props.questionAndOptions)) {
+      const protocolQuestion = Array.isArray(props.questionAndOptions);
+      if (protocolQuestion) {
         const item = owner?.pendingRequest.item;
         if (owner?.conversationId !== codexRequestThread() || item?.requestId == null || item.completed) continue;
         if (codexNativeRequests().some(request => request.method === 'item/tool/requestUserInput' && request.id === item.requestId)) continue;
@@ -543,10 +573,12 @@
       const question = props.questions[index];
       if (!question) continue;
       const id = 'async:' + question.id;
-      if (remoteContext && !rows.has(id) && owner?.conversationId !== codexRequestThread()) continue;
+      if (!protocolQuestion && !rows.has(id)) continue;
       const buttons = question.options.map(option => ({ label: option, selected: question.draft === option, disabled: !!props.isSubmitting, action: () => props.onDraftChange(option) }));
       buttons.push({ el: skip, label: skip.innerText || 'Skip', disabled: !!props.isSubmitting, submit: true, action: () => skip.click() });
-      buttons.push({ label: index < props.questions.length - 1 ? 'Next' : props.hasSubmitted ? 'Send update' : 'Send', disabled: !!props.isSubmitting || !question.draft.trim(), submit: index === props.questions.length - 1, action: () => index < props.questions.length - 1 ? props.onQuestionChange(index + 1) : props.onSubmit() });
+      const next = index < props.questions.length - 1;
+      buttons.push({ label: next ? 'Next' : props.hasSubmitted ? 'Send update' : 'Send', disabled: !!props.isSubmitting || !question.draft.trim(),
+        next, submit: !next, action: () => next ? props.onQuestionChange(index + 1) : props.onSubmit() });
       rows.set(id, { id, submissionKey: fiber.key, text: question.question, buttons, fields: [{ label: '回答', value: question.draft, type: question.type || 'text', options: question.type === 'select' ? question.options.map(value => ({ value, label: value })) : null, onChange: props.onDraftChange }] });
     }
     if (remoteContext || native.length) return [...rows.values()];
@@ -624,12 +656,13 @@
       if (!options.length && text === 'Codex 请求') continue;
       if (!rows.has(id)) rows.set(id, { id, text: text || buttons.filter(b => b.el.matches('[role="radio"]')).map(b => b.label).join(' / ') || 'Codex 请求', buttons, fields: fieldRows });
     }
-    for (const row of codexAsyncQuestionRows()) if (!rows.has(row.id)) rows.set(row.id, row);
     return [...rows.values()].filter(row => row.id.startsWith('async:') || row.id.startsWith('approval:') || row.text.trim() !== 'Codex 请求');
   };
   const codexRequestData = () => {
     if (remoteContext && remoteContext.app !== 'codex' || !codexThread() && !codexRootProps().length) return [];
-    return codexRequests().map(r => ({ id: r.id, text: String(r.text).slice(0, 6000), buttons: r.buttons.map(({ label, disabled, selected }) => ({ label, disabled, selected })), fields: r.fields.map(({ label, value, type, options }) => ({ label, value, type, options })) }));
+    return codexRequests().map(r => ({ id: r.id, text: String(r.text).slice(0, 6000), submitOnly: r.submitOnly,
+      buttons: r.buttons.map(({ label, disabled, selected }) => ({ label, disabled, selected })),
+      fields: r.fields.map(({ label, value, type, options, multiple }) => ({ label, value, type, options, multiple })) }));
   };
   const codexRequestTarget = (id, n) => { const b = codexRequests().find(r => r.id === id)?.buttons[n]; return b?.el ? codexPoint(b.el) : null; };
   const codexRequestAction = async (id, n, fields = [], advance = false) => {
@@ -644,7 +677,7 @@
       if (id.startsWith('async:') && !codexRequests().find(row => row.id === id)?.buttons.some(button => button.action)) await codexOpenQuestion(id);
     }
     for (const field of fields) {
-      if (!codexRequestField(id, field.n, field.value)) throw new Error('请求输入框已不存在');
+      if (!await codexRequestField(id, field.n, field.value)) throw new Error('请求输入框已不存在');
     }
     if (fields.length) {
       for (let i = 0; i < 20; i++) {
@@ -667,6 +700,7 @@
       }
       throw new Error('选项尚未同步到电脑，请重试');
     }
+    if (button.next) return 'advanced';
     if (button.submit) {
       // Codex changes this key (lastSubmission), or removes the card, only after the reply is accepted.
       for (let i = 0; i < 150; i++) {

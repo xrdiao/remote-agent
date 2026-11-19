@@ -68,6 +68,7 @@ export async function watchChat(cdp, changed, shared = false, context = null) {
     let doc, native, observer;
     const state = { timer: 0, stop: null, context, owner };
     const rows = '[data-turn-key], [data-flat-index], [data-message-kind], [data-acp-msg-index], [role="log"][aria-label="Session transcript"], [role="group"][aria-label$="message"], [aria-label^="Preview queued message"], [data-response-annotation-conversation]';
+    const codexRoots = '[data-composer-body], [data-response-annotation-conversation], [data-request-input-dismiss]';
     const capacityRetry = node => {
       const el = node.nodeType === 1 ? node : node.parentElement;
       if (!el) return false;
@@ -81,23 +82,31 @@ export async function watchChat(cdp, changed, shared = false, context = null) {
       return !!el && (!!el.closest(rows) || (descendants && !!el.querySelector(rows)));
     };
     const changed = () => {
-      doc.defaultView.__remoteAgentChatRevision = (doc.defaultView.__remoteAgentChatRevision || 0) + 1;
+      const view = doc.defaultView;
+      if (!view) return;
+      view.__remoteAgentChatRevision = (view.__remoteAgentChatRevision || 0) + 1;
       if (!state.timer) state.timer = setTimeout(() => {
         state.timer = 0;
+        const view = doc.defaultView;
+        if (!view) return;
         native?.refresh();
-        doc.defaultView.dispatchEvent(new doc.defaultView.Event('remote-agent-chat-update'));
+        view.dispatchEvent(new view.Event('remote-agent-chat-update'));
         window[name]('');
       }, 250);
     };
     const fusionChanged = event => {
       if (context && event.detail?.app === context.app && event.detail.threadId === context.threadId) changed();
     };
+    const unbind = () => {
+      doc?.defaultView?.removeEventListener('remote-agent-submit-error', changed);
+      doc?.defaultView?.removeEventListener('remote-agent-fusion-tool', fusionChanged);
+      observer?.disconnect(); native?.stop();
+      observer = native = null;
+    };
     const bind = () => {
       const next = document.getElementById('active-frame')?.contentDocument || document;
       if (next === doc) return;
-      doc?.defaultView.removeEventListener('remote-agent-submit-error', changed);
-      doc?.defaultView.removeEventListener('remote-agent-fusion-tool', fusionChanged);
-      observer?.disconnect(); native?.stop();
+      unbind();
       doc = next;
       doc.defaultView.addEventListener('remote-agent-submit-error', changed);
       if (context) doc.defaultView.addEventListener('remote-agent-fusion-tool', fusionChanged);
@@ -110,18 +119,22 @@ export async function watchChat(cdp, changed, shared = false, context = null) {
       observer = new MutationObserver(records => {
         const dialog = node => node.nodeType === 1 && (node.matches('[role=dialog]') || node.closest('[role=dialog]') || node.querySelector('[role=dialog]'));
         if ((${shared} || context?.app === 'codex') && records.some(record => dialog(record.target) || [...record.addedNodes, ...record.removedNodes].some(dialog))) changed();
+        if (context?.app === 'codex' && records.some(record => [...record.addedNodes, ...record.removedNodes].some(node =>
+          node.nodeType === 1 && (node.matches(codexRoots) || node.querySelector(codexRoots))))) changed();
         if (context) return;
         if (records.some(record => inTranscript(record.target) || capacityRetry(record.target)
           || [...record.addedNodes, ...record.removedNodes].some(node => inTranscript(node, true) || capacityRetry(node)))) changed();
       });
-      observer.observe(doc.body, { subtree: true, childList: true, characterData: true, attributes: true,
+      observer.observe(context?.app === 'codex' ? doc : doc.body, { subtree: true, childList: true, characterData: true, attributes: true,
         attributeFilter: ['data-turn-key', 'data-active', 'data-response-annotation-conversation', 'aria-expanded', 'aria-disabled', 'disabled'] });
       changed();
     };
     const outer = new MutationObserver(bind);
-    outer.observe(document.body, { subtree: true, childList: true });
+    outer.observe(document, { subtree: true, childList: true });
     document.addEventListener('load', bind, true);
-    state.stop = () => { doc?.defaultView.removeEventListener('remote-agent-submit-error', changed); doc?.defaultView.removeEventListener('remote-agent-fusion-tool', fusionChanged); observer?.disconnect(); native?.stop(); outer.disconnect(); document.removeEventListener('load', bind, true); clearTimeout(state.timer); };
+    state.stop = () => {
+      unbind(); outer.disconnect(); document.removeEventListener('load', bind, true); clearTimeout(state.timer);
+    };
     bind();
     window[name + 'Watch'] = state;
     return removed;

@@ -89,9 +89,9 @@ server.listen(PORT, HOST, async () => {
   detectAppUrl();
   startProjectWindowCleanup();
   startNativeWindows(watchTargets);
-  initializeFusionState();
-  clearLegacyFusionWindows();
-  recoverFusionRuns();
+  const fusionError = initializeFusionState(clearLegacyFusionWindows);
+  if (fusionError) console.error(`[Fusion] ${fusionError.message}`);
+  else recoverFusionRuns();
   startWatcher({
     listWindows: () => [...nativeTargets(), ...(codexBackend.threads.size ? [{ id: 'codex:backend', pageId: 'backend', title: 'Codex', app: 'codex', ws: 'codex-backend', kind: 'api' }] : [])],
     openCdp: async ws => {

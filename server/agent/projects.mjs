@@ -685,14 +685,17 @@ export const methods = {
       const projectKey = project ? `${project.host || ''}|${pathKey(project.root, !project.host)}` : w.id;
       if (project || !data?.list?.length || data.list.some(row => !row.workspace)) addNew(w, label, projectKey, !project?.host ? project?.root : '');
       for (const row of data?.list || []) {
-        const rowProject = `${row.host || project?.host || ''}|${pathKey(row.workspace || project?.root || w.id, !(row.host || project?.host))}`;
-        const rowLabel = row.workspace ? path.posix.basename(normPath(row.workspace)) : label;
-        if (row.workspace && (samePath(row.workspace, project?.root, !row.host) || (!row.host && !project?.host))) addNew(w, rowLabel, rowProject, !row.host && !project?.host ? row.workspace : '');
+        const stored = this.app === 'cursor' && !row.workspace && !row.projectless ? storedProjectSession('cursor', row.id) : null;
+        const workspace = row.workspace || (this.app === 'cursor' ? (stored?.workspaceConfirmed ? stored.workspace : '') : project?.root || '');
+        const host = row.host || (this.app === 'cursor' ? '' : project?.host || '');
+        const rowProject = `${host}|${pathKey(workspace || w.id, !host)}`;
+        const rowLabel = workspace ? path.posix.basename(normPath(workspace)) : label;
+        if (workspace && (samePath(workspace, project?.root, !host) || (!host && !project?.host))) addNew(w, rowLabel, rowProject, !host && !project?.host ? workspace : '');
         const key = `${rowProject}|${this.app === 'devin' ? row.id.replace(/^tab:/, '') : row.id}`;
         if (seen.has(key)) continue;
         seen.add(key);
         list.push({ ...row, id: current ? row.id : `project:${encodeURIComponent(w.id)}:${encodeURIComponent(row.id)}`,
-          workspace: row.workspace || project?.root || '', host: row.host || project?.host || '',
+          workspace, host,
           window: rowLabel, group: '', current: current && !!row.current });
       }
       if (!data) list.push({ id: `window:${w.id}`, title: '加载会话', window: label, group: '', ui: true, loadWindow: w.id });
@@ -735,8 +738,10 @@ export const methods = {
       return true;
     };
     const stored = storedProjectSession(this.app, id);
-    if (this.app !== 'codex' && stored?.dormant && await openHere(stored.workspace, stored.host || '', sessionId(this.app, id))) return;
-    if (this.app !== 'codex' && stored?.dormant) return this.useProject(stored.workspace, false, sessionId(this.app, id), title);
+    if (this.app !== 'codex' && stored?.dormant && (this.app !== 'cursor' || stored.workspaceConfirmed)) {
+      if (await openHere(stored.workspace, stored.host || '', sessionId(this.app, id))) return;
+      return this.useProject(stored.workspace, false, sessionId(this.app, id), title);
+    }
     if ((this.app === 'cursor' || this.app === 'devin') && (id.startsWith('project:') || id.startsWith('project-new:'))) {
       const { kind, windowId: window, id: value } = parseAgentRef(id);
       if (!window.startsWith(this.app + ':')) throw new Error('项目不属于当前 Agent');
@@ -745,9 +750,13 @@ export const methods = {
       const row = this.app === 'devin' && kind === 'project'
         ? await this.cdp.evaluate(`(async () => { const h = ${PAGE_SRC}; return (await h.sessionPickerRows(true)).find(r => r.id === ${JSON.stringify(sessionId('devin', id))}) || null; })()`)
         : this.projectAgentCache?.get(window)?.list.find(r => r.id === value);
-      const root = kind === 'project-new' && value ? value : row?.workspace || source?.project?.root || windowRoots(source?.title || '', this.app)[0]?.root;
-      if (kind === 'project' && await openHere(root, row?.host || source?.project?.host || '', value)) return;
-      if (root && !row?.host && !source?.project?.host) await this.useProject(root, kind === 'project-new', kind === 'project' ? value : '', title, window);
+      const existingCursor = this.app === 'cursor' && kind === 'project';
+      const root = kind === 'project-new' && value ? value : row?.workspace || (existingCursor
+        ? (!row?.projectless && stored?.workspaceConfirmed && stored.workspace)
+        : source?.project?.root || windowRoots(source?.title || '', this.app)[0]?.root);
+      const host = row?.host || (!existingCursor && source?.project?.host) || '';
+      if (kind === 'project' && await openHere(root, host, value)) return;
+      if (root && !host) await this.useProject(root, kind === 'project-new', kind === 'project' ? value : '', title, window);
       else {
         if (window !== this.targetId && !source) throw new Error('所选会话窗口已经关闭');
         const switching = this.switchingThread, previousCdp = this.cdp;
@@ -775,13 +784,15 @@ export const methods = {
       return;
     }
     if (this.app === 'cursor' || this.app === 'devin') {
-      const row = this.app === 'devin' ? await this.cdp.evaluate(`(async () => { const h = ${PAGE_SRC}; return (await h.sessionPickerRows(true)).find(r => r.id === ${JSON.stringify(id.replace(/^tab:/, ''))}) || null; })()`)
-        : await this.cdp.evaluate(`(() => { const h = ${PAGE_SRC}; return h.agentList().find(r => r.id === ${JSON.stringify(id.replace(/^tab:/, ''))}) || null; })()`);
-      const root = row?.workspace || (await this.currentRoots())[0]?.root;
+      const thread = id.replace(/^tab:/, '');
+      const row = this.app === 'devin' ? await this.cdp.evaluate(`(async () => { const h = ${PAGE_SRC}; return (await h.sessionPickerRows(true)).find(r => r.id === ${JSON.stringify(thread)}) || null; })()`)
+        : await this.cdp.evaluate(helpersCall(`nativeSessionInfo('cursor', ${JSON.stringify(thread)}, 'context')`));
+      const root = this.app === 'cursor' ? row.cwd || (!row.projectless && stored?.workspaceConfirmed && stored.workspace)
+        : row?.workspace || (await this.currentRoots())[0]?.root;
       if (await openHere(root, row?.host || '', id)) return;
       if (root && !row?.host) return this.useProject(root, false, id, title, stored?.ownerWindow || '');
       const state = await this.projectWindowState({ id: this.windowId });
-      if (state.busy && state.thread !== id.replace(/^tab:/, '')) throw new Error('当前窗口正在运行，尚无法确认目标项目路径；请刷新项目与会话列表');
+      if (state.busy && state.thread !== thread) throw new Error('当前窗口正在运行，尚无法确认目标项目路径；请刷新项目与会话列表');
     }
     return this.app === 'codex' ? this.openCodexAgent(id, true) : this.adapter.openAgent.call(this, id, title);
   },

@@ -8,6 +8,7 @@ import serialize from '@xterm/addon-serialize';
 export const TERMINAL_SIZE = { cols: 120, rows: 50 };
 export const TERMINAL_SCROLLBACK = 1000;
 const shellMarker = '\x1b]777;RA;';
+const INPUT_QUERY_TIMEOUT = 5000;
 const runtime = await import(IS_WIN ? './terminal/windows.mjs' : './terminal/posix.mjs');
 
 function terminalSize(cols, rows) {
@@ -66,16 +67,14 @@ export class TerminalService {
       else if (kind === 'prompt' || kind === 'run') {
         terminal.prompt = kind === 'prompt';
         if (terminal.prompt) terminal.cwd = localFilePath(Buffer.from(encoded, 'base64').toString());
-        if (terminal.prompt && terminal.query) {
-          terminal.query.reject(new Error('Shell 补全或历史读取已被中断'));
-          terminal.query = null;
+        if (terminal.prompt) {
+          terminal.timedOutQuery = null;
+          terminal.query?.finish(new Error('Shell 补全或历史读取已被中断'));
         }
         this.publish(terminal, { t: 'termShell', prompt: terminal.prompt, cwd: terminal.cwd });
       } else if (terminal.query?.kind === kind) {
-        const query = terminal.query;
-        terminal.query = null;
-        query.resolve(Buffer.from(encoded, 'base64').toString());
-      }
+        terminal.query.finish(null, Buffer.from(encoded, 'base64').toString());
+      } else if (terminal.timedOutQuery === kind) terminal.timedOutQuery = null;
     }
     return output;
   }
@@ -89,9 +88,23 @@ export class TerminalService {
   queryInput(terminal, kind, keys) {
     if (terminal.closed || terminal.exited) throw new Error('终端已经退出，无法继续输入');
     if (!terminal.prompt) throw new Error('终端正在运行程序，请先结束程序后读取命令补全或历史');
+    // Shell replies have no request ID. Drain a timed-out reply before issuing another query.
+    if (terminal.timedOutQuery) throw new Error('Shell 尚未回应上一次查询，请先执行命令或回到提示符');
     return new Promise((resolve, reject) => {
-      terminal.query = { kind, resolve, reject };
-      terminal.process.write(keys);
+      const finish = (error, value) => {
+        clearTimeout(timer);
+        terminal.query = null;
+        if (error) reject(error);
+        else resolve(value);
+      };
+      const timer = setTimeout(() => {
+        terminal.timedOutQuery = kind;
+        terminal.inputLine = null;
+        finish(new Error('Shell 补全或历史读取超时'));
+      }, INPUT_QUERY_TIMEOUT);
+      terminal.query = { kind, finish };
+      try { terminal.process.write(keys); }
+      catch (error) { finish(error); }
     });
   }
 
@@ -174,8 +187,7 @@ export class TerminalService {
       terminal.exitCode = exitCode;
       terminal.signal = signal;
       confirmExit();
-      terminal.query?.reject(new Error('终端已经退出'));
-      terminal.query = null;
+      terminal.query?.finish(new Error('终端已经退出'));
       if (!terminal.closed) this.schedule(terminal, () => {
         this.publish(terminal, { t: 'termExit', exitCode, signal });
       });
@@ -220,8 +232,7 @@ export class TerminalService {
     const terminal = this.get(id);
     this.terminals.delete(id);
     terminal.closed = true;
-    terminal.query?.reject(new Error('终端已经关闭'));
-    terminal.query = null;
+    terminal.query?.finish(new Error('终端已经关闭'));
     if (!terminal.exited) {
       await runtime.closePty(terminal);
     }
@@ -235,8 +246,7 @@ export class TerminalService {
   dispose() {
     for (const terminal of this.terminals.values()) {
       terminal.closed = true;
-      terminal.query?.reject(new Error('终端已经关闭'));
-      terminal.query = null;
+      terminal.query?.finish(new Error('终端已经关闭'));
       if (!terminal.exited) terminal.process.kill();
       terminal.listeners.clear();
       terminal.screen.dispose();

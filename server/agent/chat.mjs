@@ -221,7 +221,6 @@ export const methods = {
       this.emit({ t: 'chat', sel: this.selectionKey(), chat });
       if (state.requested) { state.sent = true; state.resolve(); }
     };
-    this.codexFreshView = false;
     const read = async () => {
       const child = this.mainTab?.cdp === cdp ? this.mainTab.child || '' : '';
       const known = (this.itemCache?.get(this.threadId || '')?.completeTurns || []).map(([id]) => id);
@@ -605,30 +604,14 @@ export const methods = {
       let position;
       try {
         position = await cdp.evaluate(helpersCall('historyPosition()'));
-        if (this.app === 'cursor') {
-          const cursor = this.cursorHistory;
-          if (cursor?.cdp === cdp && cursor.thread === thread && (cursor.before === beforeOrder || cursor.nextBefore === beforeOrder)) {
-            const rows = await cdp.evaluate(helpersCall('historyRows()'));
-            await cdp.evaluate(helpersCall(`historyPosition(${JSON.stringify({ top: cursor.top })})`));
-            await cdp.evaluate(helpersCall(`waitHistoryRows(${JSON.stringify(rows)}, 150)`));
-          }
-        }
-        if (this.app === 'devin') await cdp.evaluate(helpersCall('devinLoadEarlier()'), { timeout: 8000 });
-        else {
-          const rows = await cdp.evaluate(helpersCall('historyRows()'));
-          const [x, y, w, h] = rect;
-          await cdp.send('Input.dispatchMouseEvent', { type: 'mouseWheel', x: x + w / 2, y: y + h / 2, deltaX: 0, deltaY: dy });
-          await cdp.evaluate(helpersCall(`waitHistoryRows(${JSON.stringify(rows)})`));
-        }
+        const rows = await cdp.evaluate(helpersCall('historyRows()'));
+        const [x, y, w, h] = rect;
+        await cdp.send('Input.dispatchMouseEvent', { type: 'mouseWheel', x: x + w / 2, y: y + h / 2, deltaX: 0, deltaY: dy });
+        await cdp.evaluate(helpersCall(`waitHistoryRows(${JSON.stringify(rows)})`));
         const chat = await cdp.evaluate(helpersCall('extract()'));
         if (!this.liveRead(cdp, sel) || chat?.thread !== thread) return;
-        if (this.app === 'devin') this.mergeDevinHistory(chat, true);
         const earlier = !await cdp.evaluate(helpersCall('historyAtStart()'));
-        if (this.app === 'cursor') {
-          const after = await cdp.evaluate(helpersCall('historyPosition()'));
-          this.cursorHistory = after && { cdp, thread, before: beforeOrder, nextBefore: chat.items[0]?.i, top: after.top };
-        }
-        return { thread, items: chat.items, earlier: this.app === 'devin' ? chat.earlier : earlier };
+        return { thread, items: chat.items, earlier };
       } finally {
         try {
           if (position && this.liveRead(cdp, sel) && await cdp.evaluate(helpersCall('activeThread()')) === thread)
@@ -659,7 +642,7 @@ export const methods = {
       await cdpRead.run(null, () => cdp.evaluate(helpersCall('composerQuery("", 0, true)')));
     }
   },
-  async submitPromptKey(key, queued, submit) {
+  async submitPromptKey(key, queued, submit, target) {
     const cdp = this.cdp, scope = this.selectionKey(), receipt = this.sendNativeReceipt;
     const read = timeout => cdp.evaluate(`(() => {
       const h = ${PAGE_SRC}, chat = h.extract();
@@ -667,14 +650,20 @@ export const methods = {
         human: (chat?.items || []).filter(it => it.k === 'human'), queued: chat?.queued || [] };
     })()`, { timeout });
     const norm = normalizeReceiptText;
-    const before = await read(), expected = norm(before.draft);
-    this.lastDraft = before.draft;
+    const before = await read();
+    if (target && before.thread !== target.thread) throw new Error('会话已切换，消息未发送');
+    const text = target?.text ?? before.draft;
+    const expected = norm(text);
+    this.lastDraft = text;
     const human = new Set(before.human.map(it => `${it.i}:${it.sentAt || ''}`));
     const queues = new Set(before.queued.map(it => it.id));
-    const queueText = norm(before.draft.replace(/[ \t]+/g, ' ').replace(/\n{3,}/g, '\n\n').trim().slice(0, 4000));
+    const queueText = norm(text.replace(/[ \t]+/g, ' ').replace(/\n{3,}/g, '\n\n').trim().slice(0, 4000));
     const queuedMatches = rows => rows.filter(it => norm(it.t) === queueText).length;
-    if (submit) await submit();
-    else await this.key(key);
+    const result = submit ? await submit() : await this.key(key);
+    if (result?.queueId && this.cdp === cdp && this.selectionKey() === scope) {
+      receipt.queueId = result.queueId;
+      return true;
+    }
     const deadline = Date.now() + 5000;
     while (Date.now() < deadline) {
       let after;
@@ -695,7 +684,7 @@ export const methods = {
   async sendMessage(text, submit, when, mentions, receipt) {
     if (this.codexBackend) return this.adapter.sendBackendMessage.call(this, text, submit, when, mentions, receipt);
     const receiptToken = submit ? (this.sendNativeReceipt = {}) : null;
-    const receiptScope = this.selectionKey(), receiptCdp = this.cdp;
+    const receiptScope = this.selectionKey(), receiptCdp = this.cdp, receiptThread = this.threadId;
     if (submit && receipt) this.draftEpoch = receipt.draftEpoch || '';
     if (this.app === 'fusion') {
       const queued = await this.adapter.sendMessage.call(this, text, receipt?.requestId);
@@ -713,26 +702,33 @@ export const methods = {
     this.sending = true;
     let busy, now, queued;
     try {
+      const nativeCursorSend = submit && this.app === 'cursor';
       const input = this.app === 'codex' && nativeWindow(this.cdp) ? await this.cdp.evaluate(`(() => {
         const focused = ${FOCUS_COMPOSER}, h = ${PAGE_SRC};
         return { focused, busy: h.agentState()?.busy, draft: h.composerDraft() };
       })()`) : null;
-      const found = input ? input.focused : await this.cdp.evaluate(FOCUS_COMPOSER);
-      if (!found) throw new Error(this.appMessage('没找到 {app} 的聊天输入框：先在画面里打开 Agent 面板（或点「打开聊天」）'));
-      // Read busy before typing: once the composer has text, apps replace the stop button with a send button and isBusy() reads false.
-      busy = submit && (input ? input.busy : await this.cdp.evaluate(helpersCall('agentState()?.busy')));
-      const sameDraft = !mentions?.length && (input ? input.draft : await this.cdp.evaluate(helpersCall('composerDraft()'))) === text;
-      if (!sameDraft) {
-        const draftCleared = await this.cdp.evaluate(helpersCall(`setComposerDraft('')`));
-        for (let i = 0; !draftCleared && i < 2 && await this.cdp.evaluate(helpersCall('composerFocused()')) && await this.cdp.evaluate(helpersCall('composerDraft()')); i++) {
-          await this.key(mod('A'));
-          await this.key('Backspace');
+      if (!nativeCursorSend) {
+        const found = input ? input.focused : await this.cdp.evaluate(FOCUS_COMPOSER);
+        if (!found) throw new Error(this.appMessage('没找到 {app} 的聊天输入框：先在画面里打开 Agent 面板（或点「打开聊天」）'));
+        // Typing can replace Stop with Send, so read the run state first.
+        busy = submit && (input ? input.busy : await this.cdp.evaluate(helpersCall('agentState()?.busy')));
+        const sameDraft = !mentions?.length && (input ? input.draft : await this.cdp.evaluate(helpersCall('composerDraft()'))) === text;
+        if (!sameDraft) {
+          const draftCleared = await this.cdp.evaluate(helpersCall(`setComposerDraft('')`));
+          for (let i = 0; !draftCleared && i < 2 && await this.cdp.evaluate(helpersCall('composerFocused()')) && await this.cdp.evaluate(helpersCall('composerDraft()')); i++) {
+            await this.key(mod('A'));
+            await this.key('Backspace');
+          }
+          await this.adapter.typeDraft.call(this, text, mentions);
         }
-        await this.adapter.typeDraft.call(this, text, mentions);
+      } else {
+        busy = await receiptCdp.evaluate(helpersCall('agentState()?.busy'));
+        if (this.cdp !== receiptCdp || this.selectionKey() !== receiptScope) throw new Error('会话已切换，消息未发送');
       }
       now = this.app === 'devin' && when === 'now' && !!busy;
       queued = Boolean(busy) && !now;
-      if (submit) queued = await this.adapter.submitPrompt.call(this, now, busy, when, queued, mentions, receipt, files);
+      if (submit) queued = await this.adapter.submitPrompt.call(this, now, busy, when, queued, mentions, receipt, files, text,
+        { cdp: receiptCdp, thread: receiptThread });
     } catch (error) {
       if (this.app === 'codex' && mentions?.some(m => m.section === 'local-files')) {
         await this.cdp.evaluate(helpersCall('codexClearDraftAttachments()')).catch(() => false);

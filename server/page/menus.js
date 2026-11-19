@@ -147,38 +147,27 @@
       if (cloud) return devinCloudModels(cloud);
       const p = devinPickerProps();
       if (!p) return null;
-      const fusion = !!fusionConfig();
-      const selected = devinConfigs(p).find(c => p.selectedModels?.includes(c.modelUid));
-      const seen = new Set(['Fusion']);
-      const rows = [{ label: 'Fusion', checked: fusion }];
-      // The native picker lists one default variant per family (plus the Adaptive router);
-      // other effort variants are reachable through the effort list.
-      for (const c of devinConfigs(p, true)) {
-        const label = c.familyLabel || c.label;
-        if (c.disabled || !c.label || seen.has(label) || !DEVIN_MODEL.test(c.label) || /^Fusion \(/.test(c.label)) continue;
-        if (!c.isDefaultModelInFamily && c.displayOption !== 'model-router') continue;
-        seen.add(label);
-        rows.push({ label, checked: !fusion && selected?.familyUid === c.familyUid });
-      }
-      return rows.length > 1 ? rows : null;
+      const selected = devinSelectedModel(p);
+      const rows = [...devinModelChoices(p)].map(([label, c]) => ({ label,
+        checked: !!selected && (selected.modelUid === c.modelUid || !!c.familyUid && selected.familyUid === c.familyUid) }));
+      return rows.length ? rows : null;
     }
     return null;
   };
-  const pickDevinModel = label => {
+  const pickDevinModel = async label => {
     const cloud = devinCloudPickerProps();
     if (cloud) {
       const row = devinCloudModels(cloud).find(row => row.label === label);
       if (!row) return false;
-      cloud.onCapabilityChange(row.id);
+      await cloud.onCapabilityChange(row.id);
       return true;
     }
     const p = devinPickerProps();
-    if (!p || normKey(label) === 'fusion') return false;
-    const want = normKey(label);
-    const c = devinConfigs(p).find(c => !c.disabled && (normKey(c.label) === want || (c.isDefaultModelInFamily && normKey(c.familyLabel) === want)));
+    if (!p) return false;
+    const c = devinModelChoices(p).get(label);
     if (!c) return false;
-    const selected = p.onModelSelect(c);
-    return remoteContext?.app === 'devin' ? Promise.resolve(selected).then(() => true) : true;
+    await p.onModelSelect(c);
+    return true;
   };
   const pickCodexModel = label => {
     const p = codexPickerProps();
@@ -210,6 +199,17 @@
   const devinConfigs = (p, visibleOnly) => visibleOnly
     ? [...new Map((p?.visibleModelConfigs || []).map(c => [c.modelUid, c])).values()]
     : [...new Map([...(p?.visibleModelConfigs || []), ...(p?.modelSorts || []).flatMap(s => (s.groups || []).flatMap(g => g.options || []))].map(c => [c.modelUid, c])).values()];
+  const devinModelChoices = p => {
+    const choices = new Map();
+    for (const c of devinConfigs(p, true)) {
+      if (c.disabled || !c.label) continue;
+      const fusion = c.familyUid === 'fusion';
+      const label = fusion ? 'Fusion' : c.familyLabel || c.label;
+      if (!fusion && (!DEVIN_MODEL.test(c.label) || !c.isDefaultModelInFamily && c.displayOption !== 'model-router')) continue;
+      if (!choices.has(label) || fusion && c.isDefaultModelInFamily) choices.set(label, c);
+    }
+    return choices;
+  };
   const devinSelectedModel = p => devinConfigs(p).find(c => p.selectedModels?.includes(c.modelUid));
   const devinPricing = (config = devinSelectedModel(devinPickerProps())) => {
     if (!config) return null;

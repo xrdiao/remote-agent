@@ -160,7 +160,6 @@ export const methods = {
     }
     const agent = await this.adapter.fileAgentMarks.call(this, f, text, changes, diff);
     if (agent) return agent;
-    if (git?.newFile) return { marks: { add: [], mod: [], del: [] }, markSource: 'git', newFile: true };
     // Devin's review panel still lists files whose changes were already committed; fall back
     // to the last commit touching the file (only for opens from the changes sheet).
     if (fromChanges) {
