@@ -336,6 +336,10 @@ $('sheet').addEventListener('click', async e => {
   }
   if (b.dataset.computerProject) {
     const { directory, project } = computerFiles;
+    if (project.choose) {
+      computerFiles = null;
+      return project.choose(b.dataset.computerProject === 'select' ? directory.path : undefined);
+    }
     if (b.dataset.computerProject === 'new') {
       const name = window.prompt(I18N.tr('新项目的文件夹名称'));
       if (!name?.trim()) return;

@@ -46,7 +46,10 @@ function showPeerTasks() {
       <label class="opt"><span class="lbl">${tr('目标电脑的本机指纹')}</span><input name="targetFingerprint" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" required disabled></label>
     </div>
     <p class="hint" data-peer-scope hidden></p>
-    <label class="opt" hidden><span class="lbl">${tr('目标目录')}</span><input name="root" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="${tr('目标电脑上的绝对路径')}" required disabled></label>
+    <div data-peer-directory hidden>
+      <label class="opt"><span class="lbl">${tr('目标目录')}</span><input name="root" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="${tr('目标电脑上的绝对路径')}" required disabled></label>
+      <button class="opt" type="button" data-peer-browse>${tr('浏览文件夹')}</button>
+    </div>
     <label class="opt" hidden><span class="lbl">${tr('允许使用目标终端')}</span><input name="terminal" type="checkbox" required disabled></label>
     <label class="opt" hidden><span class="lbl">${tr('选择 Agent')}</span><select name="agent" required disabled></select></label>
     <button class="opt" type="submit" disabled>${tr('进入会话')}</button>
@@ -55,6 +58,7 @@ function showPeerTasks() {
     <button class="opt" type="button" data-peer-presets>${tr('预设任务管理')}</button></form>`);
   const form = $('peerWorkspace'), { source, target, root, terminal, agent, sourceFingerprint, targetFingerprint } = form.elements;
   const scope = form.querySelector('[data-peer-scope]'), note = form.querySelector('[role="status"]');
+  const directory = form.querySelector('[data-peer-directory]'), browse = form.querySelector('[data-peer-browse]');
   const identity = form.querySelector('[data-peer-identity]'), trustHint = form.querySelector('[data-peer-trust]');
   const fingerprintFields = form.querySelector('[data-peer-fingerprint-fields]'), refreshButton = form.querySelector('[data-peer-refresh]');
   const submit = form.querySelector('[type="submit"]'), revoke = form.querySelector('[data-peer-revoke]');
@@ -89,7 +93,7 @@ function showPeerTasks() {
       identity.querySelector('pre').textContent = [[sourceInfo, targetInfo, '发起电脑'], [targetInfo, sourceInfo, '目标电脑']]
         .map(([computer, other, label]) => `${tr(label)} · ${computer.id}\n${computer.fingerprint}\n${tr(fingerprintStatus(other, computer))}`).join('\n\n');
     }
-    root.closest('label').hidden = terminal.closest('label').hidden = !needsGrant;
+    directory.hidden = terminal.closest('label').hidden = !needsGrant;
     scope.hidden = !verified;
     scope.textContent = grant ? `${tr('目标目录')} · ${grant.root}` : tr('授权后，发起电脑的 Agent 可以修改该目录的文件，并以目标中继的账户权限运行终端命令。');
     agent.closest('label').hidden = !agent.options.length;
@@ -154,6 +158,17 @@ function showPeerTasks() {
     if (event.target !== source && event.target !== target) return;
     if (event.target === source) target.innerHTML = peerOptions(computers.filter(row => row.id !== source.value), target.value, computers);
     run(refresh);
+  };
+  browse.onclick = () => {
+    const sheet = $('sheet'), content = [...sheet.childNodes], scroll = sheet.scrollTop;
+    return openComputerFiles(selected(target).id, { path: root.value, project: {
+      choose(path) {
+        if (path !== undefined) root.value = path;
+        openSheet('peer-workspace', content);
+        sheet.scrollTop = scroll;
+        browse.focus({ preventScroll: true });
+      },
+    } });
   };
   form.querySelector('[data-peer-presets]').onclick = () => showPeerPresets(computers, source.value, target.value);
   refreshButton.onclick = () => run(refresh);

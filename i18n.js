@@ -600,6 +600,7 @@ const I18N = (() => {
     '画面': 'Screen', '直接看电脑上的 Cursor': 'Look at Cursor on the computer',
     '此手机 App': 'This phone app', 'Devin 设置': 'Devin settings', 'Cursor 设置': 'Cursor settings',
     '浏览文件夹': 'Browse folders', '上级目录': 'Up', '打开此文件夹': 'Open this folder',
+    '选择此文件夹': 'Select this folder', '返回授权设置': 'Back to workspace access',
     '输入文件夹路径': 'Enter folder path', '新建项目': 'New project',
     '选择文件夹或新建项目': 'Choose a folder or create a project',
     '项目与会话': 'Projects and sessions', '选择文件夹／新建项目': 'Choose folder / New project',
