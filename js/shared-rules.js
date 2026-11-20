@@ -56,6 +56,7 @@ globalThis.RemoteAgentRules = (() => {
   };
   const normalizeReceiptText = value => (value || '').replace(/\s+/g, ' ').trim();
   const withoutAttachmentLabels = value => (value || '').replace(/(?:^|\n)\[(?:图片|附件) \d+\](?:\n\[(?:图片|附件) \d+\])*$/, '');
-  return { desktopAction, parseAgentRef, parseSessionRef, isLocalFileReference, codeBlockHtml, notificationTarget, notificationKey,
+  const transferDigestBlockSize = 1024 * 1024;
+  return { desktopAction, parseAgentRef, parseSessionRef, isLocalFileReference, codeBlockHtml, notificationTarget, notificationKey, transferDigestBlockSize,
     titleParts, cleanWindowTitle, parseWindowTitle, normalizeReceiptText, withoutAttachmentLabels, textExtensions, documentExtensions, imageTypes, previewImageTypes, uploadAccept, uploadDocument };
 })();

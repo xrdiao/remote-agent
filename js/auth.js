@@ -36,18 +36,54 @@ function entryKey() {
   entryKeyPromise.catch(() => { entryKeyPromise = null; });
   return entryKeyPromise;
 }
-async function entryProof(computer, scope) {
+async function signEntry(payload) {
   const key = await entryKey();
-  const ts = Date.now(), nonce = authB64(crypto.getRandomValues(new Uint8Array(16)));
-  const id = computer.id || await computerIdFromKey(computer.key);
-  const payload = ['ra-entry-v1', id, computer.token, scope, ts, nonce].join('\n');
   const signature = key.native ? window.AgentRemoteApp.authSign(payload)
     : authB64(await crypto.subtle.sign({ name: 'ECDSA', hash: 'SHA-256' }, key.privateKey, new TextEncoder().encode(payload)));
   if (!signature) throw new Error('入口签名失败，请重新打开入口');
-  return { ts, nonce, signature };
+  return signature;
 }
-async function entryHeaders(computer, method, path) {
+async function entryProof(computer, scope, body) {
+  const id = computer.id || await computerIdFromKey(computer.key);
+  const ts = Date.now(), nonce = authB64(crypto.getRandomValues(new Uint8Array(16)));
+  const payload = [body ? 'ra-entry-v2' : 'ra-entry-v1', id, computer.token, scope, ts, nonce];
+  if (body) payload.push(body);
+  return { ts, nonce, body, signature: await signEntry(payload.join('\n')) };
+}
+async function entryBodyDigest(path, body, cancelled) {
+  let bytes;
+  if (body instanceof Blob && path.startsWith('/api/transfer/upload?')) {
+    const size = RemoteAgentRules.transferDigestBlockSize;
+    bytes = new Uint8Array(Math.ceil(body.size / size) * 32);
+    for (let offset = 0, index = 0; offset < body.size; offset += size, index += 32) {
+      if (cancelled?.()) throw new Error('已取消上传');
+      const block = await body.slice(offset, offset + size).arrayBuffer();
+      bytes.set(new Uint8Array(await crypto.subtle.digest('SHA-256', block)), index);
+    }
+  } else if (body instanceof Blob) {
+    if (body.size > 20 * 1024 * 1024) throw new Error('文件不能超过 20 MB');
+    bytes = await body.arrayBuffer();
+  } else bytes = new TextEncoder().encode(body ?? '');
+  return authB64(await crypto.subtle.digest('SHA-256', bytes));
+}
+async function entryHeaders(computer, method, path, body, cancelled) {
   if (!computer?.token) return {};
-  const proof = await entryProof(computer, method + ' ' + path);
+  const digest = method === 'GET' || method === 'HEAD' ? undefined : await entryBodyDigest(path, body, cancelled);
+  const proof = await entryProof(computer, method + ' ' + path, digest);
   return { authorization: 'Bearer ' + computer.token, 'x-ra-proof': authB64(new TextEncoder().encode(JSON.stringify(proof))) };
+}
+
+function signedCommands(socket, scope, connection, onError) {
+  const prefix = ['ra-command-v1', scope, connection].join('\n') + '\n';
+  let sequence = 0, pending = Promise.resolve();
+  return message => {
+    if (socket.readyState !== WebSocket.OPEN) return;
+    const payload = JSON.stringify(message);
+    pending = pending.then(async () => {
+      if (socket.readyState !== WebSocket.OPEN) return;
+      const number = ++sequence;
+      const signature = await signEntry(prefix + number + '\n' + payload);
+      if (socket.readyState === WebSocket.OPEN) socket.send(number + '.' + signature + '\n' + payload);
+    }).catch(onError);
+  };
 }

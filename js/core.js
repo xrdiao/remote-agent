@@ -7,7 +7,7 @@ const store = {
 const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 const themeName = () => ({ dark: '深色', light: '浅色', auto: '跟随系统' })[store.get('theme') || 'dark'];
 const sleep = ms => new Promise(r => setTimeout(r, ms));
-const APP_VERSION = 'v500'; // keep in sync with the CACHE name in sw.js
+const APP_VERSION = 'v501'; // keep in sync with the CACHE name in sw.js
 
 let base = null, info = null, ws = null, authed = false;
 let windowReady = false;
@@ -417,7 +417,7 @@ function sendDesktopOperation(obj, computer = currentComputer()?.id || '', socke
   obj.operationId ||= crypto.randomUUID();
   desktopRequests.set(obj.operationId, { computer, kind: obj.t, requestId: obj.requestId, device: currentComputer()?.device,
     revision: 0, ...pending });
-  socket.send(JSON.stringify(obj));
+  socket.sendCommand(obj);
 }
 function send(obj, target) {
   if (!['terminals', 'openTerminal', 'closeTerminal', 'newTerminal', 'termWrite', 'termResize', 'termSend', 'termComplete', 'termHistory'].includes(obj.t)) obj.sel ??= viewSel;
@@ -443,7 +443,7 @@ function send(obj, target) {
   if (currentApp === 'codex' && ['settings', 'codexSetting', 'codexInstructions'].includes(obj.t)) obj.requestId = ++codexSettingsRequest;
   if (ws && ws.readyState === 1 && authed) {
     if (desktopAction(obj)) sendDesktopOperation(obj);
-    else ws.send(JSON.stringify(obj));
+    else ws.sendCommand(obj);
     return true;
   }
   status('未连接', false);

@@ -716,9 +716,9 @@ async function ovSend(key, act, extra, ok) {
   const route = '/api/act';
   ovBusy.add(key); ovErr.delete(key); ovRender();
   try {
+    const body = JSON.stringify({ win: r.win, threadId: r.threadId, act, ...(act === 'acceptAll' ? {} : { question: r.wait }), ...extra });
     const res = await fetch(e.c.relay + route, { method: 'POST', cache: 'no-store', signal: AbortSignal.timeout(8000),
-      headers: { 'content-type': 'application/json', ...await entryHeaders(e.c, 'POST', route) },
-      body: JSON.stringify({ win: r.win, threadId: r.threadId, act, ...(act === 'acceptAll' ? {} : { question: r.wait }), ...extra }) });
+      headers: { 'content-type': 'application/json', ...await entryHeaders(e.c, 'POST', route, body) }, body });
     const result = await res.json();
     if (!res.ok) ovErr.set(key, I18N.tr(result.error || ovT('操作失败')));
     else { ovToast(`<span>${ovT(ok)}</span>`); ovFetch(e); }
@@ -741,9 +741,9 @@ async function ovSessionRequest(r, action, extra = {}) {
     sendDesktopOperation(request.message, r.comp, link.socket, request);
     return request.promise;
   }
+  const body = JSON.stringify({ ...ovTarget(r), action, ...extra });
   const res = await fetch(entry.c.relay + route, { method: 'POST', cache: 'no-store', signal: AbortSignal.timeout(60000),
-    headers: { 'content-type': 'application/json', ...await entryHeaders(entry.c, 'POST', route) },
-    body: JSON.stringify({ ...ovTarget(r), action, ...extra }) });
+    headers: { 'content-type': 'application/json', ...await entryHeaders(entry.c, 'POST', route, body) }, body });
   const value = await res.json();
   if (!res.ok) throw new Error(value.error || ovT('操作失败'));
   return value;
