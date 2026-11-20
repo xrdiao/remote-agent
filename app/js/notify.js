@@ -782,7 +782,7 @@ function queueLogouts(list) {
   store.set('pending-logouts', JSON.stringify([...q, ...list.map(c => ({ id: c.id || '', key: c.key, token: c.token, discovery: c.discovery || new URL('url.json', location.href).href }))]));
 }
 async function relayOf(c) {
-  const reg = await fetch(c.discovery + '?t=' + Date.now(), { cache: 'no-store', signal: AbortSignal.timeout(8000) }).then(r => r.json());
+  const reg = await fetchDiscovery(c.discovery, AbortSignal.timeout(8000));
   if (reg.self) return new URL(c.discovery).origin;
   if (reg.v === 2 && reg.data) return decryptEntry(c.key, reg);
   const id = c.id || await computerIdFromKey(c.key);
@@ -795,7 +795,7 @@ async function flushLogouts() {
     let done = false;
     try {
       const r = await fetch(await relayOf(p) + '/api/logout', { method: 'POST', cache: 'no-store', signal: AbortSignal.timeout(8000),
-        headers: { 'content-type': 'application/json', ...await entryHeaders(p, 'POST', '/api/logout') }, body: '{}' });
+        headers: { 'content-type': 'application/json', ...await entryHeaders(p, 'POST', '/api/logout', '{}') }, body: '{}' });
       const body = r.status === 401 ? await r.json().catch(() => ({})) : {};
       // 401 without needTotp: the relay already forgot this device. 403: that relay doesn't accept this page's origin; the relay's own expiry covers it.
       done = r.ok || r.status === 403 || (r.status === 401 && !body.needTotp);

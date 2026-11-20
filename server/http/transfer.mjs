@@ -9,10 +9,46 @@ import { json, readBody, SECURITY_HEADERS, corsHeaders } from './static.mjs';
 import { buildFilePreview } from '../file-preview.mjs';
 import { collisionPath } from '../../lib/file-actions.mjs';
 import { IS_WIN, pathKey } from '../../lib/platform.mjs';
+import { transferDigestBlockSize } from '../../lib/shared-rules.mjs';
+import { verifyBodyDigest } from '../../lib/device-proof.mjs';
 
 const downloads = new Map();
 export const filePlatform = await import(IS_WIN ? './transfer/windows.mjs' : './transfer/posix.mjs');
 const localPath = filePlatform.localPath;
+
+async function existingDirectory(directory) {
+  for (;;) {
+    try {
+      if ((await fsp.stat(directory)).isDirectory()) return directory;
+      throw new Error('上传目标的上级路径不是目录');
+    } catch (error) {
+      if (error.code !== 'ENOENT' || path.dirname(directory) === directory) throw error;
+      directory = path.dirname(directory);
+    }
+  }
+}
+
+async function* verifiedTransfer(req, source) {
+  // SHA-256 over the concatenated SHA-256 hashes of fixed-size blocks.
+  const digest = crypto.createHash('sha256');
+  let block = crypto.createHash('sha256'), size = 0;
+  for await (const chunk of source) {
+    for (let offset = 0; offset < chunk.length;) {
+      const count = Math.min(transferDigestBlockSize - size, chunk.length - offset);
+      block.update(chunk.subarray(offset, offset + count));
+      offset += count;
+      size += count;
+      if (size === transferDigestBlockSize) {
+        digest.update(block.digest());
+        block = crypto.createHash('sha256');
+        size = 0;
+      }
+    }
+    yield chunk;
+  }
+  if (size) digest.update(block.digest());
+  verifyBodyDigest(req, digest.digest('base64url'));
+}
 
 export async function transferApi(req, res, route, device) {
   const query = new URL(req.url, 'http://localhost').searchParams;
@@ -61,6 +97,8 @@ export async function transferApi(req, res, route, device) {
       const destination = filePlatform.uploadPath(directory, relative);
       const mode = query.get('mode');
       if (!['rename', 'replace', 'skip'].includes(mode)) throw Error('请选择同名文件的处理方式');
+      temporary = path.join(await existingDirectory(path.dirname(destination)), '.remote-agent-' + crypto.randomUUID() + '.upload');
+      await pipeline(req, source => verifiedTransfer(req, source), fs.createWriteStream(temporary, { flags: 'wx', mode: 0o600 }));
       let target = destination;
       await fsp.mkdir(path.dirname(target), { recursive: true });
       const original = target;
@@ -72,13 +110,14 @@ export async function transferApi(req, res, route, device) {
           break;
         } catch (error) {
           if (error.code !== 'EEXIST') throw error;
-          if (mode === 'skip') { req.resume(); return json(req, res, 200, { skipped: true, path: target }); }
+          if (mode === 'skip') {
+            await fsp.unlink(temporary);
+            return json(req, res, 200, { skipped: true, path: target });
+          }
           target = collisionPath(original, suffix++);
         }
       }
-      temporary = path.join(path.dirname(target), '.remote-agent-' + crypto.randomUUID() + '.upload');
       try {
-        await pipeline(req, fs.createWriteStream(temporary, { flags: 'wx', mode: 0o600 }));
         await fsp.rename(temporary, target);
         temporary = '';
       } catch (error) {

@@ -245,6 +245,22 @@ function discoveryUrl() {
   const page = new URL('url.json', location.href).href;
   return pending ? pending.discovery || page : currentComputer()?.discovery || page;
 }
+async function fetchDiscovery(url, signal) {
+  const read = async (source, redirect) => {
+    const endpoint = new URL(source, location.href);
+    endpoint.searchParams.set('t', Date.now());
+    const response = await fetch(endpoint, { cache: 'no-store', signal, redirect, credentials: 'omit' });
+    if (!response.ok) throw Object.assign(new Error('HTTP ' + response.status), { status: response.status });
+    return response.json();
+  };
+  const data = await read(url, 'follow');
+  if (data?.v !== 4) return data;
+  if (!/^https:\/\/raw\.githubusercontent\.com\/[\w-]+\/[\w.-]+\/[\w-][\w.-]*\/url\.json$/.test(data.registry || ''))
+    throw new Error('地址登记链接无效');
+  const registry = await read(data.registry, 'error');
+  if (registry?.v !== 3 || !Array.isArray(registry.computers)) throw new Error('地址登记内容无效');
+  return registry;
+}
 // Cross-origin navigation carries bookmarks only; authorization stays in each origin.
 function computerBookmarks(list) {
   const bookmarks = new Map();
@@ -313,7 +329,7 @@ async function api(path, opts = {}) {
   const { timeout = 10000, computer: owner, ...request } = opts;
   const target = owner ? owner.relay : base;
   const computer = owner || (pending ? loadComputers().find(c => pending.key ? c.key === pending.key : c.id === pending.id) : currentComputer());
-  const headers = { 'content-type': 'application/json', ...await entryHeaders(computer, opts.method || 'GET', path), ...opts.headers };
+  const headers = { 'content-type': 'application/json', ...await entryHeaders(computer, request.method || 'GET', path, request.body), ...opts.headers };
   const ctl = new AbortController();
   const timer = setTimeout(() => ctl.abort(), timeout);
   try {
@@ -403,7 +419,10 @@ async function pastePair(text) {
     gate({ pairStatus: { state: 'loading', title: '正在配对…' } });
     try {
       const discovery = request.discovery;
-      const registry = await fetch(discovery + '?t=' + Date.now(), { cache: 'no-store', signal: AbortSignal.timeout(10000) }).then(r => { if (!r.ok) throw Error(known ? '中继地址记录读取失败' : '入口地址记录读取失败，请改用电脑上的二维码或配对链接'); return r.json(); });
+      const registry = await fetchDiscovery(discovery, AbortSignal.timeout(10000)).catch(error => {
+        if (!error.status) throw error;
+        throw new Error(known ? '中继地址记录读取失败' : '入口地址记录读取失败，请改用电脑上的二维码或配对链接');
+      });
       if (pending !== request) return;
       if (registry.self) {
         base = new URL(discovery).origin;
@@ -462,12 +481,11 @@ async function testEndpoint(url, relay = false, timeout = 8000) {
   const ctl = new AbortController();
   const timer = setTimeout(() => ctl.abort(), timeout);
   try {
-    const response = await fetch(url + '?t=' + Date.now(), { cache: 'no-store', signal: ctl.signal });
-    if (!response.ok) return { ok: false, code: 'http', http: 'HTTP ' + response.status, detail: 'HTTP ' + response.status };
-    const data = await response.json();
+    const data = await fetchDiscovery(url, ctl.signal);
     const valid = relay ? data?.self === true : data?.self === true || (data?.v === 3 && Array.isArray(data.computers)) || (data?.v === 2 && !!data.data);
     return { ok: valid, ms: Math.round(performance.now() - start), code: valid ? '' : 'invalid', detail: valid ? `正常 · ${Math.round(performance.now() - start)} ms` : '返回内容不符合预期' };
   } catch (error) {
+    if (error.status) return { ok: false, code: 'http', http: error.message, detail: error.message };
     return { ok: false, timedOut: ctl.signal.aborted, timeout: timeout / 1000, code: ctl.signal.aborted ? 'timeout' : error instanceof SyntaxError ? 'json' : 'network', detail: ctl.signal.aborted ? `请求超时（${timeout / 1000} 秒）` : error instanceof SyntaxError ? '返回内容不是 JSON' : '请求失败（网络、DNS、证书或跨域原因未确定）' };
   } finally { clearTimeout(timer); }
 }
@@ -717,7 +735,7 @@ async function boot() {
   const chosen = currentComputer();
   if (!pending && chosen && (navigator.onLine === false || computerSockets.get(chosen.key)?.phase === 'paused')) return ovRender();
   const current = () => generation === bootGeneration && currentComputer()?.key === chosen?.key;
-  const discovery = fetch(discoveryUrl() + '?t=' + Date.now(), { cache: 'no-store', signal: AbortSignal.timeout(10000) }).then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); });
+  const discovery = fetchDiscovery(discoveryUrl(), AbortSignal.timeout(10000));
   warmComputerSockets().catch(() => {});
   // An existing paired address can authenticate while the published directory refreshes.
   if (!pending && chosen?.relay && (!entryComputer || entryComputer === chosen.id)) {
@@ -967,7 +985,7 @@ async function openComputerSocket(computer, relay) {
     binding: undefined, preload: null, receive: null, closed: null, metadata: new Map(), operations: new Map() });
   recordComputerConnection(link, 'socket');
   link.firstScreen = new Promise(resolve => { link.finishFirstScreen = resolve; });
-  link.send = message => { if (link.authed && socket.readyState === 1) socket.send(JSON.stringify(message)); };
+  link.send = message => { if (link.authed) socket.sendCommand?.(message); };
   const current = () => computerSockets.get(computer.key) === link && link.socket === socket;
   let timer = setTimeout(() => {
     if (!current()) return;
@@ -979,7 +997,7 @@ async function openComputerSocket(computer, relay) {
     link.opened = true; link.phase = 'authenticating';
     ovRender();
     try {
-      const proof = await entryProof(computer, 'WS /ws');
+      const proof = await entryProof(computer, 'WS /ws\n' + JSON.stringify([saved?.resumeId ?? null, true]));
       if (current() && socket.readyState === 1) {
         socket.send(JSON.stringify({ t: 'auth', token: computer.token, proof, resume: saved?.resumeId, selectiveOperations: true }));
         timer = setTimeout(() => {
@@ -1011,8 +1029,15 @@ async function openComputerSocket(computer, relay) {
         ovRender();
         return;
       }
+      if (m.ok && m.id === expectedId && !/^[A-Za-z0-9_-]{22}$/.test(m.commandSession || '')) {
+        link.error = '中继不支持指令签名，请更新并重启电脑端中继';
+        return closeSocket(socket, 'proof');
+      }
       link.phase = m.id !== expectedId ? 'identity' : m.ok ? 'ready' : 'auth';
       if (link.authed) {
+        socket.sendCommand = signedCommands(socket, '/ws', m.commandSession, error => {
+          if (current()) { link.error = error.message; closeSocket(socket, 'proof'); }
+        });
         recordComputerConnection(link, 'authenticated', { resumed: !!m.resumed });
         link.failure = null;
         pingTimer ||= setInterval(heartbeat, COMPUTER_PING_MS);
@@ -1149,10 +1174,7 @@ async function warmComputerSocket(computer) {
   let link = computer.relay ? await activate(computer.relay) : null;
   if (link?.authed) probeComputerSocket(link);
   const discover = async () => {
-    const data = await fetch((computer.discovery || discoveryUrl()) + '?t=' + Date.now(), { cache: 'no-store', signal: AbortSignal.timeout(10000) }).then(r => {
-      if (!r.ok) throw new Error('HTTP ' + r.status);
-      return r.json();
-    });
+    const data = await fetchDiscovery(computer.discovery || discoveryUrl(), AbortSignal.timeout(10000));
     const relay = await resolveBase(data, computer, current);
     if (!current() || navigator.onLine === false || !computerRetryAllowed(computer)) return;
     updateComputerRecord({ ...computer, relay });

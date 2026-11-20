@@ -77,9 +77,6 @@ async function watchTargets() {
   return out;
 }
 
-// Even in tunnel mode the relay listens on HOST so a browser on the same LAN can
-// connect directly (auth still requires a paired device). The tunnel itself only
-// needs the port reachable on loopback, which 0.0.0.0 covers.
 const lanIps = () => Object.values(os.networkInterfaces()).flat()
   .filter(i => i && i.family === 'IPv4' && !i.internal).map(i => i.address);
 
@@ -118,12 +115,12 @@ server.listen(PORT, HOST, async () => {
       themeFor(e.app, { port }).catch(() => {});
     }
   }, 2000);
-  const ips = lanIps();
-  for (const ip of ips) console.log(`  局域网地址：http://${ip}:${PORT}/`);
-  const localUrl = ips[0] ? `http://${ips[0]}:${PORT}/` : '';
+  const addresses = HOST === '0.0.0.0' || HOST === '::' ? lanIps() : [HOST];
+  const urls = addresses.map(host => `http://${host.includes(':') ? '[' + host + ']' : host}:${PORT}/`);
+  const [localUrl = ''] = urls;
+  for (const url of urls) console.log(`  本地入口：${url}`);
   if (TUNNEL) {
-    // relayUrl stays the tunnel address for the phone; localUrl is for LAN browsers.
-    if (localUrl) saveState({ localUrl });
+    saveState({ localUrl });
     console.log('正在建立 Cloudflare 公网隧道…');
     startTunnel();
   } else if (localUrl) {

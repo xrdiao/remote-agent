@@ -4,7 +4,8 @@ import { DATA_DIR, readConfig, resolveAppEntry } from '../lib/auth.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export const PORT = Number(process.env.PORT || 3939);
-export const HOST = process.env.HOST || '0.0.0.0';
+export const TUNNEL = process.argv.includes('--tunnel');
+export const HOST = process.env.HOST || (TUNNEL ? '127.0.0.1' : '0.0.0.0');
 export const CDP_URL = (process.env.CDP_URL || `http://127.0.0.1:${process.platform === 'win32' && process.env.CDP_PORT || 9222}`).replace(/\/$/, '');
 export const DEVIN_CDP_URL = (process.env.DEVIN_CDP_URL || `http://127.0.0.1:${process.platform === 'win32' && process.env.DEVIN_CDP_PORT || 9223}`).replace(/\/$/, '');
 export const CODEX_CDP_URL = (process.env.CODEX_CDP_URL || `http://127.0.0.1:${process.platform === 'win32' && process.env.CODEX_CDP_PORT || 9224}`).replace(/\/$/, '');
@@ -14,7 +15,6 @@ export const EDITORS = [
   { app: 'devin', name: 'Devin', url: DEVIN_CDP_URL },
   { app: 'codex', name: 'Codex', url: CODEX_CDP_URL },
 ];
-export const TUNNEL = process.argv.includes('--tunnel');
 export const CONFIG_FILE = path.join(DATA_DIR, 'config.json');
 export const APP_DIR = path.join(__dirname, '..', 'app');
 
@@ -23,6 +23,9 @@ export const loadConfig = readConfig;
 export const CONFIG = loadConfig();
 export const PUBLISH_REPO = process.argv.find(a => a.startsWith('--publish='))?.slice('--publish='.length) || process.env.CR_PUBLISH_REPO || CONFIG.publishRepo || '';
 export const PAGES_BRANCH = process.env.CR_PAGES_BRANCH || CONFIG.pagesBranch || '';
+export const DISCOVERY_REPO = CONFIG.discoveryRepo || '';
+export const DISCOVERY_BRANCH = CONFIG.discoveryBranch || 'main';
+export const DISCOVERY_TOKEN_FILE = CONFIG.discoveryTokenFile || path.join(DATA_DIR, 'discovery-token');
 // The Pages app may sit on a custom domain; config.appUrl records its real address when one is known.
 export const APP_ORIGIN = (() => {
   const entry = resolveAppEntry({ ...CONFIG, publishRepo: PUBLISH_REPO });

@@ -239,9 +239,17 @@ public class NotifyService extends Service {
         }
     }
 
-    // Same lookup as the web app: url.json on GitHub Pages holds the relay address, AES-GCM encrypted with the paired key.
+    // Same lookup as the web app. The original entry can point to a separate encrypted registry.
     static String resolveRelay(String app, String key) throws Exception {
-        JSONObject info = new JSONObject(get(app + (app.endsWith("/") ? "" : "/") + "url.json?t=" + System.currentTimeMillis()));
+        JSONObject info = new JSONObject(get(app + (app.endsWith("/") ? "" : "/") + "url.json?t=" + System.currentTimeMillis(), true));
+        if (info.optInt("v") == 4) {
+            String registry = info.getString("registry");
+            if (!registry.matches("https://raw\\.githubusercontent\\.com/[a-zA-Z0-9_-]+/[a-zA-Z0-9_.-]+/[a-zA-Z0-9_-][a-zA-Z0-9_.-]*/url\\.json"))
+                throw new Exception("Invalid relay registry URL");
+            info = new JSONObject(get(registry + "?t=" + System.currentTimeMillis(), false));
+            if (info.optInt("v") != 3 || info.optJSONArray("computers") == null)
+                throw new Exception("Invalid relay registry contents");
+        }
         if (info.optBoolean("self")) {
             Uri u = Uri.parse(app);
             return u.getScheme() + "://" + u.getAuthority();
@@ -280,12 +288,14 @@ public class NotifyService extends Service {
         return s.toString();
     }
 
-    private static String get(String url) throws Exception {
+    private static String get(String url, boolean followRedirects) throws Exception {
         HttpURLConnection c = (HttpURLConnection) new URL(url).openConnection();
         c.setConnectTimeout(15000);
         c.setReadTimeout(15000);
         c.setUseCaches(false);
+        c.setInstanceFollowRedirects(followRedirects);
         try (InputStream in = c.getInputStream()) {
+            if (c.getResponseCode() != 200) throw new Exception("HTTP " + c.getResponseCode());
             return new String(readAll(in), StandardCharsets.UTF_8);
         } finally {
             c.disconnect();
@@ -306,7 +316,7 @@ public class NotifyService extends Service {
         // The relay pings every 25 s; silence longer than this means the connection is dead.
         c.setReadTimeout(70000);
         c.setRequestProperty("Authorization", "Bearer " + cfg.getString("token"));
-        c.setRequestProperty("X-RA-Proof", EntryAuth.proof(cfg, "POST", "/api/events"));
+        c.setRequestProperty("X-RA-Proof", EntryAuth.proof(cfg, "POST", "/api/events", new byte[0]));
         c.setRequestProperty("Accept", "text/event-stream");
         // Quick tunnels buffer GET event streams until they close; POST is streamed.
         c.setRequestMethod("POST");
@@ -501,9 +511,10 @@ public class NotifyService extends Service {
             h.setRequestMethod("POST");
             h.setDoOutput(true);
             h.setRequestProperty("Authorization", "Bearer " + cfg.getString("token"));
-            h.setRequestProperty("X-RA-Proof", EntryAuth.proof(cfg, "POST", "/api/act"));
+            byte[] bytes = body.toString().getBytes(StandardCharsets.UTF_8);
+            h.setRequestProperty("X-RA-Proof", EntryAuth.proof(cfg, "POST", "/api/act", bytes));
             h.setRequestProperty("Content-Type", "application/json");
-            try (OutputStream out = h.getOutputStream()) { out.write(body.toString().getBytes(StandardCharsets.UTF_8)); }
+            try (OutputStream out = h.getOutputStream()) { out.write(bytes); }
             int code = h.getResponseCode();
             String msg = "";
             if (code != 200) {

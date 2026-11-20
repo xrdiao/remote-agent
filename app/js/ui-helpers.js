@@ -8,7 +8,7 @@ function drawQrModules(canvas, modules) {
 }
 
 async function uploadBinary({ target, computer, path, file, timeout = 0, cancelled, onRequest, onProgress, onEnd }) {
-  const headers = await entryHeaders(computer, 'POST', path);
+  const headers = await entryHeaders(computer, 'POST', path, file, cancelled);
   if (cancelled?.()) throw new Error('已取消上传');
   return new Promise((resolve, reject) => {
     const request = new XMLHttpRequest();

@@ -1,14 +1,34 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import { APP_DIR, ALLOWED_ORIGINS } from '../config.mjs';
+import { verifyBodyDigest } from '../../lib/device-proof.mjs';
+
+const verifiedBodies = new WeakMap();
 
 export function readBody(req, limit = 4096) {
+  if (verifiedBodies.has(req)) return Promise.resolve(verifiedBodies.get(req));
   return new Promise((resolve, reject) => {
     let body = '';
     req.on('data', c => { body += c; if (body.length > limit) { reject(new Error('too large')); req.destroy(); } });
     req.on('end', () => resolve(body));
     req.on('error', reject);
   });
+}
+
+export async function verifyBufferedBody(req, limit = 4096) {
+  const chunks = [];
+  let size = 0;
+  for await (const chunk of req) {
+    size += chunk.length;
+    if (size > limit * 3) throw new Error('请求内容过大');
+    chunks.push(chunk);
+  }
+  const bytes = Buffer.concat(chunks, size);
+  verifyBodyDigest(req, crypto.createHash('sha256').update(bytes).digest('base64url'));
+  const body = bytes.toString('utf8');
+  if (body.length > limit) throw new Error('请求内容过大');
+  verifiedBodies.set(req, body);
 }
 
 // Same-origin (app served by this relay) or the user's own GitHub Pages app.

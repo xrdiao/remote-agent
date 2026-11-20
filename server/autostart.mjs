@@ -3,7 +3,7 @@ import { fileURLToPath } from 'node:url';
 import { readState } from '../lib/auth.mjs';
 import { relayAutostart as posixAutostart } from '../lib/platform/posix.mjs';
 import { relayAutostart as windowsAutostart } from '../lib/platform/windows.mjs';
-import { PORT, HOST, TUNNEL, PUBLISH_REPO } from './config.mjs';
+import { PORT, TUNNEL, PUBLISH_REPO } from './config.mjs';
 import { findTunnelPid } from './publish/tunnel.mjs';
 
 const cwd = fileURLToPath(new URL('..', import.meta.url));
@@ -18,7 +18,8 @@ function launchSettings() {
   const tunnel = TUNNEL || (quick && !!findTunnelPid());
   const keys = [...relayEnv, ...relayEnv.filter(key => key.endsWith('_PROXY')).map(key => key.toLowerCase())];
   const env = Object.fromEntries(keys.filter(key => process.env[key] !== undefined).map(key => [key, process.env[key]]));
-  Object.assign(env, { PORT: String(PORT), HOST, CR_TUNNEL_ADDRESS_ONLY: '1', GH_PROMPT_DISABLED: '1' });
+  Object.assign(env, { PORT: String(PORT), CR_TUNNEL_ADDRESS_ONLY: '1', GH_PROMPT_DISABLED: '1' });
+  if (process.env.HOST) env.HOST = process.env.HOST;
   return { cwd, node: process.execPath, env, args: [path.join(cwd, 'server', 'index.mjs'),
     ...(tunnel ? ['--tunnel'] : []), ...(PUBLISH_REPO ? ['--publish=' + PUBLISH_REPO] : [])] };
 }

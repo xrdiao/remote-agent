@@ -6,11 +6,16 @@
 
 The relay uses CDP to connect to desktop applications on the same computer. The phone connects through an HTTPS tunnel or over the LAN. A fixed web entry discovers changed relay addresses and reauthenticates with saved credentials. The Pages frontend and the local relay are separate components. Keep `~/.agent-remote/` and start the relay as the same OS user.
 
+`--tunnel` listens on `127.0.0.1` by default. Set `HOST=0.0.0.0` to also accept LAN connections. Plain `npm start` still listens on the LAN by default. Remove an explicit `HOST` from existing startup services to adopt the tunnel default.
+
+The existing Pages entry can point to a separate public GitHub repository for encrypted addresses. The relay updates that repository using a dedicated fine-grained token with Contents write permission. The release account publishes the web app and the pointer together. See the [migration steps](security.md#分开发布网页与登记地址) and [GitHub permission requirements](https://docs.github.com/en/rest/repos/contents#create-or-update-file-contents).
+
 ## Pairing and device entries
 
 - Run `npm run pair` to open a dedicated pairing window with a QR code, manual code and 3-minute countdown. The same code accepts multiple requests until expiry. Compare each origin and six-digit code, then click Allow connection; no checkbox or device name is required. Entries for the current device are grouped automatically. Pair another device starts a new group without extending the deadline; this is user-directed grouping, not physical-device detection. Closing the window, expiry or Ctrl+C in the pairing terminal invalidates pending requests while approved entries remain authorized. TOTP is still required when enabled.
 - Each entry owns a P-256 signing key. Browsers store a non-exportable private key in origin-local IndexedDB; the updated Android shell uses an origin-specific Android Keystore key. The relay stores only public keys. Tokens require a valid signature to authenticate.
-- Proofs bind the computer, token and request method/path, with a one-minute validity window and a single-use random identifier. Main and voice sockets, HTTP APIs, uploads and Android background requests use this rule. Keep device clocks synchronized. Legacy bearer-only pairings must be approved again. Android requires shell version 1.4.0. Clearing site data and losing the private key also requires pairing again.
+- HTTP proofs bind the computer, token and request method/path. Writes also include an authenticated body digest. Proofs are single-use and valid for one minute. Text commands on the main and voice connections are signed in connection order. Keep device clocks synchronized.
+- Update the web app and each relay together when enabling the new signatures. The updated Android shell supports notification shortcuts and the separate address registry. The old shell can receive background notifications until the registry is separated. Existing keys and pairings carry over. Clearing site data and losing the private key requires pairing again.
 - Web keys require HTTPS (a fixed entry or HTTPS tunnel); ordinary LAN HTTP pages no longer support web pairing. The computer's localhost approval page remains available.
 - Refreshes and same-origin pages in the same browser can reuse stored credentials. A different site entry or browser is not automatically authorized just because it is on the same phone.
 - Cross-site navigation carries only computer names, public IDs and entry addresses, without existing computers' long-lived tokens or address decryption keys. The destination uses its own pairing; a new entry needs pairing or approval from a trusted entry. The original entry retains its pairings and remains accessible from the computer list.
@@ -18,7 +23,7 @@ The relay uses CDP to connect to desktop applications on the same computer. The 
 - The list groups devices and entries using explicit ownership information, not matching iPhone names, IP addresses or browser fingerprints. Grouping does not share authorization; entries can be revoked separately.
 - Removing an entry invalidates its authorization and disconnects associated long-lived connections. It does not kill Agent tasks or terminal processes already running on the computer.
 
-Key possession prevents impersonation using a copied token alone. It is not end-to-end encryption or application-body integrity: TLS still protects request and response content. Compromised page scripts may invoke the entry's signer, so the frontend must remain trusted. See the scope described in [RFC 9449](https://www.rfc-editor.org/rfc/rfc9449.html#section-11.7) and the browser requirements in [Web Crypto](https://developer.mozilla.org/en-US/docs/Web/API/SubtleCrypto/generateKey). This project uses its own proof format, not the OAuth DPoP protocol.
+Signatures detect changed requests and replays. Confidentiality, responses and binary voice audio still rely on TLS. Page scripts can use the entry's signer, so the frontend must remain trusted.
 
 ## Protecting access
 

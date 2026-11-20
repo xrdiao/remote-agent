@@ -88,7 +88,7 @@ function voiceConnection() {
   const computer = currentComputer();
   socket.onopen = async () => {
     try {
-      const proof = await entryProof(computer, 'WS /voice');
+      const proof = await entryProof(computer, 'WS /voice\n' + JSON.stringify(engine ?? null));
       if (voiceLink === link && socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: 'auth', token: computer.token, proof, engine }));
     } catch (error) { link.reject(error); socket.close(); }
   };
@@ -103,6 +103,11 @@ function voiceConnection() {
   };
   socket.onmessage = e => {
     const m = JSON.parse(e.data), session = voiceSession;
+    if (m.type === 'auth') {
+      if (!/^[A-Za-z0-9_-]{22}$/.test(m.commandSession || '')) { socket.close(); return; }
+      link.send = signedCommands(socket, '/voice', m.commandSession, error => { link.reject(error); socket.close(); });
+      return;
+    }
     if (m.type === 'loading') { link.loading = true; if (session?.link === link) status('正在加载本机语音模型…'); }
     if (m.type === 'started') { link.loading = false; link.streamId = m.id; link.resolve(link); }
     if (m.type === 'error') {
@@ -137,7 +142,7 @@ function cancelVoice(notify = true) {
   const link = session.link;
   if (session.streamId && link?.streamId === session.streamId) {
     resetVoiceReady(link);
-    if (notify && link.socket.readyState === 1) link.socket.send(JSON.stringify({ type: 'cancel', id: session.streamId }));
+    if (notify) link.send?.({ type: 'cancel', id: session.streamId });
   }
   $('mic').classList.remove('on'); $('mic').setAttribute('aria-label', '按住说话');
   updateVoiceButton();
@@ -239,7 +244,7 @@ async function startVoice(event) {
       if (!voiceLive(session)) return;
       if (e.data === 'flushed') {
         releaseVoiceMedia(session);
-        link.socket.send(JSON.stringify({ type: 'end' }));
+        link.send({ type: 'end' });
         session.timer = setTimeout(() => { if (voiceLive(session)) status('转录仍在处理中，可继续等待或按麦克风取消'); }, 20000);
       } else if (link.socket.readyState === 1) {
         if (!session.firstPcm) { session.firstPcm = true; session.dbg?.('first pcm frame'); }

@@ -1,4 +1,4 @@
-import { authenticateDevice } from '../lib/device-proof.mjs';
+import { authenticateDevice, commandVerifier } from '../lib/device-proof.mjs';
 import crypto from 'node:crypto';
 import { WebSocketServer } from 'ws';
 import { needsTotp, findDevice, updateDevice, computerId, computerName, bindDeviceConnection } from '../lib/auth.mjs';
@@ -123,15 +123,22 @@ wss.on('connection', (ws, req) => {
     retain();
     ws.close(4002, 'connection replaced');
   } };
-  ws.on('message', async raw => {
+  let commands;
+  ws.on('message', async (raw, binary) => {
     let msg;
-    try { msg = JSON.parse(raw); } catch { return; }
-    if (!msg || typeof msg !== 'object' || Array.isArray(msg)) return;
+    if (session && (!authorization.valid || ws.readyState !== 1)) return;
+    try { msg = !binary && (session ? commands.read(raw) : JSON.parse(raw)); } catch {}
+    if (!msg || typeof msg !== 'object' || Array.isArray(msg)) {
+      if (session) ws.close(4003, 'invalid command proof');
+      return;
+    }
     if (!session) {
       if (authenticating) return;
       authenticating = true;
       clearTimeout(authTimer);
-      const device = msg.t === 'auth' ? authenticateDevice(msg.token, msg.proof, 'WS /ws') : null;
+      const resume = typeof msg.resume === 'string' ? msg.resume : null;
+      const scope = 'WS /ws\n' + JSON.stringify([resume, msg.selectiveOperations === true]);
+      const device = msg.t === 'auth' ? authenticateDevice(msg.token, msg.proof, scope) : null;
       const identity = { id: computerId(), name: computerName(), device: device?.id || '' };
       if (!device || needsTotp(device)) {
         ws.send(JSON.stringify({ t: 'auth', ok: false, ...identity, needTotp: Boolean(device) }));
@@ -140,7 +147,7 @@ wss.on('connection', (ws, req) => {
       authorization = bindDeviceConnection(device.id, () => ws.close(4001, 'unauthorized'));
       if (!authorization.valid || ws.readyState !== 1) return;
       updateDevice(device.id, { lastSeen: Date.now() });
-      const previous = contexts.get(msg.resume);
+      const previous = contexts.get(resume);
       const candidate = previous?.session.deviceId === device.id && previous.expires > Date.now()
         && !previous.session.disposed && resumableBinding(previous.session);
       if (candidate) {
@@ -158,7 +165,7 @@ wss.on('connection', (ws, req) => {
         }
         previous.claim = null;
       }
-      const resumed = candidate && contexts.get(msg.resume) === previous && previous.expires > Date.now()
+      const resumed = candidate && contexts.get(resume) === previous && previous.expires > Date.now()
         && !previous.session.disposed && resumableBinding(previous.session);
       if (resumed) {
         clearTimeout(previous.timer);
@@ -166,7 +173,7 @@ wss.on('connection', (ws, req) => {
         session = previous.session;
         session.client = ws;
       } else {
-        if (candidate && contexts.get(msg.resume) === previous) disposeContext(previous);
+        if (candidate && contexts.get(resume) === previous) disposeContext(previous);
         session = new Session(ws, device.id);
         session.resumeId = crypto.randomUUID();
         context = { session };
@@ -174,17 +181,17 @@ wss.on('connection', (ws, req) => {
       }
       context.owner = connection;
       context.expires = Infinity;
+      commands = commandVerifier(device, '/ws');
       subscribeLibrary(ws);
       addViewer(session);
       ws.send(JSON.stringify({ t: 'auth', ok: true, ...identity, lastSelection: lastSelection(device.id),
-        resumeId: session.resumeId, resumed: !!resumed, mode: session.mode, draftEpoch: session.draftEpoch || '', selectiveOperations: true,
+        resumeId: session.resumeId, resumed: !!resumed, mode: session.mode, draftEpoch: session.draftEpoch || '', selectiveOperations: true, commandSession: commands.connection,
         ...(resumed ? { selection: { id: session.targetId, app: session.app, windowId: session.windowId, threadId: session.threadId },
           metadata: [...session.connectionMessages.values()].filter(message => message.t !== 'attached') } : {}) }));
       unsubscribeOperations = subscribeOperations(device.id, ws, msg.selectiveOperations !== true);
       console.log(`[+] client ${clientIp(req)}`);
       return;
     }
-    if (!authorization.valid || ws.readyState !== 1) return;
     if (msg.t === 'visible' && typeof msg.background === 'boolean') {
       if (!msg.background) {
         if (ws.backgroundTimer) ws.alive = true;

@@ -127,8 +127,9 @@ async function uploadDocument(file, sel, image) {
   if (image) image.cancelUpload = () => {
     image.request?.abort();
     const cancelPath = '/api/upload/cancel';
-    entryHeaders(computer, 'POST', cancelPath).then(headers => fetch(target + cancelPath, {
-      method: 'POST', headers: { ...headers, 'content-type': 'application/json' }, body: JSON.stringify({ clientImageId: image.id }),
+    const body = JSON.stringify({ clientImageId: image.id });
+    entryHeaders(computer, 'POST', cancelPath, body).then(headers => fetch(target + cancelPath, {
+      method: 'POST', headers: { ...headers, 'content-type': 'application/json' }, body,
     })).catch(() => {});
   };
   return uploadBinary({ target, computer, path, file, timeout: 60000,

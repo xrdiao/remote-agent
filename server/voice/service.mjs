@@ -1,4 +1,4 @@
-import { authenticateDevice } from '../../lib/device-proof.mjs';
+import { authenticateDevice, commandVerifier } from '../../lib/device-proof.mjs';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -203,7 +203,7 @@ export function voiceWss() {
   const wss = new WebSocketServer({ noServer: true, maxPayload: 32 << 10, perMessageDeflate: false });
   wss.on('connection', ws => {
     let device = null, token = '', id = '', ended = false, engineId = '', runtime = null;
-    let authorization = null;
+    let authorization = null, commands;
     const reply = event => { if (ws.readyState === 1) ws.send(JSON.stringify(event)); };
     const authTimer = setTimeout(() => ws.close(4001, 'auth timeout'), 5000);
     ws.on('error', () => {});
@@ -231,10 +231,14 @@ export function voiceWss() {
           clearTimeout(authTimer);
           const message = binary ? {} : JSON.parse(raw);
           token = message.token || '';
-          device = message.type === 'auth' ? authenticateDevice(token, message.proof, 'WS /voice') : null;
+          const engine = typeof message.engine === 'string' ? message.engine : null;
+          const scope = 'WS /voice\n' + JSON.stringify(engine);
+          device = message.type === 'auth' ? authenticateDevice(token, message.proof, scope) : null;
           if (!device || needsTotp(device)) return ws.close(4001, 'unauthorized');
           authorization = bindDeviceConnection(device.id, () => ws.close(4001, 'unauthorized'));
-          engineId = message.engine || voiceStatus().engineId;
+          commands = commandVerifier(device, '/voice');
+          reply({ type: 'auth', commandSession: commands.connection });
+          engineId = engine || voiceStatus().engineId;
           try {
             const prev = fs.existsSync(LAST_ENGINE_FILE) ? JSON.parse(fs.readFileSync(LAST_ENGINE_FILE, 'utf8')) : null;
             if (prev?.engine !== engineId || prev?.device !== device.id) fs.writeFileSync(LAST_ENGINE_FILE, JSON.stringify({ engine: engineId, device: device.id }));
@@ -242,17 +246,19 @@ export function voiceWss() {
           await startStream();
           return;
         }
-        if (!authorization.valid || ws.readyState !== 1 || !id) return;
+        if (!authorization.valid || ws.readyState !== 1) return;
         const live = findDevice(token);
         if (!live || needsTotp(live)) return ws.close(4001, 'unauthorized');
         if (binary) {
-          if (ended) return;
+          if (!id || ended) return;
           if (raw.length % 2) throw new Error('音频必须是 PCM16');
           if (!writeWorker(runtime, { id, type: 'audio', audio: raw.toString('base64') })) {
             ws.pause(); runtime.worker.stdin.once('drain', () => ws.resume());
           }
         } else {
-          const message = JSON.parse(raw);
+          const message = commands.read(raw);
+          if (!message || typeof message !== 'object' || Array.isArray(message)) return ws.close(4003, 'invalid command proof');
+          if (!id) return;
           if (message.type === 'end' && !ended) { ended = true; writeWorker(runtime, { id, type: 'end' }); }
           if (message.type === 'cancel' && message.id === id) {
             runtime.sessions.delete(id); writeWorker(runtime, { id, type: 'cancel' }); id = '';

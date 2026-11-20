@@ -21,7 +21,7 @@ function sendFusion(computer, message, projectOwner) {
     ownerId: fusionViewOwner?.requestId, bindingId: message.bindingId,
     questionId: message.questionId, planId: message.planId, workId: message.workId, taskId: message.taskId,
     viewKey: fusionViewKey(computer, message.runId, { ...message, kind: message.view }) });
-  link.socket.send(JSON.stringify({ ...message, computer }));
+  link.send({ ...message, computer });
   return true;
 }
 function refreshFusionWorkspace() {

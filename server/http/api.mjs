@@ -1,13 +1,13 @@
 import crypto from 'node:crypto';
 import QRCode from 'qrcode-terminal/vendor/QRCode/index.js';
-import { authenticateRequest } from '../../lib/device-proof.mjs';
+import { authenticateRequest, verifyBodyDigest } from '../../lib/device-proof.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
 import { DATA_DIR, findDevice, needsTotp, totpConfig, verifyTotp, pairingSession, pairingDetails, consumePairing, listDevices, removeDevice, updateDevice, computerId, computerName, urlKey, appBase, groupDevices, deviceGrouping } from '../../lib/auth.mjs';
 import { inviteEntry, joinEntry, entryRequests, decideEntry, entryStatus, cancelEntry, requestPairing, decideEntries } from './entries.mjs';
 import { pushPublicKey, openEventStream, closeEventStreams, deliver } from '../../lib/notify.mjs';
 import { clientIp, lockedOut, recordFailure } from './ratelimit.mjs';
-import { json, readJson, originAllowed, corsHeaders, SECURITY_HEADERS } from './static.mjs';
+import { json, readJson, verifyBufferedBody, originAllowed, corsHeaders, SECURITY_HEADERS } from './static.mjs';
 import { readChatImage } from '../chat-images.mjs';
 import { listWindows } from '../windows.mjs';
 import { Cdp } from '../cdp.mjs';
@@ -114,6 +114,11 @@ export async function handleApi(req, res, route) {
       recordFailure(ip);
       return json(req, res, 401, { error: error.message });
     }
+  }
+
+  if (device && req.method === 'POST' && route !== '/api/upload' && route !== '/api/transfer/upload') {
+    try { await verifyBufferedBody(req, route === '/api/transfer/download' ? 1024 * 1024 : undefined); }
+    catch (error) { if (!res.destroyed) return json(req, res, 400, { error: error.message }); return; }
   }
 
   if (route === '/api/me') {
@@ -262,7 +267,9 @@ export async function handleApi(req, res, route) {
         if (size > 20 * 1024 * 1024) throw new Error('文件不能超过 20 MB');
         chunks.push(chunk);
       }
-      fs.writeFileSync(filePath, Buffer.concat(chunks));
+      const bytes = Buffer.concat(chunks, size);
+      verifyBodyDigest(req, crypto.createHash('sha256').update(bytes).digest('base64url'));
+      fs.writeFileSync(filePath, bytes);
       delete file.request;
       updateUpload(file, { size, complete: true, pending: !image });
       return json(req, res, 200, { id, name, size });

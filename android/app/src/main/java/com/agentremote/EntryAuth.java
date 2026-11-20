@@ -53,12 +53,13 @@ final class EntryAuth {
         }
         return b64(raw);
     }
-    static String proof(JSONObject config, String method, String path) throws Exception {
+    static String proof(JSONObject config, String method, String path, byte[] body) throws Exception {
         long ts = System.currentTimeMillis();
         byte[] bytes = new byte[16]; new SecureRandom().nextBytes(bytes);
         String nonce = b64(bytes);
-        String payload = "ra-entry-v1\n" + config.getString("id") + "\n" + config.getString("token") + "\n" + method + " " + path + "\n" + ts + "\n" + nonce;
-        JSONObject proof = new JSONObject().put("ts", ts).put("nonce", nonce).put("signature", sign(config.getString("app"), payload));
+        String digest = b64(MessageDigest.getInstance("SHA-256").digest(body));
+        String payload = "ra-entry-v2\n" + config.getString("id") + "\n" + config.getString("token") + "\n" + method + " " + path + "\n" + ts + "\n" + nonce + "\n" + digest;
+        JSONObject proof = new JSONObject().put("ts", ts).put("nonce", nonce).put("body", digest).put("signature", sign(config.getString("app"), payload));
         return b64(proof.toString().getBytes(StandardCharsets.UTF_8));
     }
 }
