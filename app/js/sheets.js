@@ -175,7 +175,7 @@ function rememberAgentOpen(m) {
     pendingAgentOpen = '';
   }
 }
-function openSheet(kind, html) {
+function openSheet(kind, content) {
   if (!['agents', 'agent-actions', 'projects', 'project-trust', 'computer-files'].includes(kind)) projectEntry = null;
   if (kind !== 'ask') askDone?.(false);
   if (kind !== 'agents') pendingProjectReveal = null;
@@ -192,7 +192,8 @@ function openSheet(kind, html) {
   sheetKind = kind;
   if (kind !== 'windows') delete sheet._winSig;
   sheet.dataset.kind = kind;
-  sheet.innerHTML = html;
+  if (Array.isArray(content)) sheet.replaceChildren(...content);
+  else sheet.innerHTML = content;
   const nav = sheet.querySelector('.codexSettingsNav');
   if (nav) nav.scrollLeft = navScroll || 0;
   if (swap) {
@@ -481,8 +482,16 @@ function showComputerFiles() {
   const rows = computerFileEntries(state, entries).map(e => `<button class="opt editorEntry${e.directory ? ' editorFolder' : ''}" data-computer-path="${esc(e.path)}" data-computer-directory="${!!e.directory}" ${e.selectable ? '' : 'disabled'}>${fileEntryIcon(e.directory)}<span class="lbl ovRaw">${esc(e.name)}</span>${e.directory ? '<span class="editorEntryArrow" aria-hidden="true">›</span>' : `<span class="sub">${e.selectable ? fmtSize(e.size) : state.project ? I18N.tr('仅可选择文件夹') : I18N.tr('不可读取')}</span>`}</button>`).join('');
   const owner = state.project?.owner;
   const context = owner ? ` · Fusion · ${OV_AGENT[owner.app]}` : '';
-  const actions = state.project && dir && !state.message && !state.error && state.path === dir.path ? '<div class="computerFileActions"><button class="opt" data-computer-project="open">打开此文件夹</button><button class="opt" data-computer-project="chat">在此项目新建会话</button><button class="opt" data-computer-project="new">新建项目并创建会话</button></div>' : '';
-  openSheet('computer-files', `<h3>${I18N.tr(state.project ? '选择文件夹' : '打开文件')}</h3><p class="hint ovRaw">${esc(state.computer.name + context)}</p><form id="computerFilePathForm" class="computerFilePath"><input id="computerFilePath" class="ovRaw" aria-label="${I18N.tr('文件路径')}" placeholder="${I18N.tr('输入路径')}" value="${esc(state.path)}" autocomplete="off" autocapitalize="off" spellcheck="false"><button type="button" data-computer-complete title="Tab">${I18N.tr('补全')} ⇥</button><button type="submit">${I18N.tr('前往')}</button></form><div id="computerFileCompletions"></div><div class="computerFileNav"><button type="button" data-computer-path="${esc(dir?.parent ?? '')}" data-computer-directory="true" ${dir?.parent == null ? 'disabled' : ''}>${I18N.tr('返回上一级')}</button><button type="button" data-computer-root>${I18N.tr('根目录')}</button></div><label class="opt computerFileHidden"><span class="lbl">${I18N.tr('不显示隐藏文件和文件夹')}</span><input id="computerFileHideHidden" type="checkbox" role="switch"${state.hideHidden ? ' checked' : ''}><span class="switch${state.hideHidden ? ' on' : ''}" aria-hidden="true"></span></label>${actions}<p id="computerFileStatus" class="hint${state.error ? ' err' : ''}" role="status">${esc(I18N.tr(state.message))}</p>${rows || (!state.message ? `<div class="hint">${I18N.tr('此目录暂无可显示的文件')}</div>` : '')}`);
+  const choosing = !!state.project?.choose;
+  const ready = state.project && dir && !state.message && !state.error && state.path === dir.path;
+  let actions = '';
+  if (choosing) {
+    if (ready && dir.path) actions = `<button class="opt" data-computer-project="select">${I18N.tr('选择此文件夹')}</button>`;
+    actions += `<button class="opt" data-computer-project="back">${I18N.tr('返回授权设置')}</button>`;
+  } else if (ready) {
+    actions = '<button class="opt" data-computer-project="open">打开此文件夹</button><button class="opt" data-computer-project="chat">在此项目新建会话</button><button class="opt" data-computer-project="new">新建项目并创建会话</button>';
+  }
+  openSheet('computer-files', `<h3>${I18N.tr(state.project ? '选择文件夹' : '打开文件')}</h3><p class="hint ovRaw">${esc(state.computer.name + context)}</p><form id="computerFilePathForm" class="computerFilePath"><input id="computerFilePath" class="ovRaw" aria-label="${I18N.tr('文件路径')}" placeholder="${I18N.tr('输入路径')}" value="${esc(state.path)}" autocomplete="off" autocapitalize="off" spellcheck="false"><button type="button" data-computer-complete title="Tab">${I18N.tr('补全')} ⇥</button><button type="submit">${I18N.tr('前往')}</button></form><div id="computerFileCompletions"></div><div class="computerFileNav"><button type="button" data-computer-path="${esc(dir?.parent ?? '')}" data-computer-directory="true" ${dir?.parent == null ? 'disabled' : ''}>${I18N.tr('返回上一级')}</button><button type="button" data-computer-root>${I18N.tr('根目录')}</button></div><label class="opt computerFileHidden"><span class="lbl">${I18N.tr('不显示隐藏文件和文件夹')}</span><input id="computerFileHideHidden" type="checkbox" role="switch"${state.hideHidden ? ' checked' : ''}><span class="switch${state.hideHidden ? ' on' : ''}" aria-hidden="true"></span></label>${actions ? `<div class="computerFileActions">${actions}</div>` : ''}<p id="computerFileStatus" class="hint${state.error ? ' err' : ''}" role="status">${esc(I18N.tr(state.message))}</p>${rows || (!state.message ? `<div class="hint">${I18N.tr('此目录暂无可显示的文件')}</div>` : '')}`);
   $('sheet').scrollTop = state.scroll;
   if (selection) { $('computerFilePath').focus(); $('computerFilePath').setSelectionRange(...selection); }
   else if (state.focusPath) { $('computerFilePath').focus(); state.focusPath = false; }
