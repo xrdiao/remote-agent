@@ -38,6 +38,8 @@ function showPeerTasks() {
   openSheet('peer-workspace', header + `<form id="peerWorkspace">
     <label class="opt"><span class="lbl">${tr('发起电脑')}</span><select name="source">${peerOptions(computers, initial.id)}</select></label>
     <label class="opt"><span class="lbl">${tr('目标电脑')}</span><select name="target">${peerOptions(computers.filter(row => row.id !== initial.id), '', computers)}</select></label>
+    <details data-peer-identity hidden><summary></summary><pre class="connection-technical"></pre></details>
+    <p class="hint" data-peer-trust hidden>${esc(tr('请在两台电脑本机运行 npm run peer -- status 查看指纹，再运行 npm run peer -- trust <对方 ID> <指纹> 登记。'))}</p>
     <p class="hint" data-peer-scope hidden></p>
     <label class="opt" hidden><span class="lbl">${tr('目标目录')}</span><input name="root" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="${tr('目标电脑上的绝对路径')}" required disabled></label>
     <label class="opt" hidden><span class="lbl">${tr('允许使用目标终端')}</span><input name="terminal" type="checkbox" required disabled></label>
@@ -47,28 +49,42 @@ function showPeerTasks() {
     <button class="opt" type="button" data-peer-presets>${tr('预设任务管理')}</button></form>`);
   const form = $('peerWorkspace'), { source, target, root, terminal, agent } = form.elements;
   const scope = form.querySelector('[data-peer-scope]'), note = form.querySelector('[role="status"]');
+  const identity = form.querySelector('[data-peer-identity]'), trustHint = form.querySelector('[data-peer-trust]');
   const submit = form.querySelector('[type="submit"]'), revoke = form.querySelector('[data-peer-revoke]');
   const selected = field => computers.find(row => row.id === field.value);
   const isOpen = () => form.isConnected && sheetKind === 'peer-workspace';
-  let sourceInfo, grant, busy = false;
+  let sourceInfo, targetInfo, grant, verified = false, busy = false;
+
+  function fingerprintStatus(local, remote) {
+    const registered = local.workspaceFingerprints?.[remote.id];
+    return !registered ? '对方本机尚未登记' : registered === remote.fingerprint ? '对方核对通过' : '对方登记的指纹不匹配';
+  }
 
   function render() {
-    const needsGrant = !!sourceInfo && !grant;
+    const needsGrant = verified && !grant;
+    identity.hidden = !sourceInfo;
+    trustHint.hidden = !sourceInfo || verified;
+    if (sourceInfo) {
+      identity.querySelector('summary').textContent = tr(verified ? '公钥指纹已核对' : '需要核对公钥指纹');
+      identity.querySelector('pre').textContent = [[sourceInfo, targetInfo, '发起电脑'], [targetInfo, sourceInfo, '目标电脑']]
+        .map(([computer, other, label]) => `${tr(label)} · ${computer.id}\n${computer.fingerprint}\n${tr(fingerprintStatus(other, computer))}`).join('\n\n');
+    }
     root.closest('label').hidden = terminal.closest('label').hidden = !needsGrant;
-    scope.hidden = !sourceInfo;
+    scope.hidden = !verified;
     scope.textContent = grant ? `${tr('目标目录')} · ${grant.root}` : tr('授权后，发起电脑的 Agent 可以修改该目录的文件，并以目标中继的账户权限运行终端命令。');
     agent.closest('label').hidden = !agent.options.length;
     revoke.hidden = !grant;
-    submit.textContent = tr(needsGrant ? '授权并进入会话' : sourceInfo ? '进入会话' : '重试连接');
+    submit.textContent = tr(needsGrant ? '授权并进入会话' : verified ? '进入会话' : sourceInfo ? '刷新指纹状态' : '重试连接');
     for (const field of form.elements) field.disabled = busy || !!field.closest('[hidden]');
   }
 
   async function refresh() {
-    sourceInfo = grant = null;
+    sourceInfo = targetInfo = grant = null;
+    verified = false;
     root.value = ''; terminal.checked = false; agent.replaceChildren();
     const status = async computer => {
       const info = await peerTaskRequest(computer);
-      if (info.workspaceVersion !== 1) throw new Error(tr('电脑中继尚不支持新版互控'));
+      if (info.workspaceVersion !== 2 || typeof info.fingerprint !== 'string') throw new Error(tr('电脑中继尚不支持新版互控'));
       return info;
     };
     const [a, b] = await Promise.allSettled([status(selected(source)), status(selected(target))]);
@@ -76,7 +92,11 @@ function showPeerTasks() {
       ? `${tr(i === 0 ? '发起电脑' : '目标电脑')} · ${row.reason.message}` : '').filter(Boolean);
     if (failures.length) throw new Error(failures.join('\n'));
     sourceInfo = a.value;
-    grant = b.value.workspaces.find(row => row.source === source.value);
+    targetInfo = b.value;
+    grant = targetInfo.workspaces.find(row => row.source === source.value);
+    verified = sourceInfo.workspaceFingerprints?.[targetInfo.id] === targetInfo.fingerprint
+      && targetInfo.workspaceFingerprints?.[sourceInfo.id] === sourceInfo.fingerprint;
+    identity.open = !verified;
   }
 
   async function run(action) {
@@ -105,7 +125,7 @@ function showPeerTasks() {
   form.onsubmit = async event => {
     event.preventDefault();
     await run(async () => {
-      if (!sourceInfo) return refresh();
+      if (!verified) return refresh();
       const computer = selected(source), destination = selected(target);
       if (!grant) ({ grant } = await peerTaskRequest(destination, 'workspace-grant', { source: computer.id,
         publicKey: sourceInfo.publicKey, root: root.value, terminal: terminal.checked }));

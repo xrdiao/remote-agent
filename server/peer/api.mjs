@@ -1,8 +1,8 @@
 import { computerId } from '../../lib/auth.mjs';
 import { json, readBody, readJson } from '../http/static.mjs';
-import { authenticatePeerTask, grantPeerTask, peerStatus, PeerError, revokePeerTask, sendPeerTask } from './access.mjs';
+import { authenticatePeerTask, grantPeerTask, peerStatus, PeerError, revokePeerTask, sendPeerTask, workspaceFingerprints } from './access.mjs';
 import { peerJobAction, stopPeerJobs } from './jobs.mjs';
-import { grantPeerWorkspace, openPeerWorkspace, PEER_WORKSPACE_BODY_LIMIT, peerWorkspaceAction, peerWorkspaceGrants,
+import { grantPeerWorkspace, openPeerWorkspace, PEER_WORKSPACE_BODY_LIMIT, PEER_WORKSPACE_VERSION, peerWorkspaceAction, peerWorkspaceGrants,
   revokePeerWorkspace } from './workspace.mjs';
 import { listWindows, phoneWindows } from '../windows.mjs';
 
@@ -28,13 +28,14 @@ export async function receivePeerWorkspace(req, res) {
   try { data = JSON.parse(await readBody(req, PEER_WORKSPACE_BODY_LIMIT)); }
   catch { return json(req, res, 400, { error: '互控工作区请求无效' }); }
   if (!data || typeof data !== 'object' || Array.isArray(data)) return json(req, res, 400, { error: '互控工作区请求无效' });
-  try { return json(req, res, 200, { computer: computerId(), ...await peerWorkspaceAction(data) }); }
+  try { return json(req, res, 200, await peerWorkspaceAction(data)); }
   catch (error) { return peerFailure(req, res, error); }
 }
 
 export async function managePeerTasks(req, res, route, stillPaired) {
   try {
-    if (req.method === 'GET' && route === '/api/peers') return json(req, res, 200, { ...peerStatus(), workspaceVersion: 1, workspaces: peerWorkspaceGrants() });
+    if (req.method === 'GET' && route === '/api/peers') return json(req, res, 200, { ...peerStatus(), workspaceVersion: PEER_WORKSPACE_VERSION,
+      workspaces: peerWorkspaceGrants(), workspaceFingerprints: workspaceFingerprints() });
     if (req.method === 'POST' && ['/api/peers/grant', '/api/peers/revoke', '/api/peers/send', '/api/peers/workspace',
       '/api/peers/workspace-grant', '/api/peers/workspace-revoke'].includes(route)) {
       req.setEncoding('utf8');

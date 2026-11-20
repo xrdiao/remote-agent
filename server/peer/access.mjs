@@ -78,9 +78,44 @@ function verifyKey(value) {
   throw new PeerError(400, '发起电脑的互控身份无效');
 }
 
+const trustDir = 'peer-workspace-trust';
+const trustFile = id => `${trustDir}/${id}.json`;
+const publicDer = key => key.export({ type: 'spki', format: 'der' });
+const fingerprintOf = der => 'SHA256:' + crypto.createHash('sha256').update(der).digest('base64url');
+export const peerFingerprint = () => fingerprintOf(publicDer(crypto.createPublicKey(identity())));
+
+export function trustWorkspacePeer(id, fingerprint) {
+  if (!peerId(id) || id === computerId()) throw new PeerError(400, '请输入对方电脑的 ID');
+  const digest = typeof fingerprint === 'string' && /^SHA256:([\w-]{43})$/.exec(fingerprint)?.[1];
+  if (!digest || Buffer.from(digest, 'base64url').toString('base64url') !== digest)
+    throw new PeerError(400, '请输入对方电脑显示的完整 SHA256 公钥指纹');
+  writePeerFile(trustFile(id), fingerprint);
+  return { id, fingerprint };
+}
+
+export function workspaceFingerprints() {
+  let files;
+  try { files = fs.readdirSync(path.join(DATA_DIR, trustDir)); }
+  catch (error) { if (error.code === 'ENOENT') return {}; throw error; }
+  return Object.fromEntries(files.filter(file => /^[a-f0-9]{16}\.json$/.test(file))
+    .map(file => [file.slice(0, -5), readPeerFile(`${trustDir}/${file}`, null)]));
+}
+
+export function workspaceFingerprint(id) {
+  if (!peerId(id)) throw new PeerError(400, '互控电脑 ID 无效');
+  const fingerprint = readPeerFile(trustFile(id), null);
+  if (!fingerprint) throw new PeerError(403, '请在电脑本机登记对方的公钥指纹');
+  return fingerprint;
+}
+
+export function verifyWorkspaceKey(id, key) {
+  if (fingerprintOf(publicDer(key)) !== workspaceFingerprint(id))
+    throw new PeerError(403, '互控公钥指纹不匹配，请在电脑本机重新核对');
+}
+
 export function checkPeerSource(source, publicKey) {
   if (!peerId(source) || source === computerId()) throw new PeerError(400, '请选择另一台发起电脑');
-  verifyKey(publicKey);
+  return verifyKey(publicKey);
 }
 
 const grants = () => readPeerFile('peer-grants.json', []);
@@ -88,7 +123,8 @@ const grantView = ({ id, source, task }) => ({ id, source, task });
 
 export function peerStatus() {
   const { targets, tasks } = peerSettings();
-  return { v: 1, id: computerId(), publicKey: crypto.createPublicKey(identity()).export({ type: 'spki', format: 'der' }).toString('base64url'),
+  const key = publicDer(crypto.createPublicKey(identity()));
+  return { v: 1, id: computerId(), publicKey: key.toString('base64url'), fingerprint: fingerprintOf(key),
     canRun: canRunPeerTasks, targets: [...targets.keys()], tasks: canRunPeerTasks ? [...tasks].map(([id, row]) => ({ id, name: row.name })) : [],
     grants: grants().map(grantView) };
 }
@@ -117,6 +153,12 @@ function checkAction(action, id, task, grant) {
 
 export const PEER_REQUEST_TTL = 60000;
 
+export function signPeer(parts, { includeKey = false } = {}) {
+  const payload = JSON.stringify(parts), key = identity();
+  const signature = crypto.sign(null, Buffer.from(payload), key).toString('base64url');
+  return includeKey ? { payload, signature, publicKey: publicDer(crypto.createPublicKey(key)).toString('base64url') } : { payload, signature };
+}
+
 export function readSignedPeer({ payload, signature }, expectedDomain, length, label) {
   if (typeof payload !== 'string' || typeof signature !== 'string' || !/^[\w-]{86}$/.test(signature))
     throw new PeerError(401, `互控${label}签名无效`);
@@ -126,7 +168,11 @@ export function readSignedPeer({ payload, signature }, expectedDomain, length, l
   const [domain, source, target, ts] = parts;
   if (domain !== expectedDomain || !peerId(source) || target !== computerId() || !Number.isSafeInteger(ts) || Math.abs(Date.now() - ts) > PEER_REQUEST_TTL)
     throw new PeerError(401, `互控${label}身份或时间无效`);
-  const valid = publicKey => crypto.verify(null, Buffer.from(payload), verifyKey(publicKey), Buffer.from(signature, 'base64url'));
+  const valid = (publicKey, { checkFingerprint = false } = {}) => {
+    const key = verifyKey(publicKey);
+    if (checkFingerprint) verifyWorkspaceKey(source, key);
+    return crypto.verify(null, Buffer.from(payload), key, Buffer.from(signature, 'base64url'));
+  };
   return { source, ts, args: parts.slice(4), valid };
 }
 
@@ -151,13 +197,12 @@ export async function sendSignedPeer({ target, address, route, domain, args, mis
   const source = computerId();
   if (!peerId(target) || source === target || !address) throw new PeerError(404, '发起电脑未登记该目标的地址');
   const origin = peerOrigin(address);
-  const payload = JSON.stringify([domain, source, target, Date.now(), ...args]);
-  const signature = crypto.sign(null, Buffer.from(payload), identity()).toString('base64url');
+  const envelope = signPeer([domain, source, target, Date.now(), ...args]);
   let response, value;
   try {
     const timeout = AbortSignal.timeout(8000);
     response = await fetch(origin + route, { method: 'POST', redirect: 'error', signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
-      headers: { 'content-type': 'application/json' }, body: JSON.stringify({ payload, signature }) });
+      headers: { 'content-type': 'application/json' }, body: JSON.stringify(envelope) });
     const chunks = []; let size = 0;
     for await (const data of response.body) {
       size += data.byteLength;
@@ -169,14 +214,15 @@ export async function sendSignedPeer({ target, address, route, domain, args, mis
     signal?.throwIfAborted();
     throw new PeerError(502, missingReply);
   }
-  if (!response.ok) throw new PeerError(response.status, value?.error || '目标电脑没有接受请求');
-  if (value?.computer !== target) throw new PeerError(502, '目标电脑回执不匹配');
-  return value;
+  return { status: response.status, ok: response.ok, value };
 }
 
-function requestPeer({ target, action, id = '', task = '', grant = '' }, signal) {
-  return sendSignedPeer({ target, address: peerSettings().targets.get(target), route: '/api/peer-task', domain: direction,
+async function requestPeer({ target, action, id = '', task = '', grant = '' }, signal) {
+  const { status, ok, value } = await sendSignedPeer({ target, address: peerSettings().targets.get(target), route: '/api/peer-task', domain: direction,
     args: [action, id, task, grant], missingReply: action === 'list' ? '未能读取目标电脑的授权任务' : '未能从目标电脑取得回执，请保留原任务号查询' }, signal);
+  if (!ok) throw new PeerError(status, value?.error || '目标电脑没有接受请求');
+  if (value?.computer !== target) throw new PeerError(502, '目标电脑回执不匹配');
+  return value;
 }
 
 export async function listPeerTasks(target, signal) {

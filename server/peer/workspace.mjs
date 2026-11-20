@@ -4,10 +4,11 @@ import path from 'node:path';
 import { computerId, computerName, DATA_DIR } from '../../lib/auth.mjs';
 import { readFile, writeTextFile } from '../../lib/files.mjs';
 import { validLocalName } from '../../lib/platform.mjs';
-import { checkPeerSource, PEER_REQUEST_TTL, PeerError, peerGrantId, peerId, peerOrigin, readPeerFile,
-  readSignedPeer, sendSignedPeer, writePeerFile } from './access.mjs';
+import { checkPeerSource, PEER_REQUEST_TTL, PeerError, peerFingerprint, peerGrantId, peerId, peerOrigin, readPeerFile,
+  readSignedPeer, sendSignedPeer, signPeer, verifyWorkspaceKey, workspaceFingerprint, writePeerFile } from './access.mjs';
 
-const route = '/api/peer-workspace', domain = 'ra-peer-workspace-v1';
+const route = '/api/peer-workspace', domain = 'ra-peer-workspace-v2', replyDomain = 'ra-peer-workspace-reply-v2';
+export const PEER_WORKSPACE_VERSION = 2;
 const grantsFile = 'peer-workspace-grants.json';
 const grants = () => readPeerFile(grantsFile, []);
 const viewGrant = ({ id, source, root }) => ({ id, source, root });
@@ -28,7 +29,7 @@ function directory(root) {
 export const peerWorkspaceGrants = () => grants().map(viewGrant);
 
 export function grantPeerWorkspace({ source, publicKey, root, terminal }) {
-  checkPeerSource(source, publicKey);
+  verifyWorkspaceKey(source, checkPeerSource(source, publicKey));
   if (terminal !== true) throw new PeerError(400, '请确认允许发起电脑使用目标终端');
   root = directory(root);
   const rows = grants(), old = rows.find(row => row.source === source);
@@ -41,9 +42,18 @@ export function grantPeerWorkspace({ source, publicKey, root, terminal }) {
   return viewGrant(row);
 }
 
-function requestWorkspace({ target, address, workspace }, action, args, signal) {
-  return sendSignedPeer({ target, address, route, domain, args: [workspace, crypto.randomUUID(), action, args],
+async function requestWorkspace({ target, address, workspace }, action, args, signal) {
+  const targetFingerprint = workspaceFingerprint(target);
+  const nonce = crypto.randomUUID();
+  const { ok, status: httpStatus, value } = await sendSignedPeer({ target, address, route, domain, args: [workspace, nonce, targetFingerprint, action, args],
     missingReply: '未收到目标中继回执。请检查目标状态，重新进入互控会话可刷新地址。' }, signal);
+  if (!ok) throw new PeerError(httpStatus, httpStatus === 403 ? '目标电脑拒绝了互控请求，请核对指纹和工作区授权' : '目标电脑未返回可验证的互控回执');
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new PeerError(502, '目标电脑未返回可验证的互控回执');
+  const { source, args: [replyNonce, status, result], valid } = readSignedPeer(value, replyDomain, 7, '工作区回执');
+  if (source !== target || replyNonce !== nonce || !valid(value.publicKey, { checkFingerprint: true }))
+    throw new PeerError(502, '目标电脑互控回执核验失败');
+  if (status !== 200) throw new PeerError(status, result.error);
+  return { ...result, computer: source };
 }
 
 export async function openPeerWorkspace({ target, address, workspace }) {
@@ -82,11 +92,12 @@ const seen = new Map();
 let sweepAfter = 0;
 
 function authenticateWorkspace(body) {
-  const { source, ts, valid, args: [workspace, nonce, action, args] } = readSignedPeer(body, domain, 8, '工作区');
+  const { source, ts, valid, args: [workspace, nonce, targetFingerprint, action, args] } = readSignedPeer(body, domain, 9, '工作区');
   if (!peerGrantId(workspace) || !peerGrantId(nonce) || typeof action !== 'string' || !args || typeof args !== 'object' || Array.isArray(args))
     throw new PeerError(400, '互控工作区请求无效');
   const grant = grants().find(row => row.id === workspace && row.source === source);
-  if (!grant || !valid(grant.publicKey)) throw new PeerError(403, '目标电脑未授权此工作区');
+  if (!grant || !valid(grant.publicKey, { checkFingerprint: true })) throw new PeerError(403, '目标电脑未授权此工作区');
+  if (targetFingerprint !== peerFingerprint()) throw new PeerError(403, '互控公钥指纹不匹配，请在电脑本机重新核对');
   const now = Date.now();
   if (now >= sweepAfter) {
     for (const [key, expires] of seen) if (expires < now) seen.delete(key);
@@ -94,7 +105,7 @@ function authenticateWorkspace(body) {
   }
   if (seen.has(nonce)) throw new PeerError(409, '互控工作区请求已处理');
   seen.set(nonce, ts + PEER_REQUEST_TTL);
-  return { grant, action, args };
+  return { grant, action, args, nonce };
 }
 
 function within(root, file) {
@@ -182,6 +193,7 @@ function terminalAction(grant, action, { text }) {
   return queueTerminal(workspace, async () => {
     const { terminalService } = await import('../terminal-service.mjs');
     if (!grants().some(row => row.id === workspace)) throw new PeerError(403, '目标电脑未授权此工作区');
+    verifyWorkspaceKey(grant.source, checkPeerSource(grant.source, grant.publicKey));
     const id = terminals.get(workspace);
     const terminal = id && terminalService.list().find(row => row.id === id);
     if (action === 'open-terminal') {
@@ -207,8 +219,7 @@ function terminalAction(grant, action, { text }) {
   });
 }
 
-export async function peerWorkspaceAction(body) {
-  const { grant, action, args } = authenticateWorkspace(body);
+async function runWorkspaceAction({ grant, action, args }) {
   try {
     if (action === 'inspect' || action === 'open-terminal' || ['list-files', 'read-file', 'create-file', 'save-file'].includes(action)) {
       if (directory(grant.root) !== grant.root) throw new PeerError(409, '目标目录已发生变化，请重新授权');
@@ -225,4 +236,17 @@ export async function peerWorkspaceAction(body) {
     if (['EACCES', 'EPERM'].includes(error.code)) throw new PeerError(403, '目标电脑没有此操作的文件权限');
     throw error;
   }
+}
+
+export async function peerWorkspaceAction(body) {
+  const request = authenticateWorkspace(body);
+  const { grant, nonce } = request;
+  let status = 200, result;
+  try { result = await runWorkspaceAction(request); }
+  catch (error) {
+    if (!(error instanceof PeerError)) throw error;
+    status = error.status;
+    result = { error: error.message };
+  }
+  return signPeer([replyDomain, computerId(), grant.source, Date.now(), nonce, status, result], { includeKey: true });
 }
