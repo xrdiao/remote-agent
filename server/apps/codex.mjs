@@ -13,7 +13,7 @@ import { conversationProjects, fusionProject, allFusionRuns } from '../fusion/st
 import { removeLibrarySession, publishSessionChange, rememberSessionMessage, rememberSessionStatuses } from '../../lib/session-library.mjs';
 import { NativeCdp, nativeWindowAt, nativeSessionCatalog, nativeTargets } from '../native-windows.mjs';
 import { currentOperation } from '../operations.mjs';
-import { codexBackend, CODEX_BACKEND } from '../codex/state.mjs';
+import { codexBackend, CODEX_BACKEND, isCompletedFileChange } from '../codex/state.mjs';
 import { safeHomePath, createProjectFolder, projectList, openFolder } from '../agent/projects.mjs';
 import { rememberSelection } from '../../lib/auth.mjs';
 import { uploads, pendingUploads, uploadAttachments, removeUpload, updateUpload } from '../../lib/uploads.mjs';
@@ -421,13 +421,11 @@ const backendRoutes = {
     this.emit({ t: 'draftAck', sel: key, ok: true, text, read, draftEpoch: m.draftEpoch || '', revision: m.revision });
   },
   async stop(m) {
+    if (m.sel && m.sel !== this.selectionKey()) throw new Error('会话已切换，操作未执行');
     const id = this.threadId;
     m = await this.followCodexOwner(m);
     if (!this.codexBackend) return this.handle(m);
-    return codexBackend.withWriter(id, async thread => {
-      const turn = thread.turns.findLast(turn => turn.status === 'inProgress');
-      if (turn) await codexBackend.client.request('turn/interrupt', { threadId: id, turnId: turn.id });
-    });
+    return codexBackend.stop(id);
   },
   async refresh() { await codexBackend.refresh(this.threadId); backendPublish(this); },
   async toolDetails(m) {
@@ -542,10 +540,20 @@ const backendRoutes = {
     const size = await writeTextFile(file.path, String(m.text));
     this.emit({ t: 'saved', requestId: m.requestId, path: m.path, host: '', ok: true, size });
   },
-  changes() {
+  changes(m) {
     const thread = codexBackend.threads.get(this.threadId);
-    const files = thread.turns.flatMap(turn => turn.items.filter(item => item.type === 'fileChange').flatMap(item => item.changes.map(row => ({ name: row.path, diff: row.diff }))));
-    this.emit({ t: 'changes', historical: true, actions: [], files });
+    let turns = thread.turns;
+    let isFileChange = item => item.type === 'fileChange';
+    if (m.turnId) {
+      if (m.sel !== this.selectionKey()) throw new Error('会话已切换，请使用当前会话的按钮');
+      turns = turns.filter(turn => turn.id === m.turnId && turn.status === 'completed');
+      isFileChange = isCompletedFileChange;
+    }
+    const files = turns.flatMap(turn => turn.items.filter(isFileChange)
+      .flatMap(item => item.changes.map(row => ({ name: row.path, diff: row.diff }))));
+    const rows = m.turnId ? Array.from(Map.groupBy(files, row => row.name),
+      ([name, changes]) => ({ name, diff: changes.map(row => row.diff).filter(Boolean).join('\n') })) : files;
+    this.emit({ t: 'changes', historical: true, actions: [], files: rows });
   },
   async usage(m) {
     const result = await codexBackend.client.request('account/rateLimits/read', {});

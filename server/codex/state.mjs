@@ -21,6 +21,7 @@ const requestKey = row => (row.method === 'item/tool/requestUserInput' ? 'async:
   + JSON.stringify([row.params.threadId, row.params.turnId, row.id]);
 const threadSettings = ({ thread, sandbox, reasoningEffort, ...settings }) => ({ ...settings, sandboxPolicy: sandbox, effort: reasoningEffort });
 const reasoningText = item => (item.summary?.length ? item.summary : item.content || []).join('\n');
+export const isCompletedFileChange = item => item.type === 'fileChange' && item.status === 'completed' && item.changes.length > 0;
 const chatTypes = new Set(['userMessage', 'todo-list', 'imageGeneration', 'imageView', 'contextCompaction',
   'commandExecution', 'fileChange', 'collabAgentToolCall', 'mcpToolCall']);
 
@@ -318,31 +319,43 @@ export class CodexState extends EventEmitter {
     return this.loading.get(id);
   }
 
-  async refresh(id) {
+  async refresh(id, { reconcile = false } = {}) {
     await this.client.connect();
-    const revision = this.threads.get(id)?.revision || 0;
-    const status = this.threads.get(id)?.status;
+    const before = this.threads.get(id);
+    const revision = before?.revision || 0;
+    const status = before?.status;
     const { thread } = await this.client.request('thread/read', { threadId: id, includeTurns: true });
     thread.cwd = localFilePath(thread.cwd);
     const old = this.threads.get(id);
-    if ((old?.revision || 0) !== revision) {
+    if (before && !old) return thread;
+    if (old && (old !== before || (old.revision || 0) !== revision)) {
       const current = new Map(old.turns.map(turn => [turn.id, turn]));
       const historical = new Set(thread.turns.map(turn => turn.id));
       thread.turns = [...thread.turns.map(turn => {
         const live = current.get(turn.id);
         if (!live) return turn;
-        live.items = mergeTurnItems(turn.items, live.items);
+        if (reconcile && live.status === 'inProgress' && turn.status !== 'inProgress') {
+          Object.assign(live, turn, { items: mergeTurnItems(live.items, turn.items) });
+        } else live.items = mergeTurnItems(turn.items, live.items);
         return live;
       }), ...old.turns.filter(turn => !historical.has(turn.id))];
       if (old.status !== status) thread.status = old.status;
     }
     const settings = { ...this.records.get(id)?.settings, ...old?.settings,
       ...(thread.model ? { model: thread.model } : {}), ...(thread.reasoningEffort ? { effort: thread.reasoningEffort } : {}) };
-    this.threads.set(id, Object.assign(old || {}, thread, { settings }));
-    delete this.threads.get(id).disconnected;
-    this.remember(this.threads.get(id));
+    const current = Object.assign(old || {}, thread, { settings, revision: (old?.revision || 0) + 1 });
+    this.threads.set(id, current);
+    delete current.disconnected;
+    if (reconcile) {
+      for (const [key, request] of this.requests) {
+        if (request.params.threadId === id && thread.turns.some(turn => turn.id === request.params.turnId && turn.status !== 'inProgress'))
+          this.requests.delete(key);
+      }
+    }
+    this.remember(current);
     this.changed(id);
-    return this.threads.get(id);
+    if (reconcile) this.releaseIdle(id).catch(error => this.changed(id, error));
+    return current;
   }
 
   read(id) {
@@ -443,6 +456,7 @@ export class CodexState extends EventEmitter {
     }
     if (method === 'serverRequest/resolved' && this.requests.get(p.requestId)?.params.threadId === id) this.requests.delete(p.requestId);
     if (!thread) return;
+    const becameIdle = method === 'thread/status/changed' && thread.status?.type === 'active' && p.status.type === 'idle';
     thread.revision = (thread.revision || 0) + 1;
     if (method === 'thread/settings/updated') thread.settings = { ...thread.settings, ...p.threadSettings };
     else if (method === 'thread/status/changed') thread.status = p.status;
@@ -503,7 +517,9 @@ export class CodexState extends EventEmitter {
     }
     this.changed(id);
     if (method === 'turn/completed') this.retryCapacity(id);
-    if (method === 'turn/completed' || method === 'serverRequest/resolved' || method === 'thread/status/changed')
+    if (becameIdle && busyTurn(thread))
+      this.refresh(id, { reconcile: true }).catch(error => this.changed(id, error));
+    else if (method === 'turn/completed' || method === 'serverRequest/resolved' || method === 'thread/status/changed')
       this.releaseIdle(id).catch(error => this.changed(id, error));
   }
 
@@ -557,6 +573,25 @@ export class CodexState extends EventEmitter {
       result = { decision };
     }
     await this.client.replyToRequest(request, result);
+  }
+
+  async stop(id) {
+    const turn = busyTurn(this.threads.get(id));
+    if (!turn) return;
+    if (!this.hasWriter(id) || this.releasing.has(id)) {
+      await this.refresh(id);
+      return;
+    }
+    return this.withWriter(id, async thread => {
+      if (busyTurn(thread)?.id !== turn.id) return;
+      try {
+        await this.client.request('turn/interrupt', { threadId: id, turnId: turn.id });
+      } catch (error) {
+        if (error.message.toLowerCase() !== 'no active turn to interrupt') throw error;
+        const current = await this.refresh(id, { reconcile: true });
+        if (current.turns.some(row => row.id === turn.id && row.status === 'inProgress')) throw error;
+      }
+    });
   }
 
   async startQueued(id, queueId) {
@@ -638,20 +673,29 @@ export class CodexState extends EventEmitter {
   chat(id, limit = 60, thread = this.threads.get(id), tools = null) {
     const turn = thread.disconnected ? null : busyTurn(thread), latest = thread.turns.at(-1), items = [];
     const all = thread.turns.flatMap(row => {
-      const last = row.status === 'completed' && row.items.findLast(item => item.type === 'agentMessage' && item.text);
+      const last = row.status === 'completed' && row.items.findLast(item => item.type === 'agentMessage' && item.text?.trim());
       const plan = this.statistics.get(id)?.[row.id]?.plan || [];
-      return [...row.items, ...(plan.length ? [{ type: 'todo-list', id: row.id + ':tasks', plan }] : [])].map(item => ({ item, turn: row, fork: item === last }));
+      return [...row.items, ...(plan.length ? [{ type: 'todo-list', id: row.id + ':tasks', plan }] : [])].map(item => ({ item, turn: row, finalReply: item === last }));
     }).filter(({ item }) => item.type === 'reasoning' ? !!reasoningText(item).trim()
       : item.type === 'agentMessage' || item.type === 'plan' ? !!item.text?.trim() : chatTypes.has(item.type));
-    for (const { item, turn: owner, fork } of all.slice(-limit)) {
+    for (const { item, turn: owner, finalReply } of all.slice(-limit)) {
       const base = { i: item.id, order: owner.startedAt * 1000 || thread.createdAt * 1000 };
       if (item.type === 'userMessage') {
         const images = item.content.filter(part => part.type === 'image').map(part => part.url).filter(Boolean);
         items.push({ ...base, ...(item.clientId ? { i: `${id}:user-message:${item.clientId}`, nativeIds: [item.id, item.clientId] } : {}),
           k: 'human', t: textInput(item.content), sentAt: base.order, ...(images.length ? { images } : {}) });
       } else if (item.type === 'agentMessage' || item.type === 'plan') {
-        if (item.text) items.push({ ...base, k: 'assistant', bodyFormat: 'markdown', t: item.text,
-          ...(fork ? { b: ['Fork chat from here'], btnItem: owner.id, actions: ['fork'] } : {}) });
+        const reply = { ...base, k: 'assistant', bodyFormat: 'markdown', t: item.text };
+        if (finalReply) {
+          reply.b = ['Copy message', 'Fork chat from here'];
+          reply.btnItem = owner.id;
+          reply.actions = ['copy', 'fork'];
+          if (owner.items.some(isCompletedFileChange)) {
+            reply.b.push('View changes');
+            reply.actions.push('view-changes');
+          }
+        }
+        items.push(reply);
       } else if (item.type === 'todo-list') {
         items.push({ ...base, k: 'tasks', total: item.plan.length,
           done: item.plan.filter(step => step.status === 'completed').length,
