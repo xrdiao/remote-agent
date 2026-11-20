@@ -1997,7 +1997,7 @@ document.addEventListener('click', async e => {
   }
   if (currentApp === 'codex' && /^(View changes|View changed files|View file changes)$/i.test(b.dataset.actionLabel || '')) {
     status('读取改动的文件…');
-    send({ t: 'changes' });
+    send(b.dataset.actionId === 'view-changes' ? { t: 'changes', turnId: b.dataset.item, sel: viewSel } : { t: 'changes' });
     return;
   }
   if (RISKY.test(b.textContent.trim()) && !await ask(`确定要点「${b.textContent.trim()}」吗？`, b.textContent.trim())) return;
