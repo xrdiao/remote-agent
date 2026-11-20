@@ -22,12 +22,15 @@ export function readPeerFile(name, fallback) {
   catch (error) { if (error.code === 'ENOENT') return fallback; throw error; }
 }
 
-export function writePeerFile(name, value) {
+export function writePeerFile(name, value, { createOnly = false } = {}) {
   const file = path.join(DATA_DIR, name), tmp = `${file}.${process.pid}.tmp`;
   fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
   try {
     fs.writeFileSync(tmp, JSON.stringify(value) + '\n', { mode: 0o600 });
-    fs.renameSync(tmp, file);
+    if (createOnly) {
+      fs.linkSync(tmp, file);
+      fs.unlinkSync(tmp);
+    } else fs.renameSync(tmp, file);
   } catch (error) { fs.rmSync(tmp, { force: true }); throw error; }
 }
 
@@ -84,13 +87,29 @@ const publicDer = key => key.export({ type: 'spki', format: 'der' });
 const fingerprintOf = der => 'SHA256:' + crypto.createHash('sha256').update(der).digest('base64url');
 export const peerFingerprint = () => fingerprintOf(publicDer(crypto.createPublicKey(identity())));
 
-export function trustWorkspacePeer(id, fingerprint) {
+export function trustWorkspacePeer(id, fingerprint, { createOnly = false } = {}) {
   if (!peerId(id) || id === computerId()) throw new PeerError(400, '请输入对方电脑的 ID');
   const digest = typeof fingerprint === 'string' && /^SHA256:([\w-]{43})$/.exec(fingerprint)?.[1];
   if (!digest || Buffer.from(digest, 'base64url').toString('base64url') !== digest)
     throw new PeerError(400, '请输入对方电脑显示的完整 SHA256 公钥指纹');
-  writePeerFile(trustFile(id), fingerprint);
+  const file = trustFile(id);
+  try { writePeerFile(file, fingerprint, { createOnly }); }
+  catch (error) {
+    if (!createOnly || error.code !== 'EEXIST') throw error;
+    if (readPeerFile(file, null) !== fingerprint) throw new PeerError(409, '已登记其他指纹，请在电脑本机重新核对');
+  }
   return { id, fingerprint };
+}
+
+export function confirmWorkspaceFingerprints({ source, target, sourceFingerprint, targetFingerprint }) {
+  const id = computerId();
+  if (!peerId(source) || !peerId(target) || source === target || (id !== source && id !== target))
+    throw new PeerError(400, '指纹确认的电脑身份不匹配');
+  const isSource = id === source;
+  if ((isSource ? sourceFingerprint : targetFingerprint) !== peerFingerprint())
+    throw new PeerError(403, '本机公钥指纹不匹配，请重新核对');
+  const peer = trustWorkspacePeer(isSource ? target : source, isSource ? targetFingerprint : sourceFingerprint, { createOnly: true });
+  return { id, peer };
 }
 
 export function workspaceFingerprints() {

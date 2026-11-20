@@ -1,6 +1,7 @@
 import { computerId } from '../../lib/auth.mjs';
 import { json, readBody, readJson } from '../http/static.mjs';
-import { authenticatePeerTask, grantPeerTask, peerStatus, PeerError, revokePeerTask, sendPeerTask, workspaceFingerprints } from './access.mjs';
+import { authenticatePeerTask, confirmWorkspaceFingerprints, grantPeerTask, peerStatus, PeerError, revokePeerTask, sendPeerTask,
+  workspaceFingerprints } from './access.mjs';
 import { peerJobAction, stopPeerJobs } from './jobs.mjs';
 import { grantPeerWorkspace, openPeerWorkspace, PEER_WORKSPACE_BODY_LIMIT, PEER_WORKSPACE_VERSION, peerWorkspaceAction, peerWorkspaceGrants,
   revokePeerWorkspace } from './workspace.mjs';
@@ -35,12 +36,19 @@ export async function receivePeerWorkspace(req, res) {
 export async function managePeerTasks(req, res, route, stillPaired) {
   try {
     if (req.method === 'GET' && route === '/api/peers') return json(req, res, 200, { ...peerStatus(), workspaceVersion: PEER_WORKSPACE_VERSION,
-      workspaces: peerWorkspaceGrants(), workspaceFingerprints: workspaceFingerprints() });
-    if (req.method === 'POST' && ['/api/peers/grant', '/api/peers/revoke', '/api/peers/send', '/api/peers/workspace',
-      '/api/peers/workspace-grant', '/api/peers/workspace-revoke'].includes(route)) {
+      workspaces: peerWorkspaceGrants(), workspaceFingerprints: workspaceFingerprints(), canConfirmFingerprints: true });
+    const confirm = route === '/api/peers/workspace-fingerprints';
+    if (req.method === 'POST' && (confirm || ['/api/peers/grant', '/api/peers/revoke', '/api/peers/send', '/api/peers/workspace',
+      '/api/peers/workspace-grant', '/api/peers/workspace-revoke'].includes(route))) {
       req.setEncoding('utf8');
-      const data = await readJson(req);
+      const data = confirm ? await readBody(req) : await readJson(req);
       if (!stillPaired()) return json(req, res, 401, { error: '授权入口已失效' });
+      if (confirm) {
+        if (data !== '{}') throw new PeerError(400, '指纹确认参数必须用配对密钥签名');
+        // authenticateRequest already verified the method and the exact URL, including these parameters.
+        const params = new URL(req.url, 'http://relay').searchParams;
+        return json(req, res, 200, confirmWorkspaceFingerprints(Object.fromEntries(params)));
+      }
       if (route === '/api/peers/workspace') {
         const agents = phoneWindows(await listWindows().catch(() => []));
         if (!agents.length) throw new PeerError(404, '发起电脑没有可用的 Agent');
