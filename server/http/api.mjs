@@ -23,7 +23,7 @@ import { manageOverviewSession } from '../overview-actions.mjs';
 import { uploadDocument, imageTypes } from '../../lib/shared-rules.mjs';
 import { localFilePath } from '../../lib/platform.mjs';
 import { relayAutostart } from '../autostart.mjs';
-import { managePeerTasks, receivePeerTask } from '../peer/api.mjs';
+import { managePeerTasks, receivePeerTask, receivePeerWorkspace } from '../peer/api.mjs';
 
 // A device is usable once paired and, when 2FA asks for it, re-verified.
 function deviceFor(req) {
@@ -68,6 +68,7 @@ export async function handleApi(req, res, route) {
   const ip = clientIp(req);
   if (req.method === 'POST' && !originAllowed(req)) return json(req, res, 403, { error: 'bad origin' });
   if (route === '/api/peer-task') return receivePeerTask(req, res);
+  if (route === '/api/peer-workspace') return receivePeerWorkspace(req, res);
   if (route.startsWith('/api/video/') && ['GET', 'HEAD'].includes(req.method)) {
     const grant = videoGrant(route.slice('/api/video/'.length));
     if (!grant) return json(req, res, 401, { error: '视频链接已过期或设备授权已失效，请重新打开视频' });

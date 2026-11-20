@@ -1,9 +1,9 @@
 // Caches the app shell so the installed app opens instantly; live data (url.json, relay) always goes to the network.
 importScripts('push-sw.js?v=478');
 const CACHE_PREFIX = 'remote-agent:' + self.registration.scope + ':';
-const CACHE = CACHE_PREFIX + 'v494'; // keep in sync with APP_VERSION in js/core.js
-const SHELL = ['push-sw.js?v=478', 'js/shared-rules.js?v=492', 'js/ui-helpers.js?v=449', './', 'index.html',   'app.css?v=494', 'i18n.js?v=494', 'manifest.webmanifest', 'icon-192.png', 'icon-512.png', 'logo.png',
-  'js/core.js?v=494', 'js/fusion.js?v=453', 'js/gate.js?v=430', 'js/auth.js?v=207', 'js/net.js?v=493', 'js/peers.js?v=494', 'js/sheets.js?v=493', 'js/notify.js?v=486', 'js/mode.js?v=386', 'js/chat.js?v=492',
+const CACHE = CACHE_PREFIX + 'v496'; // keep in sync with APP_VERSION in js/core.js
+const SHELL = ['push-sw.js?v=478', 'js/shared-rules.js?v=492', 'js/ui-helpers.js?v=449', './', 'index.html',   'app.css?v=494', 'i18n.js?v=496', 'manifest.webmanifest', 'icon-192.png', 'icon-512.png', 'logo.png',
+  'js/core.js?v=496', 'js/fusion.js?v=453', 'js/gate.js?v=430', 'js/auth.js?v=207', 'js/net.js?v=493', 'js/peers.js?v=496', 'js/sheets.js?v=493', 'js/notify.js?v=486', 'js/mode.js?v=386', 'js/chat.js?v=492',
   'js/history.js?v=490', 'js/files.js?v=481', 'js/screen.js?v=382',   'js/terminal.js?v=466', 'js/composer.js?v=492', 'js/voice.js?v=488', 'js/local-voice.js?v=391', 'js/voice-worklet.js?v=133',
   'js/transfer.js?v=487', 'js/scanner.js',
   'js/latency.js?v=367', 'js/image-editor.js?v=447', 'js/overview.js?v=494',

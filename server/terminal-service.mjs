@@ -217,6 +217,23 @@ export class TerminalService {
     return () => { if (subscribed) terminal.listeners.delete(receive); subscribed = false; };
   }
 
+  snapshot(id) {
+    const terminal = this.get(id);
+    return this.schedule(terminal, () => {
+      if (terminal.closed) throw new Error('这个 RA 终端已经关闭');
+      const buffer = terminal.screen.buffer.active;
+      const end = buffer.type === 'alternate' ? buffer.length : buffer.baseY + buffer.cursorY + 1;
+      const start = Math.max(0, end - 100);
+      let output = '';
+      for (let index = start; index < end; index++) {
+        const line = buffer.getLine(index);
+        output += (index > start && !line.isWrapped ? '\n' : '') + line.translateToString(!buffer.getLine(index + 1)?.isWrapped);
+      }
+      return { ...this.metadata(terminal), prompt: terminal.prompt, seq: terminal.seq, output: output.slice(-8192),
+        truncated: start > 0 || output.length > 8192 };
+    });
+  }
+
   write(id, data) {
     const terminal = this.get(id);
     return this.schedule(terminal, () => {
