@@ -17,7 +17,8 @@ async function peerTaskRequest(computer, action, body) {
   if ((!action && (response.status === 404 || response.ok && value.v !== 1))
     || (action === 'workspace' && response.status === 404 && value.error === 'not found')) throw new Error(I18N.tr('电脑中继尚不支持新版互控'));
   if (!response.ok) throw new Error(I18N.tr(value.error || '互控请求失败'));
-  if ((!action || action === 'workspace') && value.id !== computer.id) throw new Error(I18N.tr('返回结果的电脑身份不匹配'));
+  if ((!action || action === 'workspace' || action.startsWith('workspace-fingerprints?')) && value.id !== computer.id)
+    throw new Error(I18N.tr('返回结果的电脑身份不匹配'));
   return value;
 }
 
@@ -39,21 +40,36 @@ function showPeerTasks() {
     <label class="opt"><span class="lbl">${tr('发起电脑')}</span><select name="source">${peerOptions(computers, initial.id)}</select></label>
     <label class="opt"><span class="lbl">${tr('目标电脑')}</span><select name="target">${peerOptions(computers.filter(row => row.id !== initial.id), '', computers)}</select></label>
     <details data-peer-identity hidden><summary></summary><pre class="connection-technical"></pre></details>
-    <p class="hint" data-peer-trust hidden>${esc(tr('请在两台电脑本机运行 npm run peer -- status 查看指纹，再运行 npm run peer -- trust <对方 ID> <指纹> 登记。'))}</p>
+    <p class="hint" data-peer-trust hidden></p>
+    <div data-peer-fingerprint-fields hidden>
+      <label class="opt"><span class="lbl">${tr('发起电脑的本机指纹')}</span><input name="sourceFingerprint" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" required disabled></label>
+      <label class="opt"><span class="lbl">${tr('目标电脑的本机指纹')}</span><input name="targetFingerprint" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" required disabled></label>
+    </div>
     <p class="hint" data-peer-scope hidden></p>
     <label class="opt" hidden><span class="lbl">${tr('目标目录')}</span><input name="root" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="${tr('目标电脑上的绝对路径')}" required disabled></label>
     <label class="opt" hidden><span class="lbl">${tr('允许使用目标终端')}</span><input name="terminal" type="checkbox" required disabled></label>
     <label class="opt" hidden><span class="lbl">${tr('选择 Agent')}</span><select name="agent" required disabled></select></label>
     <button class="opt" type="submit" disabled>${tr('进入会话')}</button>
+    <button class="opt" type="button" data-peer-refresh hidden>${tr('刷新指纹状态')}</button>
     <button class="opt" type="button" data-peer-revoke hidden>${tr('撤销工作区授权')}</button><p class="hint" role="status"></p>
     <button class="opt" type="button" data-peer-presets>${tr('预设任务管理')}</button></form>`);
-  const form = $('peerWorkspace'), { source, target, root, terminal, agent } = form.elements;
+  const form = $('peerWorkspace'), { source, target, root, terminal, agent, sourceFingerprint, targetFingerprint } = form.elements;
   const scope = form.querySelector('[data-peer-scope]'), note = form.querySelector('[role="status"]');
   const identity = form.querySelector('[data-peer-identity]'), trustHint = form.querySelector('[data-peer-trust]');
+  const fingerprintFields = form.querySelector('[data-peer-fingerprint-fields]'), refreshButton = form.querySelector('[data-peer-refresh]');
   const submit = form.querySelector('[type="submit"]'), revoke = form.querySelector('[data-peer-revoke]');
   const selected = field => computers.find(row => row.id === field.value);
   const isOpen = () => form.isConnected && sheetKind === 'peer-workspace';
   let sourceInfo, targetInfo, grant, verified = false, busy = false;
+  const errorMessage = error => ['TypeError', 'AbortError', 'TimeoutError'].includes(error.name) ? tr('电脑未响应，请重试') : error.message;
+
+  function canConfirm() {
+    if (verified || !sourceInfo?.canConfirmFingerprints || !targetInfo?.canConfirmFingerprints) return false;
+    return [[sourceInfo, targetInfo], [targetInfo, sourceInfo]].every(([local, other]) => {
+      const registered = local.workspaceFingerprints?.[other.id];
+      return !registered || registered === other.fingerprint;
+    });
+  }
 
   function fingerprintStatus(local, remote) {
     const registered = local.workspaceFingerprints?.[remote.id];
@@ -62,8 +78,12 @@ function showPeerTasks() {
 
   function render() {
     const needsGrant = verified && !grant;
+    const confirm = canConfirm();
     identity.hidden = !sourceInfo;
     trustHint.hidden = !sourceInfo || verified;
+    fingerprintFields.hidden = refreshButton.hidden = !confirm;
+    trustHint.textContent = tr(confirm ? '在两台电脑本机运行 npm run peer -- status，把各自显示的完整指纹粘贴到下方。'
+      : '请在两台电脑本机运行 npm run peer -- status 查看指纹，再运行 npm run peer -- trust <对方 ID> <指纹> 登记。');
     if (sourceInfo) {
       identity.querySelector('summary').textContent = tr(verified ? '公钥指纹已核对' : '需要核对公钥指纹');
       identity.querySelector('pre').textContent = [[sourceInfo, targetInfo, '发起电脑'], [targetInfo, sourceInfo, '目标电脑']]
@@ -74,7 +94,8 @@ function showPeerTasks() {
     scope.textContent = grant ? `${tr('目标目录')} · ${grant.root}` : tr('授权后，发起电脑的 Agent 可以修改该目录的文件，并以目标中继的账户权限运行终端命令。');
     agent.closest('label').hidden = !agent.options.length;
     revoke.hidden = !grant;
-    submit.textContent = tr(needsGrant ? '授权并进入会话' : verified ? '进入会话' : sourceInfo ? '刷新指纹状态' : '重试连接');
+    submit.textContent = tr(needsGrant ? '授权并进入会话' : verified ? '进入会话' : confirm ? '确认双方指纹'
+      : sourceInfo ? '刷新指纹状态' : '重试连接');
     for (const field of form.elements) field.disabled = busy || !!field.closest('[hidden]');
   }
 
@@ -82,6 +103,7 @@ function showPeerTasks() {
     sourceInfo = targetInfo = grant = null;
     verified = false;
     root.value = ''; terminal.checked = false; agent.replaceChildren();
+    sourceFingerprint.value = targetFingerprint.value = '';
     const status = async computer => {
       const info = await peerTaskRequest(computer);
       if (info.workspaceVersion !== 2 || typeof info.fingerprint !== 'string') throw new Error(tr('电脑中继尚不支持新版互控'));
@@ -99,6 +121,22 @@ function showPeerTasks() {
     identity.open = !verified;
   }
 
+  async function confirmFingerprints() {
+    const sourceValue = sourceFingerprint.value.trim(), targetValue = targetFingerprint.value.trim();
+    if (sourceValue !== sourceInfo.fingerprint || targetValue !== targetInfo.fingerprint)
+      throw new Error(tr('指纹不匹配，请核对两台电脑本机显示的完整指纹'));
+    const fields = new URLSearchParams({ source: sourceInfo.id, target: targetInfo.id, sourceFingerprint: sourceValue, targetFingerprint: targetValue });
+    const pair = [[selected(source), sourceInfo, targetInfo, '发起电脑'], [selected(target), targetInfo, sourceInfo, '目标电脑']];
+    const outcomes = await Promise.allSettled(pair.map(async ([computer, local, other]) => {
+      const { peer } = await peerTaskRequest(computer, 'workspace-fingerprints?' + fields);
+      if (peer?.id !== other.id || peer.fingerprint !== other.fingerprint) throw new Error(tr('指纹确认回执不匹配'));
+      local.workspaceFingerprints = { ...local.workspaceFingerprints, [other.id]: other.fingerprint };
+    }));
+    if (outcomes.some(row => row.status === 'rejected')) throw new Error(outcomes.map((row, index) =>
+      `${tr(pair[index][3])} · ${row.status === 'fulfilled' ? tr('已登记对方指纹') : errorMessage(row.reason)}`).join(' · '));
+    await refresh();
+  }
+
   async function run(action) {
     if (busy) return;
     busy = true;
@@ -108,7 +146,7 @@ function showPeerTasks() {
       await action();
       note.textContent = '';
     } catch (error) {
-      note.textContent = ['TypeError', 'AbortError', 'TimeoutError'].includes(error.name) ? tr('电脑未响应，请重试') : error.message;
+      note.textContent = errorMessage(error);
     } finally { busy = false; if (isOpen()) render(); }
   }
 
@@ -118,6 +156,7 @@ function showPeerTasks() {
     run(refresh);
   };
   form.querySelector('[data-peer-presets]').onclick = () => showPeerPresets(computers, source.value, target.value);
+  refreshButton.onclick = () => run(refresh);
   revoke.onclick = () => run(async () => {
     await peerTaskRequest(selected(target), 'workspace-revoke', { grant: grant.id });
     await refresh();
@@ -125,7 +164,7 @@ function showPeerTasks() {
   form.onsubmit = async event => {
     event.preventDefault();
     await run(async () => {
-      if (!verified) return refresh();
+      if (!verified) return canConfirm() ? confirmFingerprints() : refresh();
       const computer = selected(source), destination = selected(target);
       if (!grant) ({ grant } = await peerTaskRequest(destination, 'workspace-grant', { source: computer.id,
         publicKey: sourceInfo.publicKey, root: root.value, terminal: terminal.checked }));
