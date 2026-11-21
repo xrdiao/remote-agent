@@ -91,17 +91,27 @@ function finishOpenCodeQuestion(message) {
     status(message.error, false);
   }
 }
-list.addEventListener('submit', e => {
-  const form = e.target.closest('[data-opencode-question]');
-  if (!form) return;
-  e.preventDefault();
-  captureOpenCodeAnswers(form);
-  const reject = e.submitter?.name === 'reject';
-  const answers = [...form.querySelectorAll('[data-opencode-answer]')].map(field => {
+function openCodeQuestionHtml(it, attributes = '') {
+  return `<form data-opencode-question="${esc(it.requestID)}" ${attributes}>${it.questions.map((question, qi) =>
+    `<fieldset data-opencode-answer data-multiple="${question.multiple === true}"><legend class="ovRaw">${esc(question.header)} · ${esc(question.question)}</legend>${question.options.map(option =>
+      `<label class="opencode-option ovRaw"><input type="${question.multiple ? 'checkbox' : 'radio'}" name="answer-${qi}" value="${esc(option.label)}"><span>${esc(option.label)}${option.description ? `<small>${esc(option.description)}</small>` : ''}</span></label>`).join('')}
+    ${question.custom !== false ? '<input data-opencode-custom placeholder="其他回答" aria-label="其他回答">' : ''}</fieldset>`).join('')}
+    <div class="btns"><button type="submit">提交回答</button><button type="submit" name="reject" value="1">拒绝</button></div></form>`;
+}
+function openCodeQuestionAnswers(form) {
+  return [...form.querySelectorAll('[data-opencode-answer]')].map(field => {
     const values = [...field.querySelectorAll('input:checked')].map(input => input.value);
     const custom = field.querySelector('[data-opencode-custom]')?.value.trim();
     return custom ? field.dataset.multiple === 'true' ? [...values, custom] : [custom] : values;
   });
+}
+list.addEventListener('submit', e => {
+  const form = e.target.closest('[data-opencode-question]');
+  if (!form || form.hasAttribute('data-fusion-opencode')) return;
+  e.preventDefault();
+  captureOpenCodeAnswers(form);
+  const reject = e.submitter?.name === 'reject';
+  const answers = openCodeQuestionAnswers(form);
   if (!reject && answers.some(values => !values.length)) return status(I18N.tr('请回答所有问题'), false);
   const requestId = crypto.randomUUID();
   const action = { t: 'opencodeQuestion', id: form.dataset.opencodeQuestion, requestId, operationId: crypto.randomUUID(), answers, reject };
@@ -337,13 +347,7 @@ function renderItem(it, readOnly = false) {
   }
   // it.h comes from the whitelist sanitizer in server/page/common.js (clean): plain tags only, text escaped.
   else if (it.k === 'assistant') { el.copyText = it.t || ''; el.innerHTML = currentApp === 'codex' || it.bodyFormat === 'markdown' ? codexReplyHtml(it) : currentApp === 'opencode' ? codexMarkdown.render(it.t || '') : it.h || ''; dressMessage(el); }
-  else if (it.k === 'opencodeQuestion') {
-    el.innerHTML = `<form data-opencode-question="${esc(it.requestID)}">${it.questions.map((question, qi) =>
-      `<fieldset data-opencode-answer data-multiple="${question.multiple === true}"><legend class="ovRaw">${esc(question.header)} · ${esc(question.question)}</legend>${question.options.map(option =>
-        `<label class="opencode-option ovRaw"><input type="${question.multiple ? 'checkbox' : 'radio'}" name="answer-${qi}" value="${esc(option.label)}"><span>${esc(option.label)}${option.description ? `<small>${esc(option.description)}</small>` : ''}</span></label>`).join('')}
-      ${question.custom !== false ? '<input data-opencode-custom placeholder="其他回答" aria-label="其他回答">' : ''}</fieldset>`).join('')}
-      <div class="btns"><button type="submit">提交回答</button><button type="submit" name="reject" value="1">拒绝</button></div></form>`;
-  }
+  else if (it.k === 'opencodeQuestion') el.innerHTML = openCodeQuestionHtml(it);
   else if (it.k === 'thinking') {
     const lines = String(it.t || '').split('\n');
     el.copyText = lines.length > 1 ? lines.slice(1).join('\n') : (it.t || '');
