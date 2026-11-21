@@ -30,10 +30,10 @@ export default [
     return { timingMs: distribution(times), samples: times };
   } },
   { id: 'stress.last-target', title: '快速连续 A/B 点击最终只打开最后目标', refs: ['F16', 'R02', 'S01', 'S03'], mode: 'stress', apps: true, async run(c, app) {
-    const rows = (await c.rows(app)).filter(row => row.thread && row.state !== 'run' && !row.missing);
-    const a = rows.find(row => row.thread === c.options.targets?.[app]?.A) || rows[0];
-    const b = rows.find(row => row.thread === c.options.targets?.[app]?.B && row.thread !== a?.thread) || rows.find(row => row.thread !== a?.thread);
-    if (!a || !b) throw new Unavailable(`${app} 缺少两个可用的空闲会话`);
+    const a = await c.target(app);
+    const b = c.options.targets?.[app]?.B ? await c.target(app, 'B')
+      : (await c.rows(app)).find(row => row.thread && row.thread !== a.thread && row.state !== 'run' && !row.missing);
+    if (!b || a.state === 'run' || b.state === 'run') throw new Unavailable(`${app} 缺少两个可用的空闲会话`);
     c.check(a.thread !== b.thread, '真实目录选定两个不同的空闲会话');
     await c.open(b);
     for (let i = 0; i < c.options.iterations; i++) {
