@@ -30,8 +30,11 @@ export default [
       }
       selectedChoices = await c.b.read(choiceValues);
     }
-    const identity = "JSON.stringify(lastChat.questions?.requests?.map(r=>r.id)||lastChat.questions?.list?.map(r=>r.question)||lastChat.items.filter(i=>i.k==='opencodeQuestion').map(i=>i.requestID))";
+    const identity = `JSON.stringify(lastChat?.questions?.requests?.map(r=>r.id)
+      ||lastChat?.questions?.list?.map(r=>[r.text,r.options.map(o=>o.label)])
+      ||lastChat?.items?.filter(i=>i.k==='opencodeQuestion').map(i=>i.requestID)||[])`;
     const before = await c.b.read(identity);
+    c.check(before !== '[]', '已读取实际原生问题身份');
     if (app === 'codex') {
       const card = await c.expand(a);
       await c.b.wait(`ovRecs().find(r=>r.comp===${attr(a.comp)}&&r.threadId===${attr(a.thread)})?.state==='wait'`, '问题卡片待确认状态');
@@ -39,7 +42,7 @@ export default [
       c.check(!/\d{1,2}:\d{2}|上次|Last:/.test(badge), '卡片状态不附带时间');
     }
     await c.open(b); await c.open(a);
-    c.equal(await c.b.read(identity), before, 'A 的问题身份没有被 B 替换');
+    c.check(await c.b.wait(`${identity}===${attr(before)}`, '返回 A 后恢复原生问题'), 'A 的问题身份没有被 B 替换');
     if (selectedChoices) c.equal(await c.b.read(choiceValues), selectedChoices, '返回后保留 Devin 已选答案');
     if (edited) c.equal(await c.b.read(`document.querySelector(${attr(draft)}).value`), 'QA_ONE', '返回后保留本轮问题的未发答案');
     if (await c.b.has('#qnBar [data-request][data-action="0"]')) {
