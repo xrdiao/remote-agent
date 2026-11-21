@@ -399,8 +399,17 @@ function mentionRequestMatches(request, input) {
   return request?.sel === viewSel && request.revision === inputRevision
     && request.value === input.value && request.caret === input.selectionStart;
 }
+function submitGoalCommand(input) {
+  if (mode !== 'chat' || currentApp !== 'codex' || MN.mentions.length) return false;
+  const goal = /^\s*\/goal(?:\s+([\s\S]+))?\s*$/i.exec(input.value);
+  if (!goal) return false;
+  mentionHide(input);
+  openCodexGoal(goal[1]?.trim());
+  return true;
+}
 function submitComposerCommand(input = text) {
   if (mode !== 'chat' || currentApp !== 'codex' || MN.mentions.length) return false;
+  if (submitGoalCommand(input)) return true;
   const match = /^\s*\/([^\s/]+)\s*$/.exec(input.value);
   if (!match) return false;
   const token = { start: 0, end: input.value.length, q: match[1], trigger: '/' };
@@ -430,6 +439,14 @@ function selectComposerMention(r, input, t = mentionToken(input)) {
     return;
   }
   if (MN.root) return mentionAsk({ cat: r.label }, input);
+  if (currentApp === 'codex' && r.section === 'commands' && r.key === 'goal') {
+    if (t) {
+      input.setRangeText('', t.start, t.end, 'end');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+    mentionHide(input);
+    return openCodexGoal();
+  }
   if (currentApp === 'codex' && (r.key === 'context-action:pick-local-files' || (r.section === 'context-actions' && r.label === 'Files and folders'))) {
     return openCodexFilePicker(t, input);
   }
@@ -727,6 +744,7 @@ async function sendComposerNow() {
   if (!composerUploadsReady()) return;
   const v = text.value;
   if (!v.trim() && !$('attachments').children.length) return;
+  if (submitGoalCommand(text)) return;
   saveDraft();
   const follow = codexFollow();
   const steer = !follow || follow === 'queue';

@@ -193,6 +193,21 @@ function refreshSelectionMetadata(initial = false) {
     if (!initial) send({ t: 'windows' });
   }
 }
+const codexAccounts = new Map();
+function applyCodexAccount(value) {
+  if (!value) return;
+  const key = quotaKey(), previous = codexAccounts.get(key);
+  if (previous !== value.account) {
+    codexAccounts.set(key, value.account);
+    quotaCache.delete(key);
+    for (const name of [...menuCache.keys()]) if (name.startsWith(menuCachePrefix())) menuCache.delete(name);
+    menuRequest++;
+    if (menuPending) showMenuError(menuPending.kind, 'Codex 账号已更新，请重新读取菜单');
+    renderQuota({ missing: true, quota: [], limits: [] });
+  }
+  appPlans = { ...appPlans, codex: value.plan || '' };
+  updateTitle();
+}
 function applySelection(m, clearChat = true) {
   const fusionChanged = 'fusionController' in m;
   if (fusionChanged) activeFusionController = m.fusionController;
@@ -209,6 +224,7 @@ function applySelection(m, clearChat = true) {
   // A new chat gets its thread id once it materializes: keep its pending echoes attached to it.
   if (changed && viewSel.endsWith('|') && (m.sel || '').startsWith(viewSel)) for (const p of pendingEchoes) if (p.sel === viewSel) p.sel = m.sel;
   if (changed) {
+    if (sheetKind === 'codex-goal') closeSheet();
     failFileRead('目标已切换，文件读取已中断，请重新打开');
     invalidateChatRender();
     selectionReady = false;
@@ -226,6 +242,7 @@ function applySelection(m, clearChat = true) {
     ...selection,
     selections: { ...here.selections, [id]: selection, [m.app || currentApp]: { id, ...selection } },
   });
+  if (currentApp === 'codex' && m.codexAccount) applyCodexAccount(m.codexAccount);
   if (changed) { mirroredDraft = ''; restoreDraft(); renderAttachments([]); if (!m.home) send({ t: 'attachments' }); }
   const cachedAgents = agentLists.get(agentListKey());
   if (cachedAgents && m.threadId) setAgentList(agentListKey(), cachedAgents.map(a => ({ ...a, current: agentThreadKey(a) === agentThreadKey({ id: m.threadId }) })));
@@ -1509,8 +1526,13 @@ async function connect(resumeLink = null) {
     else if (m.t === 'projectReady') receiveProjectReady(m);
     else if (m.t === 'docs') showDocs(m);
     else if (m.t === 'settings') { if (m.codex && m.requestId !== codexSettingsRequest) return; finishPending(['正在读取设置…', '正在修改…', '正在保存指令…']); m.codex ? showCodexSettings(m) : showSettings(m.sections || [], m.nav || [], m.current || '', m.choices || []); }
+    else if (m.t === 'codexAccount') {
+      if (currentApp === 'codex' && m.sel === viewSel) applyCodexAccount(m);
+    }
+    else if (m.t === 'codexGoal') receiveCodexGoal(m);
     else if (m.t === 'usage') {
       if (currentApp === 'fusion' || !windowReady || !viewSel || m.sel !== viewSel) return;
+      if (currentApp === 'codex' && m.account != null && m.account !== codexAccounts.get(quotaKey())) return;
       if (m.plan) { appPlans = { ...appPlans, [currentApp]: m.plan }; updateTitle(); }
       if (m.missing) status('没有额度数据');
       renderQuota(m);
