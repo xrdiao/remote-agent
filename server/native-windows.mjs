@@ -7,7 +7,7 @@ import { bindOperation, publishDesktopState, withOperation } from './operations.
 import { AgentContext } from './agent/context.mjs';
 import { projectSessionIds, reconcileSessionCatalog, updateProjectWindowTargets } from './project-windows.mjs';
 import { codexSessionStates } from './windows.mjs';
-import { rememberSessionStatuses } from '../lib/session-library.mjs';
+import { rememberSessionStatuses, sessionId } from '../lib/session-library.mjs';
 
 // Native connections and read state belong to windows, not to a phone's current view.
 const windows = new Map();
@@ -79,10 +79,15 @@ async function refreshSessionCatalog(source, changed) {
   read.at = Date.now();
   read.promise = (async () => {
     const sources = app === 'devin' ? [...new Set([source, ...[...windows.values()].filter(window => window.win?.app === app)])] : [source];
+    const ids = projectSessionIds(app);
+    if (app === 'devin') for (const window of sources) {
+      const id = sessionId(app, window.thread);
+      if (id && !ids.includes(id)) ids.push(id);
+    }
     const results = await Promise.allSettled(sources.map(async window => {
       await window.connect();
-      if (app === 'codex') return readCodexCatalog(window, projectSessionIds(app));
-      const result = await window.cdp.evaluate(helpersCall(`nativeSessionInfo(${JSON.stringify(app)}, ${JSON.stringify(projectSessionIds(app))}, true)`), { timeout: 30000 });
+      if (app === 'codex') return readCodexCatalog(window, ids);
+      const result = await window.cdp.evaluate(helpersCall(`nativeSessionInfo(${JSON.stringify(app)}, ${JSON.stringify(ids)}, true)`), { timeout: 30000 });
       if (app === 'devin' && result.ready) window.devinCatalog = new Map(result.rows.map(row => [row.id, row]));
       return result;
     }));
@@ -160,14 +165,22 @@ export function cursorSource(thread, project = null) {
   }
   return selected;
 }
-export function devinSource(thread, preferred = '') {
-  const candidates = [...windows.values()].filter(source => source.win?.app === 'devin'
-    && source.cdp.ws?.readyState === 1
-    && (source.thread === thread || source.catalog?.some(row => row.id === thread)
-      || source.devinCatalog?.get(thread)?.archived === false));
-  return candidates.find(source => source.win.id === preferred)
-    || candidates.find(source => source.thread === thread)
-    || candidates[0];
+export async function devinSource(thread, preferred = '', project = null) {
+  const id = sessionId('devin', thread);
+  const sources = [...windows.values()].filter(source => source.win?.app === 'devin' && source.cdp.ws?.readyState === 1);
+  const choose = candidates => candidates.find(source => source.win.id === preferred)
+    || candidates.find(source => source.thread === id) || candidates[0];
+  const confirmed = () => choose(sources.filter(source => {
+    const row = source.devinCatalog?.get(id);
+    return row?.workspace && !row.archived && (!project || samePath(row.workspace, project.root));
+  }));
+  const cached = confirmed();
+  if (cached || !sources.length) return cached;
+  if (id.startsWith('acp/devin-cli/')) {
+    await awaitCdpRead(refreshSessionCatalog(choose(sources), true));
+    return confirmed();
+  }
+  return choose(sources.filter(source => source.thread === id || source.catalog?.some(row => row.id === id)));
 }
 export const nativeWindowAt = url => windows.get(url);
 export function configureNativeRetry(deviceId, source, settings) {

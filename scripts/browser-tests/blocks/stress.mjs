@@ -1,4 +1,5 @@
 import { attr } from '../context.mjs';
+import { Unavailable } from '../browser.mjs';
 
 export function distribution(values) {
   const sorted = [...values].sort((a, b) => a - b);
@@ -29,8 +30,11 @@ export default [
     return { timingMs: distribution(times), samples: times };
   } },
   { id: 'stress.last-target', title: '快速连续 A/B 点击最终只打开最后目标', refs: ['F16', 'R02', 'S01', 'S03'], mode: 'stress', apps: true, async run(c, app) {
-    const rows = (await c.rows(app)).filter(row => row.thread && row.state !== 'run');
-    c.check(rows.length >= 2, '真实目录至少有两个空闲会话'); const a = rows[0], b = rows[1];
+    const rows = (await c.rows(app)).filter(row => row.thread && row.state !== 'run' && !row.missing);
+    const a = rows.find(row => row.thread === c.options.targets?.[app]?.A) || rows[0];
+    const b = rows.find(row => row.thread === c.options.targets?.[app]?.B && row.thread !== a?.thread) || rows.find(row => row.thread !== a?.thread);
+    if (!a || !b) throw new Unavailable(`${app} 缺少两个项目目录可用的空闲会话`);
+    c.check(a.thread !== b.thread, '真实目录选定两个不同的空闲会话');
     // Each navigation starts from the actual home cards; no direct ovOpen calls.
     for (let i = 0; i < c.options.iterations; i++) {
       await c.reveal(a); await c.b.click(`[data-ov-session=${attr(a.key)}] [data-ov="full"]`);

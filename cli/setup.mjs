@@ -58,6 +58,6 @@ if (await yes('  要再加一层 Authenticator 二次验证吗（Google / Micros
 
 console.log(`
 完成！还差两步：
-  1. ${isWin ? '在 PowerShell 执行 .\\window_start\\start-agents.ps1 -Apps cursor' : '用 ./scripts/start-cursor.sh 重启 Cursor'}（带调试端口），手机才能控制它。
+  1. ${isWin ? '在 PowerShell 执行 .\\window_start\\start-agents.ps1 -Apps cursor' : `用 ${isMac ? './scripts/start-cursor.sh' : './ubuntu_start/start-agents.sh cursor'} 重启 Cursor`}（带调试端口），手机才能控制它。
   2. 运行 npm run pair，用手机扫码配对。以后每台新手机都这样配对一次。`);
 rl.close();

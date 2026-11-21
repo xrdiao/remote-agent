@@ -33,11 +33,14 @@ async function documentText(file, extension) {
   } finally { await fs.rm(directory, { recursive: true, force: true }); }
 }
 
-export async function openCodeAttachment(file) {
+export async function openCodeAttachment(file, model) {
   const extension = path.extname(file.name).toLowerCase();
   const image = images[extension] || (file.type?.startsWith('image/') ? file.type : '');
-  if (image) return { type: 'file', mime: image, filename: file.name,
-    url: `data:${image};base64,${(await fs.readFile(file.path)).toString('base64')}` };
+  if (image) {
+    if (model && model.capabilities?.input?.image !== true) throw new Error(`${model.name} 不支持图片，请更换模型或移除图片`);
+    return { type: 'file', mime: image, filename: file.name,
+      url: `data:${image};base64,${(await fs.readFile(file.path)).toString('base64')}` };
+  }
   let text;
   if (textTypes.has(extension)) text = await fs.readFile(file.path, 'utf8');
   else if (documents.has(extension)) {

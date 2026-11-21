@@ -67,6 +67,7 @@
     }
     const configuration = window.vscode?.context?.configuration?.();
     return { ready: !!configuration?.workspace || hasComposer(),
+      windowId: configuration?.windowId,
       windowHandle: configuration?.handle ? Array.from(configuration.handle.buffer) : null,
       focused: document.hasFocus(), dirty: !!document.querySelector('.tab.dirty, .tab[aria-label*="unsaved" i]'),
       dialog: [...document.querySelectorAll('[role="dialog"][aria-modal="true"], [role="alertdialog"], .monaco-dialog-box, .quick-input-widget')].some(vis),

@@ -26,8 +26,8 @@ export const adapter = {
   },
   async newChat(projectRoot) {
     if (!projectRoot) return this.devinNewChat();
-    const { threadId } = await this.resolveDevinProjectSession(projectRoot);
-    await this.openDevinProjectSession(threadId, true);
+    const { threadId, cwd } = await this.resolveDevinProjectSession(projectRoot);
+    await this.openDevinProjectSession(threadId, cwd);
   },
 
   // A cold start keeps the native home/new-chat view.
@@ -203,12 +203,12 @@ export const adapter = {
     else await this.typeText(text);
   },
 
-  async submitPrompt(now, busy, when, queued) {
+  async submitPrompt(now, busy, when, queued, _mentions, _receipt, _files, text, target) {
     const id = this.threadId || '', action = queued || now || when === 'queue' ? 'queue' : 'submitPrompt';
     if (!id && action === 'submitPrompt') return this.submitPromptKey('Enter', queued);
     return this.submitPromptKey(null, queued, () => this.cdp.evaluate(helpersCall(
-      `nativeSessionAction('devin', ${JSON.stringify(id)}, ${JSON.stringify(action)}, ${JSON.stringify({ now: !!now })})`,
-    )));
+      `nativeSessionAction('devin', ${JSON.stringify(id)}, ${JSON.stringify(action)}, ${JSON.stringify({ now: !!now, imageCount: target.imageCount })})`,
+    )), { ...target, text });
   },
 
   async fileAgentMarks(f, text) {
@@ -236,12 +236,12 @@ async resolveDevinProjectSession(root, threadId = '') {
   return native;
 },
 
-async openDevinProjectSession(threadId, remember) {
+async openDevinProjectSession(threadId, createdRoot = '') {
   await this.adapter.openAgent.call(this, threadId);
   const source = this.cdp.nativeWindow;
-  if (remember && source) {
+  if (createdRoot && source) {
     source.devinCatalog ||= new Map();
-    source.devinCatalog.set(threadId, { id: threadId, archived: false });
+    source.devinCatalog.set(threadId, { id: threadId, workspace: createdRoot, archived: false });
   }
 },
 

@@ -63,7 +63,7 @@
       else if (text || images.length) items.push(nativeMarkdownItem(id, message.kind === 'user_message' ? 'human' : 'assistant', text, at, images));
     } else if (message.kind === 'tool_call') {
       const tool = message.content;
-      items.push({ i: id, k: 'tool', src: 'devin', kind: tool.kind || 'other', t: tool.title || '',
+      items.push({ i: id, k: 'tool', src: 'devin', kind: tool.kind === 'execute' ? 'command' : tool.kind || 'other', t: tool.title || '',
         cmd: typeof tool.rawInput?.command === 'string' ? tool.rawInput.command : '',
         output: (tool.content || []).filter(block => block.type === 'content' && block.content?.type === 'text').map(block => block.content.text).join('\n').slice(0, 4000),
         ...(tool.locations?.[0]?.path ? { f: tool.locations[0].path } : {}),
@@ -547,6 +547,7 @@
     }
     return (data?.localQueuedMessages?.length ? data.localQueuedMessages : data?.queuedMessages || []).map(row => ({
       id: String(row.id), t: devinMessageText(row.content).slice(0, 4000), src: 'devin',
+      imageCount: row.content.filter(block => block.content?.type === 'image').length,
     }));
   };
   const devinQueueTarget = (id, action) => {
@@ -971,6 +972,7 @@
     if (!devinSessionRecord(id)) throw new Error('Devin 原生目录中没有这个会话');
     const found = devinNativeSubmission(id);
     if (!found) throw new Error('Devin 原生输入框尚未就绪');
+    if (spec.imageCount && attachmentRows().length < spec.imageCount) throw new Error('Devin 输入框里的图片已变化，请重新附加后发送');
     if (spec.submit) return found.props.onSubmit();
     const before = new Set(devinQueued(id).map(row => row.id));
     if (typeof found.props.onEnqueue !== 'function') {
@@ -986,7 +988,7 @@
       if (!devinQueueTarget(row.id, 'send')) throw new Error('Devin 原生立即发送入口尚未就绪');
       return { queued: true, now: true };
     }
-    return { queued: true, now: false, queueId: row.id };
+    return { queued: true, now: false, queueId: row.id, imageCount: row.imageCount };
   };
   const devinNativeQuestionText = async (id, spec = {}) => {
     const text = String(spec.text ?? '');

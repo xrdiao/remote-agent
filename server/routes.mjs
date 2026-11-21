@@ -247,7 +247,6 @@ export const ROUTES = {
   draft: {
     fail: (s, m) => s.emit({ t: 'draftAck', sel: m.sel, ok: false, draftEpoch: m.draftEpoch || '', revision: m.revision }),
     pre: async (s, m) => {
-      if ((m.draftEpoch || '') !== (s.draftEpoch || '')) return;
       if (s.queueEditing) { s.queueEditing.request = m; return; }
       const read = m.text === undefined;
       let text = read ? '' : String(m.text);

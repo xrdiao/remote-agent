@@ -305,7 +305,8 @@ const terminalPackage = JSON.parse(fs.readFileSync(path.join(ROOT, 'node_modules
 for (const [asset, source] of [['xterm.js', 'lib/xterm.js'], ['xterm.css', 'css/xterm.css'], ['xterm.LICENSE.txt', 'LICENSE']]) {
   const local = fs.readFileSync(path.join(ROOT, 'app/vendor', asset));
   const installed = fs.readFileSync(path.join(ROOT, 'node_modules/@xterm/xterm', source));
-  if (!local.equals(installed)) fail(`terminal asset differs from installed xterm ${terminalPackage.version}: ${asset}`);
+  if (local.toString('utf8').replace(/\r\n/g, '\n') !== installed.toString('utf8').replace(/\r\n/g, '\n'))
+    fail(`terminal asset differs from installed xterm ${terminalPackage.version}: ${asset}`);
   if (asset !== 'xterm.LICENSE.txt' && !coreRefs.includes(`vendor/${asset}?v=${terminalPackage.version}`))
     fail(`terminal asset version reference missing: ${asset}`);
 }

@@ -6,7 +6,7 @@ import { spawn } from 'node:child_process';
 import { workspaces, windowRoots, workspaceLabel, editorRoots } from '../../lib/files.mjs';
 import { IS_WIN, IS_MAC, mod, normPath, findBin, localFilePath, pathKey, samePath, validLocalName, projectPathAllowed, projectDrives, projectParent, nativeLauncher, launchCommand } from '../../lib/platform.mjs';
 import { Cdp, cdpRead, awaitCdpRead } from '../cdp.mjs';
-import { NativeCdp, nativeWindowAt } from '../native-windows.mjs';
+import { devinSource, NativeCdp, nativeSessionCatalog, nativeWindowAt } from '../native-windows.mjs';
 import { openCodexSidebar as openCodexSidebarWindows } from '../platform/windows/codex.mjs';
 import { listWindows, codexWindows } from '../windows.mjs';
 import { CDP_URL, DEVIN_CDP_URL, CODEX_CDP_URL, EDITORS } from '../config.mjs';
@@ -221,19 +221,29 @@ export const methods = {
       return this.adapter.attachBackend.call(this, { project: { root: real }, newSession });
     if (app === 'codex' && !this.fusionBinding && this.adapter.backendThread(threadId, ''))
       return this.adapter.attachBackend.call(this, { project: { root: real }, threadId });
-    if (!IS_WIN && app === 'devin' && !this.fusionBinding && this.cdp) {
+    if (app === 'devin' && !this.fusionBinding && this.cdp) {
       let selected = threadId.replace(/^tab:/, '');
       if (!newSession && !selected) {
-        const catalog = await this.cdp.evaluate(helpersCall("nativeSessionInfo('devin', [], true)"));
+        const catalog = nativeSessionCatalog('devin') || await this.cdp.evaluate(helpersCall("nativeSessionInfo('devin', [], true)"));
+        if (!catalog.ready) throw new Error('Devin 原生会话目录尚未就绪');
         selected = catalog.rows.filter(row => !row.archived && this.projectMatches([{ root: row.workspace, host: row.host || '' }], real))
           .sort((a, b) => b.lastUsed - a.lastUsed || a.id.localeCompare(b.id))[0]?.id || '';
       }
-      const native = await this.resolveDevinProjectSession(real, newSession ? '' : selected);
       const switching = this.switchingThread, previousCdp = this.cdp;
       this.switchingThread = true;
       this.bindingReady = false;
       try {
-        await this.openDevinProjectSession(native.threadId, newSession);
+        if (!newSession && selected) {
+          const source = await devinSource(selected, this.windowId, { root: real });
+          if (source && source.win.id !== this.windowId) {
+            await this.openBound(source.win, source.win.editorWs || source.win.ws, null, {
+              windowId: source.win.id, threadId: selected, deferred: true,
+            });
+            if (this.pendingProject?.trust) return;
+          }
+        }
+        const native = await this.resolveDevinProjectSession(real, newSession ? '' : selected);
+        await this.openDevinProjectSession(native.threadId, newSession || !selected ? native.cwd : '');
         this.pendingProject = null;
         this.bindingReady = true;
         this.projectReady({ root: real, newSession, threadId: selected });
@@ -289,17 +299,19 @@ export const methods = {
       }
     }
     let reused = false;
-    if (!target && app === 'cursor' && (reuseOnly || !IS_WIN && !this.fusionBinding)) {
+    if (!target && app === 'cursor' && (reuseOnly || !this.fusionBinding)) {
       for (const page of projectPages) {
         if (!ownedProjectWindow(app, page.id) && !reuseOnly) continue;
         const state = await this.projectWindowState(page, '', true);
-        if (state.busy || state.draft || reuseOnly && fusionWindowInUse({ app, id: page.id })) continue;
+        if (state.busy || state.draft || fusionWindowInUse({ app, id: page.id })) continue;
         const cdp = new Cdp(page.webSocketDebuggerUrl);
+        let nativeWindowId;
         try {
           await cdp.connect();
           const lifecycle = await cdp.evaluate(helpersCall('projectWindowProbe()'));
           if (!lifecycle.ready || lifecycle.dirty || lifecycle.dialog || lifecycle.agentBusy || lifecycle.terminalBusy) continue;
           if (reuseOnly && page.title === 'Cursor Agents' && !ownedProjectWindow(app, page.id)) continue;
+          nativeWindowId = lifecycle.windowId;
           this.stopChatUpdates();
           this.bindingReady = false;
           if (this.editorCdp?.wsUrl === page.webSocketDebuggerUrl) this.detach();
@@ -308,7 +320,20 @@ export const methods = {
         const deadline = Date.now() + 25000;
         while (!target && Date.now() < deadline) {
           const pages = await (await fetch(`${editor.url}/json/list`, { signal })).json();
-          target = (await matching(pages.filter(p => p.type === 'page' && /workbench/.test(p.url))))[0];
+          const candidates = await matching(pages.filter(p => p.type === 'page' && /workbench/.test(p.url)
+            && (p.id === page.id || !projectPages.some(previous => previous.id === p.id))));
+          for (const candidate of candidates) {
+            if (candidate.id === page.id) { target = candidate; break; }
+            if (nativeWindowId == null) continue;
+            const rebound = new Cdp(candidate.webSocketDebuggerUrl);
+            try {
+              await rebound.connect();
+              if (await rebound.evaluate('window.vscode?.context?.configuration?.()?.windowId') === nativeWindowId) {
+                target = candidate;
+                break;
+              }
+            } finally { rebound.close(); }
+          }
           if (!target) await awaitCdpRead(new Promise(resolve => setTimeout(resolve, 150)));
         }
         if (!target) throw new Error('Cursor 绑定窗口尚未完成项目切换');
@@ -735,7 +760,7 @@ export const methods = {
       return;
     }
     const openHere = async (root, host, thread) => {
-      if (!root) return false;
+      if (!root || this.app === 'devin' && !this.fusionBinding && !host) return false;
       const roots = IS_WIN && this.app === 'devin' ? await this.devinWindowRoots() : await editorRoots(this.editorCdp, this.app);
       if (!this.projectMatches(roots, root, host)) return false;
       if (this.app === 'codex') {

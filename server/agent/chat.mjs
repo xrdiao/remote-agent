@@ -644,7 +644,10 @@ export const methods = {
   },
   async submitPromptKey(key, queued, submit, target) {
     const cdp = this.cdp, scope = this.selectionKey(), receipt = this.sendNativeReceipt;
-    const read = timeout => cdp.evaluate(`(() => {
+    const imageCount = target?.imageCount || 0;
+    const read = timeout => target && this.app === 'devin'
+      ? cdp.evaluate(helpersCall(`nativeSessionInfo('devin', ${JSON.stringify(target.thread)}, 'receipt')`), { timeout })
+      : cdp.evaluate(`(() => {
       const h = ${PAGE_SRC}, chat = h.extract();
       return { thread: chat?.thread || '', draft: h.composerDraft(),
         human: (chat?.items || []).filter(it => it.k === 'human'), queued: chat?.queued || [] };
@@ -660,7 +663,7 @@ export const methods = {
     const queueText = norm(text.replace(/[ \t]+/g, ' ').replace(/\n{3,}/g, '\n\n').trim().slice(0, 4000));
     const queuedMatches = rows => rows.filter(it => norm(it.t) === queueText).length;
     const result = submit ? await submit() : await this.key(key);
-    if (result?.queueId && this.cdp === cdp && this.selectionKey() === scope) {
+    if (result?.queueId && (result.imageCount || 0) >= imageCount && this.cdp === cdp && this.selectionKey() === scope) {
       receipt.queueId = result.queueId;
       return true;
     }
@@ -670,9 +673,11 @@ export const methods = {
       try { after = await read(Math.max(1, deadline - Date.now())); } catch { break; }
       if (this.cdp !== cdp || this.selectionKey() !== scope || before.thread && after.thread && after.thread !== before.thread) break;
       const item = after.human.find(it => !human.has(`${it.i}:${it.sentAt || ''}`)
+        && (it.images?.length || 0) >= imageCount
         && (!expected || norm(withoutAttachmentLabels(it.t)) === expected));
       if (item) { receipt.messageId = item.i; return false; }
       const pending = after.queued.find(it => norm(it.t) === queueText
+        && (it.imageCount || 0) >= imageCount
         && (!queues.has(it.id) || this.app === 'devin' && queuedMatches(after.queued) > queuedMatches(before.queued)));
       if (pending) { receipt.queueId = pending.id; return true; }
       await new Promise(resolve => setTimeout(resolve, 125));
@@ -696,6 +701,7 @@ export const methods = {
       if (this.cdp !== receiptCdp || this.selectionKey() !== receiptScope) throw new Error('会话已切换，消息未发送');
     }
     await this.assertSelectedThread();
+    const imageCount = submit && this.app === 'devin' ? await receiptCdp.evaluate(helpersCall('attachmentRows().length')) : 0;
     const files = pendingUploads(this.selectionKey()).map(([, file]) => file);
     if (files.length) text += '\n\n附加文件（请读取这些电脑端文件）：\n' + files.map(f => f.path).join('\n');
     this.sendGen = (this.sendGen || 0) + 1;
@@ -728,7 +734,7 @@ export const methods = {
       now = this.app === 'devin' && when === 'now' && !!busy;
       queued = Boolean(busy) && !now;
       if (submit) queued = await this.adapter.submitPrompt.call(this, now, busy, when, queued, mentions, receipt, files, text,
-        { cdp: receiptCdp, thread: receiptThread });
+        { cdp: receiptCdp, thread: receiptThread, imageCount });
     } catch (error) {
       if (this.app === 'codex' && mentions?.some(m => m.section === 'local-files')) {
         await this.cdp.evaluate(helpersCall('codexClearDraftAttachments()')).catch(() => false);

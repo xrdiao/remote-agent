@@ -358,7 +358,7 @@ export class CodexState extends EventEmitter {
     const before = this.threads.get(id);
     const revision = before?.revision || 0;
     const status = before?.status;
-    const { thread } = await this.client.request('thread/read', { threadId: id, includeTurns: true });
+    const thread = await this.readNativeThread(id);
     thread.cwd = localFilePath(thread.cwd);
     const old = this.threads.get(id);
     if (before && !old) return thread;
@@ -397,6 +397,18 @@ export class CodexState extends EventEmitter {
     if (this.writers.has(id)) return Promise.resolve(this.threads.get(id));
     if (!this.reading.has(id)) this.reading.set(id, this.refresh(id).finally(() => this.reading.delete(id)));
     return this.reading.get(id);
+  }
+
+  async readNativeThread(id) {
+    try {
+      return (await this.client.request('thread/read', { threadId: id, includeTurns: true })).thread;
+    } catch (error) {
+      if (!error.message.includes(`thread ${id} is not materialized yet`)
+        || !error.message.includes('includeTurns is unavailable before first user message')) throw error;
+      const { thread } = await this.client.request('thread/read', { threadId: id, includeTurns: false });
+      if (thread.id !== id) throw error;
+      return { ...thread, turns: [] };
+    }
   }
 
   async readModelState(id) {
@@ -669,7 +681,7 @@ export class CodexState extends EventEmitter {
       if (turn && when === 'idle') throw new Error('Codex 后台会话仍有未结束的轮次');
       this.retryAttempts.delete(id);
       const title = textInput(input).trim().split('\n')[0].slice(0, 100);
-      if (this.records.get(id).untitled && title) await this.manage(id, 'rename', title);
+      if (this.records.get(id)?.untitled && title) await this.renameInsideCommand(id, title);
       if (turn && when !== 'now') {
         const result = await this.client.request('thread/queue/add', { threadId: id, input, clientUserMessageId: requestId });
         const row = result.queuedSubmission;
@@ -698,7 +710,7 @@ export class CodexState extends EventEmitter {
   async readChat(id) {
     if (this.writers.has(id)) return this.chat(id);
     await this.client.connect();
-    const { thread } = await this.client.request('thread/read', { threadId: id, includeTurns: true });
+    const thread = await this.readNativeThread(id);
     return this.chat(id, 60, thread);
   }
 
@@ -823,18 +835,28 @@ export class CodexState extends EventEmitter {
     this.emit('catalogChanged', id);
   }
   async manage(id, action, name) {
-    return this.withWriter(id, async () => {
-      if (action === 'rename') {
-        await this.client.request('thread/name/set', { threadId: id, name });
-        this.threads.get(id).name = name;
-        delete this.records.get(id).untitled;
-        this.remember(this.threads.get(id));
-      } else if (action === 'archive') {
+    if (!['rename', 'archive'].includes(action)) throw new Error('不支持的 Codex 会话操作');
+    return this.runCommand(id, async () => {
+      if (action === 'archive') return this.withWriter(id, async () => {
         await this.client.request('thread/archive', { threadId: id });
         this.forget(id);
-      } else throw new Error('不支持的 Codex 会话操作');
-      this.changed(id);
+        this.changed(id);
+      });
+      return this.renameInsideCommand(id, name);
     });
+  }
+  async renameInsideCommand(id, name) {
+    await this.commands.get('account');
+    await this.client.connect();
+    await this.client.request('thread/name/set', { threadId: id, name });
+    const { thread } = await this.client.request('thread/read', { threadId: id, includeTurns: false });
+    if (thread?.id !== id || thread.name !== name) throw new Error('Codex 尚未确认会话名称');
+    const record = this.records.get(id), loaded = this.threads.get(id);
+    if (record) delete record.untitled;
+    if (loaded) loaded.name = thread.name;
+    this.remember(loaded || { ...thread, settings: record?.settings });
+    this.changed(id);
+    return thread.name;
   }
   states(threadId) {
     const ids = threadId ? (this.threads.has(threadId) ? [threadId] : []) : [...this.threads.keys()];

@@ -141,11 +141,14 @@ export default [
     return { sizes };
   } },
   { id: 'composer.card-send', title: '卡片发送使用同一回执并进入正文', refs: ['F03', 'F06'], mode: 'generate', apps: true, async run(c, app) {
-    const target = await c.target(app, 'A', true), card = await c.expand(target);
+    const target = await c.target(app, 'A', true);
+    if (c.options.targets?.[app]?.model) { await c.open(target); await c.selectSendModel(target); }
+    const card = await c.expand(target), events = c.b.events.length;
     const marker = c.marker + '-CARD-' + app;
     await c.draft(`只回复 ${marker}，不要运行工具。`, `${card} [data-ov-input]`);
     await c.b.click(`${card} [data-ov="send"]`);
-    await c.b.wait(`pendingSends.size===0&&lastChat?.thread===${attr(target.thread)}&&lastChat.items.some(i=>i.k==='human'&&i.t?.includes(${attr(marker)}))`, '卡片原生接受', c.options.timeout);
+    const send = await c.b.wait(() => c.b.events.slice(events).find(event => event.type === 'send'), '卡片发送请求');
+    await c.b.wait(`!pendingSends.has(${attr(send.requestId)})&&lastChat?.thread===${attr(target.thread)}&&lastChat.items.some(i=>i.k==='human'&&i.t?.includes(${attr(marker)}))`, '卡片原生接受', c.options.timeout);
     c.equal(await c.b.read(`document.querySelector(${attr(card + ' [data-ov-input]')}).value`), '', '卡片发送清空自己的草稿');
     await c.open(target); c.check(await c.b.read(`lastChat.items.some(i=>i.k==='human'&&i.t?.includes(${attr(marker)}))`), '正文出现同一条原生消息');
     await c.b.wait('!lastChat.busy', '卡片生成结束', c.options.generationTimeout); return { thread: target.thread };

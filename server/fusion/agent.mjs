@@ -338,10 +338,11 @@ export class FusionAgent {
           { ...context, native: { ...context.native, threadId: record.nativeThreadId, host: project.host || '' } }, 'context');
         if (!actual) throw Object.assign(new Error('原生仍在创建会话，结果待核对'), { creationUnknown: true });
       } else {
+        const workspacePlacement = app === 'cursor' && !project.host ? await provider.info(this, context, 'projectPlacement', project.root) : null;
+        if (app === 'cursor' && !project.host && !workspacePlacement) throw new Error('Cursor 原生窗口尚未确认所选项目');
         creation = { id: crypto.randomUUID(), app, projectId: project.id, windowId: context.page.id, status: 'creating', startedAt: Date.now() };
         currentOwner().creations.push(creation); this.publish(controller);
         try {
-          const workspacePlacement = app === 'cursor' && !project.host ? await provider.info(this, context, 'projectPlacement', project.root) : null;
           actual = await provider.create(this, { ...context, native: { ...context.native, host: project.host || '' } }, {
             ...spec, role, requestId: creation.id, root: project.root, threadId: crypto.randomUUID(), workspacePlacement,
           }, controller, creation);
@@ -385,7 +386,7 @@ export class FusionAgent {
     const main = controller.bindings.find(row => row.id === controller.main.bindingId);
     return this.createBinding(controller, agent, assignment.app, work.project, 'worker', { title: `Fusion · ${task.goal}`,
       model: assignment.model, effort: assignment.effort },
-      assignment.app === controller.main.app && (assignment.app !== 'cursor' || main.project.id === work.project.id) ? main.windowId : '');
+      assignment.app === controller.main.app && (assignment.app !== 'cursor' || main?.project.id === work.project.id) ? main?.windowId || '' : '');
   }
   async configure(context, controller, attempt) {
     const model = controller.capabilities.find(row => row.app === attempt.app)?.models.find(row => row.model === attempt.model);

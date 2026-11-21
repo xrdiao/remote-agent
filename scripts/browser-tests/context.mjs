@@ -16,6 +16,10 @@ export class Context {
     this.prerequisites = new Map();
   }
   async prerequisite(key, action) {
+    if (this.prerequisiteCase !== this.test) {
+      this.prerequisiteCase = this.test;
+      this.prerequisites.clear();
+    }
     if (this.prerequisites.has(key)) throw new Unavailable(`前置条件 ${key} 已失败：${this.prerequisites.get(key)}`);
     try { return await action(); }
     catch (error) { this.prerequisites.set(key, error.message); error.prerequisite ||= key; throw error; }
@@ -36,18 +40,19 @@ export class Context {
   async rows(app) {
     return this.b.read(`ovRecs().filter(r=>r.comp===${attr(this.computer)}${app ? `&&r.app===${attr(app)}` : ''}&&!r.fusion&&!r.off)
       .map(r=>({key:r.key,project:r.project,app:r.app,comp:r.comp,thread:r.threadId,window:r.windowId,win:r.win,
-        root:r.workspace||'',state:r.state,title:r.title}))`);
+        root:r.workspace||'',state:r.state,title:r.title,missing:r.workspaceMissing}))`);
   }
   async target(app, slot = 'A', owned = false) {
     if (owned) {
       if (['fold', 'models', 'commands', 'terminal'].includes(slot)) slot = 'A';
       const previous = this.owned.find(row => row.app === app && row.slot === slot);
+      if (previous && !previous.thread && !previous.projectRead) throw new Unavailable(`${app} 的 ${slot} 测试会话创建结果待核对`);
       const target = await this.prerequisite(`create:${app}:${slot}`, async () => previous || this.create(app, slot));
       return target;
     }
     const rows = await this.rows(app), selected = this.options.targets?.[app]?.[slot];
     if (slot === 'long' && !selected) throw new Unavailable(`${app} 需要通过 --targets 登记真实 long 会话，不用普通空闲会话替代`);
-    const target = selected ? rows.find(row => row.thread === selected) : rows.find(row => row.thread && row.state !== 'run');
+    const target = selected ? rows.find(row => row.thread === selected && !row.missing) : rows.find(row => row.thread && row.state !== 'run' && !row.missing);
     if (!target) throw new Unavailable(`${app} 没有可读的空闲会话`);
     return target;
   }
@@ -76,10 +81,14 @@ export class Context {
         return { elapsedMs: Date.now() - started, ...await this.b.snapshot() };
       }
       const b = this.b, card = await this.reveal(target), started = Date.now();
+      const eventStart = b.events.length;
       await b.click(`${card} [data-ov="full"]`);
       const outcome = await b.wait(`ovOpening?.phase==='error'?{error:ovOpening.message}:
         windowReady&&!navigationPending&&lastChat?.thread===${attr(target.thread)}&&currentApp===${attr(target.app)}&&document.body.classList.contains('conv')?{ready:true}:null`, '会话新鲜首屏');
       if (outcome.error) throw new Error('会话打开失败：' + outcome.error);
+      const error = b.events.slice(eventStart).find(event => event.type === 'relay-status-error'
+        && event.sel?.split('|').at(-1) === target.thread);
+      if (error) throw Object.assign(new Error('打开会话时中继报错：' + error.message), { kind: 'product' });
       await this.refreshTarget(target);
       return { elapsedMs: Date.now() - started, ...await b.snapshot() };
     });
@@ -167,9 +176,12 @@ export class Context {
         || this.fusion.some(row => row.thread === target.thread && row.app === target.app), '发送目标必须属于本轮');
       assert.equal(await b.read('lastChat?.thread'), target.thread, '发送前目标发生变化');
       const before = await b.read('(lastChat?.items||[]).filter(i=>i.k===\'human\').map(i=>i.i)');
+      await this.selectSendModel(target);
       if (text) await this.draft(text);
+      const events = b.events.length;
       await b.click(options.now ? '#sendNow' : '#send');
-      await b.wait(`pendingSends.size===0&&(lastChat?.items||[]).some(i=>i.k==='human'&&!${JSON.stringify(before)}.includes(i.i)${text ? `&&i.t?.includes(${attr(text)})` : '&&i.images?.length'})`, '原生发送接受', this.options.timeout);
+      const send = await b.wait(() => b.events.slice(events).find(event => event.type === 'send'), '发送请求');
+      await b.wait(`!pendingSends.has(${attr(send.requestId)})&&(lastChat?.items||[]).some(i=>i.k==='human'&&!${JSON.stringify(before)}.includes(i.i)${text ? `&&i.t?.includes(${attr(text)})` : '&&i.images?.length'})`, '原生发送接受', this.options.timeout);
       if (!target.thread) {
         target.thread = await b.read('lastChat.thread');
         assert(target.thread, '首次发送获得真实会话 ID');
@@ -182,6 +194,19 @@ export class Context {
         () => this.finishGeneration(target, '原生生成完成'));
       return receipt;
     });
+  }
+  async selectSendModel(target) {
+    const label = this.options.targets?.[target.app]?.model;
+    if (!label) return;
+    const choices = await this.menu('model');
+    const match = choices.find(row => row.label === label && !row.disabled);
+    if (!match) throw new Unavailable(`原生菜单没有配置的测试模型 ${label}`);
+    if (!match.checked) {
+      await this.b.click(`#sheet [data-kind="model"]${by('data-label', label)}`);
+      await this.b.wait('!modelSwitchRequest', '选定测试模型回执');
+      assert((await this.menu('model')).some(row => row.label === label && row.checked), '原生回读确认测试模型');
+    }
+    await this.b.dismiss();
   }
   async finishGeneration(target, label) {
     const result = await this.b.wait(`(()=>{

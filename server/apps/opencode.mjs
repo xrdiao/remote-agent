@@ -62,22 +62,35 @@ function publish(s, sent) {
 
 function confirmSend(s, requestID, pending) {
   if (s.openCodeSends.get(requestID) !== pending) return;
-  const files = [...openCode.messages.get(pending.threadID)?.get(pending.messageID)?.parts.values() || []].filter(part => part.type === 'file');
+  const message = openCode.messages.get(pending.threadID)?.get(pending.messageID);
+  if (message?.info.role !== 'user') return;
+  const parts = [...message.parts.values()];
+  const files = parts.filter(part => part.type === 'file');
   for (const expected of pending.attachments) {
     const index = files.findIndex(part => part.filename === expected.filename && part.mime === expected.mime);
     if (index < 0) return;
     files.splice(index, 1);
   }
-  const message = openCode.messages.get(pending.threadID)?.get(pending.messageID);
-  const text = [...message?.parts.values() || []].filter(part => part.type === 'text' && !part.synthetic).map(part => part.text).join('\n');
+  const text = parts.filter(part => part.type === 'text' && !part.synthetic).map(part => part.text).join('\n');
   if (!pending.command && text !== pending.text) return;
-  const item = openCode.chat(pending.threadID, { rows: message ? [message] : [] }).items.find(row => row.i === pending.messageID && row.k === 'human');
-  if (!item) return;
-  pending.unsubscribe();
+  rememberSessionMessage('opencode', pending.threadID, message.info.time?.created);
+  finishSend(s, requestID, pending, { messageId: message.info.id });
+}
+
+function releasePending(s, requestID, pending) {
+  pending.unsubscribe?.();
+  clearTimeout(pending.reconcile);
   s.openCodeSends.delete(requestID);
-  rememberSessionMessage('opencode', pending.threadID, item.sentAt);
   if (pending.operation) pending.operation.pending = false;
-  withOperation(pending.operation, () => s.emit({ t: 'sent', requestId: requestID, draft: pending.draft, sel: pending.sel, messageId: item.i, queued: false }));
+}
+
+function finishSend(s, requestID, pending, result) {
+  releasePending(s, requestID, pending);
+  for (const [id, file] of pending.files)
+    if (uploads.get(id) === file && file.sel === pending.inputSelection) updateUpload(file, { pending: false });
+  if (s.openCodeDrafts?.get(pending.inputSelection) === pending.inputDraft) s.openCodeDrafts?.delete(pending.inputSelection);
+  s.emit({ t: 'attachments', sel: pending.sel, list: uploadAttachments(pending.sel) });
+  withOperation(pending.operation, () => s.emit({ t: 'sent', requestId: requestID, draft: pending.draft, sel: pending.sel, ...result, queued: false }));
 }
 
 function watch(s) {
@@ -151,8 +164,15 @@ export async function createSession(directory, body = {}) {
 
 async function ensureSession(s) {
   if (s.threadId) return;
+  const previous = s.selectionKey();
   const native = await createSession(s.openCodeDirectory);
   s.threadId = s.selectedThread = native.id;
+  const selected = s.selectionKey(), draft = s.openCodeDrafts?.get(previous);
+  for (const [, file] of pendingUploads(previous)) updateUpload(file, { sel: selected });
+  if (draft) {
+    s.openCodeDrafts.delete(previous);
+    s.openCodeDrafts.set(selected, draft);
+  }
   s.openCodePages.set(native.id, viewPage(native.id));
   s.clearViewState();
   s.stopChatUpdates();
@@ -203,20 +223,24 @@ const routes = {
     if (m.submit === false) return routes.draft.call(this, m);
     cdpRead.getStore()?.throwIfAborted();
     const model = openCode.selection(this.threadId || this.openCodeDirectory), native = openCode.models.get(model.key);
+    if (!native) throw new Error('请先选择可用的 OpenCode 模型');
     const sel = this.selectionKey();
     const files = pendingUploads(sel);
     const signal = cdpRead.getStore(), match = /^\s*\/([^\s/]+)(?:\s+([\s\S]*))?$/.exec(m.text || '');
     const command = match && (await commands(this.openCodeDirectory, signal)).find(row => row.name === match[1]);
     if (command === COMPACT && (files.length || match[2]?.trim())) throw new Error('压缩命令不接受参数或附件');
-    const parts = await Promise.all(files.map(([, file]) => openCodeAttachment(file)));
+    const parts = await Promise.all(files.map(([, file]) => openCodeAttachment(file, native)));
     if (!command && m.text?.trim()) parts.unshift({ type: 'text', text: m.text });
     cdpRead.getStore()?.throwIfAborted();
     await ensureSession(this);
+    this.draftEpoch = m.draftEpoch || this.draftEpoch;
+    const selectedScope = this.selectionKey();
     const messageID = createMessageID();
     this.openCodeSends ||= new Map();
     const pending = { messageID, threadID: this.threadId, text: m.text?.trim() ? m.text : '', draft: m.draft,
       attachments: parts.filter(part => part.type === 'file').map(({ filename, mime }) => ({ filename, mime })),
-      command: !!command, sel: this.selectionKey(), operation: currentOperation() };
+      command: !!command, sel: selectedScope, files, inputSelection: selectedScope,
+      inputDraft: this.openCodeDrafts?.get(selectedScope), operation: currentOperation() };
     if (pending.operation) pending.operation.pending = true;
     pending.unsubscribe = openCode.subscribe(id => { if (!id || id === pending.threadID) confirmSend(this, m.requestId, pending); });
     this.openCodeSends.set(m.requestId, pending);
@@ -231,10 +255,7 @@ const routes = {
         if (!await openCode.client.request(`/session/${id}/summarize`, {
           directory, method: 'POST', body: { ...selected, auto: false }, signal,
         })) throw new Error('OpenCode 尚未接受压缩命令');
-        pending.unsubscribe();
-        this.openCodeSends.delete(m.requestId);
-        if (pending.operation) pending.operation.pending = false;
-        this.emit({ t: 'sent', requestId: m.requestId, draft: pending.draft, sel: pending.sel, queued: false, hasUserMessage: false });
+        finishSend(this, m.requestId, pending, { hasUserMessage: false });
       } else if (command) {
         await openCode.client.request(`/session/${id}/command`, {
           directory, method: 'POST', body: {
@@ -248,16 +269,23 @@ const routes = {
         });
       }
     } catch (error) {
-      pending.unsubscribe(); this.openCodeSends.delete(m.requestId);
-      if (pending.operation) pending.operation.pending = false;
+      if (!this.openCodeSends.has(m.requestId)) return;
+      releasePending(this, m.requestId, pending);
       throw error;
     }
-    for (const [, file] of files) updateUpload(file, { pending: false });
-    this.emit({ t: 'attachments', sel: pending.sel, list: uploadAttachments(pending.sel) });
-    this.openCodeDrafts?.delete(m.sel || pending.sel);
-    this.openCodeDrafts?.delete(pending.sel);
-    this.draftEpoch = m.draftEpoch || this.draftEpoch;
-    if (this.openCodeSends.has(m.requestId)) this.emit({ t: 'sent', requestId: m.requestId, sel: pending.sel, pending: true });
+    if (this.openCodeSends.has(m.requestId)) {
+      this.emit({ t: 'sent', requestId: m.requestId, sel: pending.sel, pending: true });
+      pending.reconcile = setTimeout(async () => {
+        let message = '尚未读到与本次请求匹配的 OpenCode 原生记录';
+        try {
+          await openCode.loadMessages(pending.threadID, undefined, null);
+          openCode.changed(pending.threadID);
+        } catch (error) { message = error.message; }
+        if (this.openCodeSends.get(m.requestId) === pending)
+          withOperation(pending.operation, () => this.emit({ t: 'sent', requestId: m.requestId, sel: pending.sel, pending: true, message }));
+      }, 3000);
+      pending.reconcile.unref();
+    }
     publish(this);
   },
   async stop() {
@@ -308,8 +336,8 @@ const routes = {
     if (m.sel !== this.selectionKey()) return;
     const read = m.text === undefined;
     this.openCodeDrafts ||= new Map();
-    if (!read) { this.openCodeDrafts.set(m.sel, m.text); this.draftEpoch = m.draftEpoch; }
-    this.emit({ t: 'draftAck', sel: this.selectionKey(), ok: true, text: this.openCodeDrafts.get(m.sel) || '', read,
+    if (!read) this.openCodeDrafts.set(m.sel, { text: m.text });
+    this.emit({ t: 'draftAck', sel: this.selectionKey(), ok: true, text: this.openCodeDrafts.get(m.sel)?.text || '', read,
       draftEpoch: this.draftEpoch || '', revision: m.revision });
   },
   async attachments(m) {

@@ -255,21 +255,32 @@
     return { root: meta?.cwd || codexWorkspaceRoots()[0] || '', host: meta?.hostId && meta.hostId !== 'local' ? meta.hostId : '' };
   };
   const refreshCodexUsage = async (refresh = true, waitForAccount = false) => {
-    const managerForView = () => codexConversationManager(codexThread(), codexHistoryScopes(), remoteContext?.host || 'local');
-    let manager = managerForView();
-    if (!manager && waitForAccount) {
+    const host = remoteContext?.host || 'local';
+    const requestForView = () => {
+      const scopes = codexHistoryScopes();
+      const manager = codexConversationManager(codexThread(), scopes, host);
+      if (manager?.requestClient) return (method, params) => manager.requestClient.sendRequest(method, params);
+      for (const scope of scopes) for (const bindings of scope.familyBindings.values()) {
+        const connection = codexHistoryBinding(scope, bindings.get(host))?.get();
+        const rpc = connection?.status === 'ready' && connection.client?.hostId === host && connection.client.rpc;
+        if (typeof rpc?.sendRequest === 'function') return (method, params) =>
+          doc.defaultView.Reflect.apply(rpc.sendRequest, rpc, [method, nativeValue(params), nativeValue({ priority: 'critical' })]);
+      }
+      return null;
+    };
+    let request = requestForView();
+    if (!request && waitForAccount) {
       const deadline = Date.now() + 6000;
-      while (!manager && !codexNeedsLogin() && Date.now() < deadline) {
+      while (!request && !codexNeedsLogin() && Date.now() < deadline) {
         await new Promise(resolve => setTimeout(resolve, 100));
-        manager = managerForView();
+        request = requestForView();
       }
     }
-    if (!manager) {
+    if (!request) {
       if (codexNeedsLogin()) return { account: null, requiresOpenaiAuth: true };
       return null;
     }
-    if (refresh) return manager.requestClient.sendRequest('account/rateLimits/read', {});
-    return manager.requestClient.sendRequest('account/read', { refreshToken: false });
+    return refresh ? request('account/rateLimits/read', {}) : request('account/read', { refreshToken: false });
   };
 
   // Named controls in Cursor's UI; each entry lists fallbacks from newest to oldest Cursor layouts.

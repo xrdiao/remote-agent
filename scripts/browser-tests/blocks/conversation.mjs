@@ -17,12 +17,14 @@ async function withTools(c, app, inspect) {
 export default [
   { id: 'conversation.codex-empty-reasoning', title: '旧 Codex 会话空思考不占首屏名额，正文及历史保持可见', refs: ['F07', 'F18', 'R07'], mode: 'read', apps: ['codex'], async run(c, app) {
     const target = await c.target(app, 'long'); await c.open(target);
-    const first = await c.b.read('({items:lastChat.items.map(i=>({id:i.i,k:i.k,text:i.t})),earlier:lastChat.earlier})');
-    c.equal(first.items.length, 60, '首屏保留 60 条有效内容');
+    const first = await c.b.read('({items:lastChat.items.map(i=>({id:i.i,k:i.k,text:i.t,order:i.order})),earlier:lastChat.earlier})');
+    if (!first.earlier) throw new Unavailable('该原生会话未超出首屏分页范围，需要真实长会话');
+    const extra = Math.max(0, first.items.length - 60);
+    c.check(first.items.length >= 60 && first.items.slice(0, extra).every(item => item.k === 'human' && item.order === first.items[extra].order),
+      '首屏保留 60 条有效内容，以及同一页首轮次的用户消息');
     c.check(first.items.some(item => item.k === 'assistant' && item.text?.trim()), '旧样本首屏有助手正文');
     c.check(!first.items.some(item => item.k === 'thinking' && !item.text?.replace(/^思考\s*/, '').trim()), '空思考未占分页名额');
     await c.b.wait("document.getElementById('items').textContent.trim().length>0", '旧样本正文实际呈现');
-    c.check(first.earlier, '仍可追加更早历史');
     await c.b.click('#older');
     await c.b.wait(`lastChat?.thread===${attr(target.thread)}&&lastChat.items.length>${first.items.length}&&!historyRequest&&!historyRendering`, '旧样本有效历史呈现完成');
     const after = await c.b.read('({ids:lastChat.items.map(i=>i.i),thread:lastChat.thread})');

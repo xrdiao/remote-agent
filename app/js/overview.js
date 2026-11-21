@@ -248,7 +248,7 @@ function ovRecsOf(e, st) {
       waitText: s.waitingText || '', last: s.last || '', tasks: s.tasks, actions: s.actions || [], devin: !!s.devin, changed: s.changed || 0, acceptAll: !!s.acceptAll,
       win: s.win, windowId: s.windowId, threadId: s.threadId || '', app: s.app, title: s.title || '', project: `${e.id}|${s.projectId}`, projName: s.project,
       start: since ? since - st.offset : 0, ended: done || 0, used: s.lastUsed ? s.lastUsed - st.offset : 0, changes: s.changes || null, favorite: s.favorite === true, common: agentSessionCommon(s),
-      dormant: !!s.dormant, workspace: s.workspace || '', host: s.host || '' });
+      dormant: !!s.dormant, workspace: s.workspace || '', host: s.host || '', workspaceMissing: s.workspaceMissing === true });
   }
   return out;
 }
@@ -374,7 +374,8 @@ function ovSessTile(r) {
 }
 function ovOpenLink(r, cls = '') {
   const target = ovTarget(r);
-  return `<button class="ov-link${cls}" data-ov="full" data-id="${esc(r.key)}" data-t="${esc(JSON.stringify(target))}"${r.dormant && !r.workspace ? ' disabled' : ''}>${ovOpenLabel(target)}</button>`;
+  const unavailable = r.workspaceMissing || r.dormant && !r.workspace;
+  return `<button class="ov-link${cls}" data-ov="full" data-id="${esc(r.key)}" data-t="${esc(JSON.stringify(target))}"${unavailable ? ' disabled' : ''}>${r.workspaceMissing ? ovT('项目目录已不存在') : ovOpenLabel(target)}</button>`;
 }
 function ovOpenState(target) {
   return sameWinTarget(ovOpening?.target, target) ? ovOpening : null;
@@ -450,7 +451,7 @@ function ovRunHtml(r) {
 function ovCard(r) {
   const online = !r.off, dis = ovBusy.has(r.key) ? ' disabled' : '', key = esc(r.key);
   const status = `<div class="ov-status"><div class="ov-state"><span class="ov-badge">${esc(ovBadge(r))}</span><span class="ov-time">${esc(ovTime(r))}</span></div><span class="ovRaw" title="${esc(ovContext(r))}">${esc(ovContext(r))}</span></div>`;
-  const canReply = !r.fusion && !r.dormant && online;
+  const canReply = !r.fusion && !r.dormant && !r.workspaceMissing && online;
   const ready = ovComposerReady(r.key), replyDis = !ready || $('send').disabled ? ' disabled' : '';
   const tool = (id, disabled = dis) => `<button data-ov="tool" data-id="${key}" data-v="${id}" title="${esc($(id).title)}" aria-label="${esc($(id).ariaLabel)}"${disabled}>${$(id).innerHTML}</button>`;
   const composer = canReply ? `<div class="ov-attachments" data-ov-node="attachments:${key}" data-ov-control="attachments" data-ov-preserve></div><div class="ov-mentions" data-ov-preserve hidden></div><div class="ov-composer" data-ov-node="reply:${key}"><div class="ov-input-history">${['inputPrev', 'inputNext'].map(id => tool(id)).join('')}</div><textarea data-ov-input="${key}" rows="1" enterkeyhint="send" placeholder="${r.state === 'wait' ? '输入回复…' : `告诉 ${OV_AGENT[r.app]} 下一步…`}"${!ready ? ' disabled' : ''}></textarea><button class="ov-send" data-ov="send" data-id="${key}" aria-label="${esc($('send').textContent)}" title="${esc($('send').textContent)}"${replyDis}>${OV_ICON.arrow}</button></div>` : '';
@@ -700,14 +701,17 @@ function ovFocusSession(key) {
   if (r.state === 'idle') ovExpanded.add(r.comp + (r.common ? '|idle' : '|inactive'));
   ovMove({ level: 'sessions', comp: r.comp, proj: null, open: key });
 }
-function ovToast(html, key) {
+function ovToast(html, key, pending = false) {
   const t = document.createElement('div');
   t.className = 'ov-toast';
   t.innerHTML = html;
   if (key) { t.dataset.ov = 'jump'; t.dataset.id = key; }
   $('ovToasts').append(t);
-  setTimeout(() => t.classList.add('out'), 3400);
-  setTimeout(() => t.remove(), 3800);
+  if (!pending) {
+    setTimeout(() => t.classList.add('out'), 3400);
+    setTimeout(() => t.remove(), 3800);
+  }
+  return t;
 }
 async function ovSend(key, act, extra, ok) {
   const r = ovRecs().find(x => x.key === key);
@@ -753,7 +757,10 @@ async function ovManageSession(r, action, extra = {}) {
   try {
     const value = await ovSessionRequest(r, action, extra);
     if (r.fusion) fusionUpdateWorkspace(r.comp, value.run);
-    else await ovFetch(ovList.find(e => e.id === r.comp));
+    else {
+      if (action === 'rename') await ovStOf(r.comp).flight;
+      await ovFetch(ovList.find(e => e.id === r.comp));
+    }
     return value;
   } finally { ovBusy.delete(r.key); ovRender(); }
 }

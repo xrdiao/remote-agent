@@ -71,6 +71,7 @@ export default [
   } },
   { id: 'execution.commands', title: '命令补全和 compact 菜单不误提交', refs: ['F06'], mode: 'write', apps: ['codex', 'opencode'], async run(c, app) {
     const target = await c.target(app, 'commands', true); await c.open(target);
+    const events = c.b.events.length;
     try {
       await c.draft('/');
       await c.b.wait("!document.getElementById('mentionBox').hidden&&document.querySelectorAll('#mentionBox .mnRow').length>0", '原生斜杠菜单');
@@ -82,7 +83,8 @@ export default [
         await c.b.click(`#mentionBox [data-mi="${compact}"]`);
         c.equal(await c.b.read('text.value.trim()'), '/compact', '选择命令后保留草稿，等用户提交');
       }
-      c.equal(await c.b.read('pendingSends.size'), 0, '只补全没有产生发送'); return { commands: rows };
+      c.equal(c.b.events.slice(events).filter(event => event.type === 'send' && event.sel?.split('|').at(-1) === target.thread).length,
+        0, '只补全没有产生发送'); return { commands: rows };
     } finally { await c.draft(''); }
   } },
 ];

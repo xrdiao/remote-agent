@@ -37,12 +37,21 @@ export default [
     if (app === 'opencode') {
       const row = await new OpenCodeClient().request(`/session/${target.thread}`, { directory: target.root });
       c.check(row.time.archived > 0, 'OpenCode 原生归档时间已保存');
+    } else if (target.window === 'backend') {
+      const client = new CodexClient();
+      try {
+        await client.connect();
+        const catalog = await client.request('thread/list', { archived: true, cwd: target.root, limit: 100 });
+        c.check(catalog.data.some(row => row.id === target.thread), 'Codex app-server 看到了同一条原生归档记录');
+      } finally { client.close(); }
     } else {
-      const page = (await codexWindows(CODEX_CDP_URL)).find(page => page.chatWs), native = new Cdp(page.chatWs);
+      const page = (await codexWindows(CODEX_CDP_URL)).find(page => page.pageId === target.window && page.chatWs);
+      if (!page) throw new Unavailable('归档所在 Codex 原生窗口尚未就绪');
+      const native = new Cdp(page.chatWs);
       await native.connect();
       try {
         const catalog = await native.evaluate(helpersCall(`nativeSessionInfo('codex', {threads:true,ids:[${attr(target.thread)}]}, true)`));
-        c.check(catalog.rows.some(row => row.id === target.thread && row.archived), 'Codex 原生记录确实已归档');
+        c.check(catalog.ready && catalog.rows.some(row => row.id === target.thread && row.archived), 'Codex 原生记录确实已归档');
       } finally { native.close(); }
     }
     c.cleanup.sessions.push({ thread: target.thread, ok: true, action: 'archive' });
@@ -84,16 +93,34 @@ export default [
     return { thread: target.thread, nativeListed: true, project: target.projectRead };
   } },
   { id: 'sessions.project', title: '跨项目新建及 A→B→A 归属', refs: ['F04', 'M03', 'M05', 'W02', 'W05', 'W06'], mode: 'write', apps: true, async run(c, app) {
-    const a = await c.target(app, 'A', true), b = await c.target(app, 'B', true), results = [];
-    for (const target of [a, b, a]) { await c.open(target); results.push(await c.verifyProject(target)); }
+    const windows = ['cursor', 'devin'].includes(app) ? [] : null;
+    const recordWindows = async () => { if (windows) windows.push((await listWindows(null, app)).length); };
+    await recordWindows();
+    const a = await c.target(app, 'A', true);
+    await recordWindows();
+    const b = await c.target(app, 'B', true), results = [];
+    await recordWindows();
+    for (const target of [a, b, a]) {
+      await c.open(target);
+      results.push(await c.verifyProject(target));
+      await recordWindows();
+    }
     c.equal(results[0].thread, results[2].thread, '返回同一 A 会话');
-    c.check(results[0].root !== results[1].root, '两会话使用不同项目路径'); return { visits: results };
+    c.check(results[0].root !== results[1].root, '两会话使用不同项目路径');
+    if (windows) {
+      const limit = app === 'devin' ? windows[0] : windows[1];
+      c.check(limit > 0 && windows.slice(2).every(count => count <= limit), '隔离项目往返复用既有窗口');
+    }
+    return { visits: results, ...(windows ? { windows } : {}) };
   } },
   { id: 'sessions.rename', title: '重命名确认到原生目录', refs: ['F05'], mode: 'write', apps: true, async run(c, app) {
     const target = await c.target(app, 'A', true), title = c.marker + '-' + app;
     const card = await c.reveal(target); await c.b.hold(`${card} .ov-title`);
     await c.b.dialog(title, () => c.b.click('#sheet [data-agent-action="rename"]'));
-    await c.b.wait(`ovRecs().some(r=>r.threadId===${attr(target.thread)}&&r.title===${attr(title)})`, '原生标题回执');
+    const feedback = await c.b.wait(`!ovBusy.has(${attr(target.key)})&&[...document.querySelectorAll('#ovToasts .ov-toast')]
+      .some(e=>e.getClientRects().length&&e.textContent===I18N.tr('已重命名会话'))
+      ? {title:ovRecs().find(r=>r.key===${attr(target.key)})?.title||''} : null`, '首页出现重命名确认');
+    c.equal(feedback.title, title, '确认显示时卡片已显示新标题');
     const data = await c.overview(), row = data.sessions.find(row => row.app === app && row.threadId === target.thread);
     c.equal(row.title, title, '原生目录标题与重命名一致'); return { thread: target.thread, confirmed: true };
   } },

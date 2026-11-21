@@ -39,6 +39,15 @@ export class Browser {
       try { message = JSON.parse(event.response.payloadData); } catch { return; }
       if (message.t === 'draftAck') browser.events.push({ type: 'draft-ack', at: Date.now(),
         sel: message.sel, epoch: message.draftEpoch, revision: message.revision, ok: message.ok });
+      if (message.t === 'status' && message.ok === false) browser.events.push({ type: 'relay-status-error', at: Date.now(),
+        sel: message.sel, message: String(message.msg || '').split('\n')[0] });
+    });
+    cdp.on('Network.webSocketFrameSent', event => {
+      if (event.response.opcode !== 1) return;
+      let message;
+      try { message = JSON.parse(event.response.payloadData); } catch { return; }
+      if (message.t === 'send' && message.submit !== false)
+        browser.events.push({ type: 'send', at: Date.now(), sel: message.sel, requestId: message.requestId });
     });
     await cdp.send('Runtime.enable'); await cdp.send('Network.enable'); await cdp.send('Page.enable');
     if (process.platform === 'win32') await cdp.send('Emulation.setFocusEmulationEnabled', { enabled: true });
@@ -50,7 +59,7 @@ export class Browser {
     do {
       const error = failure?.();
       if (error) throw error;
-      const value = await this.read(expression);
+      const value = await (typeof expression === 'function' ? expression() : this.read(expression));
       if (value) return value;
       await pause(100);
     } while (Date.now() < deadline);

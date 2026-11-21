@@ -5,6 +5,7 @@ import { readLibrary, sessionId, rememberSessionStatuses, storedSessionStatus } 
 import { IS_WIN, samePath, localFilePath, pathKey } from '../lib/platform.mjs';
 import { workspaceLabel } from '../lib/files.mjs';
 import path from 'node:path';
+import fs from 'node:fs';
 import { storedProjectSession, fusionTargets } from './project-windows.mjs';
 import { openCode } from './opencode/state.mjs';
 import { codexBackend, CODEX_BACKEND } from './codex/state.mjs';
@@ -79,6 +80,7 @@ export function overviewSnapshot(deviceId, selection) {
       }
     }
     for (const [key, row] of projectRows) {
+      if (win.app === 'devin' && !rows.has(key) && catalog?.removed?.includes(key)) continue;
       const record = readLibrary()[win.app]?.[key];
       if (!key || row.archived || record?.archived || record?.deleted || excluded.sessions.has(win.app + ':' + key)) continue;
       const s = { ...row, busy: row.busy ?? row.running };
@@ -106,7 +108,8 @@ export function overviewSnapshot(deviceId, selection) {
       const quality = Number(!!s.run && s.run.status !== 'unknown') * 4 + Number(!!s.run) * 2
         + Number(key === sessionId(win.app, snap?.chat?.thread));
       const owner = win.app === 'codex' ? Number(!!s.nativeOwner) : win.app === 'devin'
-        ? Number(local.has(key) || source.devinCatalog?.has(key)) : Number(belongs({ ...row, workspace }));
+        ? Number(key.startsWith('acp/devin-cli/') ? !!source.devinCatalog?.get(key)?.workspace : local.has(key) || source.devinCatalog?.has(key))
+        : Number(belongs({ ...row, workspace }));
       if (!previous || owner > previous.owner || owner === previous.owner && ((s.run?.startedAt || 0) > (previous.value.run?.startedAt || 0)
         || (s.run?.startedAt || 0) === (previous.value.run?.startedAt || 0)
           && (quality > previous.quality || quality === previous.quality && source.updatedAt > previous.updatedAt)))
@@ -167,6 +170,16 @@ export function overviewSnapshot(deviceId, selection) {
         run: null, statusKnown, startedAt: 0, tasks: null, actions: [], devin: app === 'devin', changed: 0, acceptAll: false, changes: null,
         lastUsed: Number(row.lastUsed) || 0, favorite: true, lastMessageAt: Number(record.lastMessageAt) || 0 });
     }
+  }
+  const localPaths = new Map();
+  for (const row of sessions) {
+    if (row.host || !path.isAbsolute(row.workspace)) continue;
+    const key = pathKey(row.workspace);
+    if (!localPaths.has(key)) {
+      try { localPaths.set(key, !fs.statSync(row.workspace).isDirectory()); }
+      catch (error) { localPaths.set(key, ['ENOENT', 'ENOTDIR'].includes(error.code)); }
+    }
+    if (localPaths.get(key)) row.workspaceMissing = true;
   }
   rememberSessionStatuses(sessions);
   for (const row of sessions) if (row.dormant || row.statusKnown === false || row.run?.status === 'unknown') {

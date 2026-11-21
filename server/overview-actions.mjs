@@ -33,8 +33,8 @@ export async function manageOverviewSession(deviceId, body) {
   }
   if (app === 'codex' && windowId === CODEX_BACKEND) {
     if (action === 'actions') return { actions: ['rename', 'archive'] };
-    await codexAdapter.manageBackendThread(threadId, action, body.name);
-    publishSessionChange('codex', threadId, { action, ...(action === 'rename' ? { title: body.name } : {}) });
+    const title = await codexAdapter.manageBackendThread(threadId, action, body.name);
+    publishSessionChange('codex', threadId, { action, ...(action === 'rename' ? { title } : {}) });
     return { ok: true };
   }
   if (session.dormant) {

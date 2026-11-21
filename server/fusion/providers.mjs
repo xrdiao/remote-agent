@@ -82,7 +82,7 @@ const codexThread = id => codexBackend.threads.get(id) || codexBackend.read(id);
 const codexIdentity = thread => ({ app: 'codex', threadId: thread.id, host: '', cwd: thread.cwd, roots: [{ root: thread.cwd, host: '' }] });
 export const backgroundCodex = {
   async open(threadId) {
-    const thread = await codexBackend.read(threadId);
+    const thread = await codexBackend.readModelState(threadId);
     return { app: 'codex', backend: CODEX_BACKEND, page: { id: CODEX_BACKEND }, native: codexIdentity(thread) };
   },
   async create(_agent, _context, spec) {
@@ -102,7 +102,7 @@ export const backgroundCodex = {
   },
   async info(_agent, { native: { threadId } }, catalog) {
     if (catalog === 'sendError') return null;
-    const thread = await codexThread(threadId);
+    const thread = await codexBackend.readModelState(threadId);
     const { model = thread.model, effort = thread.reasoningEffort } = thread.settings || {};
     const usage = Object.values(codexBackend.statistics.get(threadId) || {}).findLast(row => row.usage)?.usage;
     return { model, effort, family: model, usage: usage || null, usageBasis: 'Codex 后台原生会话用量' };
@@ -121,7 +121,8 @@ export const backgroundCodex = {
       ended, completed: turn?.status === 'completed' && !!text, text, error: turn?.error?.message };
   },
   action(_agent, { native: { threadId } }, action, value) {
-    if (action === 'send') return codexBackend.send(threadId, [{ type: 'text', text: value.text, text_elements: [] }], 'idle', value.requestId);
+    if (action === 'send') return codexBackend.runCommand(threadId, () => codexBackend.send(threadId,
+      [{ type: 'text', text: value.text, text_elements: [] }], 'idle', value.requestId));
     if (action === 'stop') return codexBackend.stop(threadId, value);
     if (!['model', 'effort'].includes(action)) throw new Error('不支持的 Codex 后台会话操作');
     const field = action === 'effort' ? 'effort' : 'model';

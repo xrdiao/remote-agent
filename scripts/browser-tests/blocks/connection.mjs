@@ -8,7 +8,8 @@ export default [
     return state;
   } },
   { id: 'connection.devices', title: '设备与配对管理入口', refs: ['F02'], mode: 'read', async run(c) {
-    await c.b.menu('devices'); await c.b.wait("sheetKind==='devices'&&!document.querySelector('#sheet [role=status]')", '设备列表');
+    await c.b.menu('devices');
+    await c.b.wait("sheetKind==='devices'&&!!document.querySelector('#sheet .deviceRows details')", '设备列表加载当前配对');
     const count = await c.b.read("document.querySelectorAll('#sheet .deviceRows details').length");
     c.check(count > 0, '设备列表包含当前配对'); await c.b.dismiss(); return { groups: count };
   } },

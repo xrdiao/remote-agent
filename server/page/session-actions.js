@@ -296,11 +296,15 @@
     const workbench = doc.defaultView.vscode?.context?.configuration?.()?.workspace;
     const folders = services?.composer.composerChatService._workspaceContextService.getWorkspace().folders || [];
     const matches = uri => uri?.scheme === 'file' && samePath(uriFilePath(uri), root);
-    return workbench?.id && (matches(workbench.uri) || folders.some(folder => matches(folder.uri)))
+    return workbench?.id && (matches(workbench.uri) || matches(folders[0]?.uri))
       ? workbench : cursorProjectPicker()?.recentProjects?.find(row => matches(row.workspaceIdentifier?.uri))?.workspaceIdentifier || null;
   };
   const nativeSessionInfo = (app, id, catalog = false, previous = null) => {
     if (app === 'cursor' && catalog === 'projectPlacement') return cursorProjectPlacement(previous);
+    if (app === 'devin' && catalog === 'missing') {
+      const state = devinSessionData(id);
+      return state?.loadStatus === 'failed' && state.loadErrorKind === 'session_not_found';
+    }
     if (app === 'codex' && catalog === 'creationReady') return !!codexConversationManager(id, codexHistoryScopes(), 'local');
     if (app === 'codex' && catalog === 'goal') {
       const host = remoteContext?.host || codexChatRows(true).find(row => row.id === id)?.host || 'local';
@@ -318,9 +322,14 @@
     }
     if (catalog === 'history' && (app === 'cursor' || app === 'devin')) return (async () => {
       const context = await nativeSessionContext(app, id);
-      if (app === 'devin') await devinReadSession(id, () => true);
       return nativeConversationChat(true, 160, previous, context);
     })();
+    if (catalog === 'receipt' && app === 'devin') return devinReadSession(id, (_, data) => {
+      const messages = devinMessages(id, data);
+      const first = Math.max(0, messages.length - 120);
+      return { thread: id, draft: composerDraft(), queued: devinQueued(id),
+        human: devinMessageItems(messages.slice(first), 'acp', first).filter(item => item.k === 'human') };
+    });
     if (app === 'codex' && catalog === 'toolDetails') {
       const scopes = codexHistoryScopes(), manager = codexConversationManager(id, scopes);
       const state = codexHistoryState(manager.getConversation(id), false, scopes, id), tools = new Set(previous);
@@ -345,9 +354,11 @@
     }
     if (app === 'codex' && catalog === 'refreshCatalog') return (async () => {
       const manager = codexConversationManager(null, codexHistoryScopes(), 'local');
-      await manager.refreshRecentConversations({ afterCurrent: true });
-      await codexQueryClient().refetchQueries({ queryKey: ['recent-conversations-meta'], type: 'all' }, { throwOnError: true, cancelRefetch: false });
-      if (id) await manager.threadStore.hydrateThreads([id], {
+      const queries = codexQueryClient();
+      if (!queries) throw new Error('Codex 原生会话目录尚未就绪');
+      if (manager) await manager.refreshRecentConversations({ afterCurrent: true });
+      await queries.refetchQueries({ queryKey: ['recent-conversations-meta'], type: 'all' }, { throwOnError: true, cancelRefetch: false });
+      if (id && manager) await manager.threadStore.hydrateThreads([id], {
         addToRecentConversations: true, notifyAnyCallbacks: true, shouldThrowOnReadError: true,
       });
       return true;
@@ -434,11 +445,18 @@
       const value = await codexComposerScope(id, false);
       if (!value) return null;
       const { scope, composer } = value;
-      const state = scope.get(composer.state), context = await nativeSessionContext(app, id);
-      const ide = codexQueryClient()?.getQueryData(['ide-context', null]);
+      const draftEditedAt = doc.defaultView.__remoteAgentDraftEdits?.get(id) || 0;
+      if (previous === 'draft') return { prompt: scope.get(composer.text), draftEditedAt };
+      const state = scope.get(composer.state);
+      const ide = state.isAutoContextOn && codexQueryClient()?.getQueryData(['ide-context', null]);
       const activePath = ide?.activeFile?.path || '';
-      return { ...state, draftEditedAt: doc.defaultView.__remoteAgentDraftEdits?.get(id) || 0, workspaceRoots: context.roots.map(row => row.root),
-        ideContext: state.isAutoContextOn && context.roots.some(row => pathKey(activePath, !context.host).startsWith(pathKey(row.root, !context.host).replace(/\/$/, '') + '/')) ? ide : null };
+      const host = remoteContext?.host || '';
+      let roots = remoteContext?.threadId === id && remoteContext.cwd ? [remoteContext.cwd] : [];
+      if (activePath && codexConversationManager(id, codexHistoryScopes(), host || 'local')) {
+        roots = (await nativeSessionContext(app, id)).roots.map(row => row.root);
+      }
+      return { ...state, draftEditedAt, ideContext: activePath && roots.some(root =>
+        pathKey(activePath, !host).startsWith(pathKey(root, !host).replace(/\/$/, '') + '/')) ? ide : null };
     })();
     if (catalog === 'sendError') return window.__remoteAgentNativeSubmissions?.get(previous) || null;
     if (catalog === 'bind') return (async () => {
@@ -609,7 +627,10 @@
     }
     if (action === 'createNative' && app === 'cursor') {
       const services = cursorSessionServices();
-      const parent = services.data.getComposerDataIfLoaded(id);
+      const loaded = id && services.data.getComposerDataIfLoaded(id);
+      const owner = loaded && await nativeSessionContext(app, id);
+      const host = remoteContext?.host || '';
+      const parent = owner && owner.host === host && samePath(owner.cwd, name.root, !host) ? loaded : null;
       if (!parent && !name.workspacePlacement) throw new Error('主会话尚未在这个 Cursor 窗口就绪');
       const placement = { name: name.title, ...(name.workspacePlacement ? { workspaceIdentifier: name.workspacePlacement } : {}) };
       const created = await services.composer.createComposer(nativeValue({
@@ -648,7 +669,7 @@
       return capacity?.b?.length ? codexPoint(capacity._retry) : null;
     }
     if ((action === 'queue' || action === 'submitPrompt') && app === 'devin')
-      return devinSubmitComposer(id, action === 'submitPrompt' ? { submit: true } : name);
+      return devinSubmitComposer(id, { ...name, submit: action === 'submitPrompt' });
     if (action === 'questionText' && app === 'devin') return devinNativeQuestionText(id, name);
     if (action === 'send') {
       if (app === 'cursor' && name.requireActive && activeThread() !== id) throw new Error('会话已切换，消息未发送');

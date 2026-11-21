@@ -405,22 +405,29 @@ export class FusionRunner {
       if (!targets.has(key) || binding.role === 'main') targets.set(key, binding);
     }
     const bindings = [...targets.values()].sort((a, b) => Number(a.role === 'main') - Number(b.role === 'main'));
-    run.removal = { total: bindings.length, done: 0, error: '' };
+    run.removal = { total: bindings.length, done: bindings.filter(binding => binding.cleanup?.confirmed).length, error: '' };
+    this.publish();
     for (const binding of bindings) {
       if (binding.cleanup?.confirmed !== true) {
+        if (binding.role === 'main' && run.removal.error) break;
         try { binding.cleanup = await this.agent.cleanupBinding(run, binding); }
         catch (error) {
           binding.cleanup = { confirmed: false, error: error.message, at: Date.now() };
-          run.removal.error = error.message;
-          run.removal.target = { app: binding.app, label: binding.role === 'main' ? '' : run.agents.find(row => row.bindingId === binding.id)?.label || binding.threadId };
+          if (!run.removal.error) {
+            const label = run.agents.find(row => row.bindingId === binding.id)?.label || binding.threadId;
+            run.removal.error = `${binding.app} · ${label} · ${error.message}`;
+            run.removal.target = { app: binding.app, label };
+          }
           this.publish();
-          throw new Error(run.removal.error);
+          continue;
         }
+        run.removal.done++;
       }
       for (const duplicate of run.bindings.filter(row => row.app === binding.app && row.project.id === binding.project.id && row.threadId === binding.threadId))
         duplicate.cleanup = binding.cleanup;
-      run.removal.done++; this.publish();
+      this.publish();
     }
+    if (run.removal.error) throw new Error(run.removal.error);
     run.removedAt = Date.now(); run.favorite = false;
     for (const owner of Object.values(fusionRuns)) if (owner.current === run.id) owner.current = '';
     for (const binding of run.bindings) fusionLive.delete(binding.id);

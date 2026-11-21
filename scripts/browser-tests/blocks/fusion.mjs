@@ -11,6 +11,11 @@ async function open(c, run) {
   await c.b.click(`[data-fusion-open=${attr(run.id)}]${by('data-computer', c.computer)}`);
   await c.b.wait(`windowReady&&currentFusionRun()?.id===${attr(run.id)}&&lastChat?.thread===${attr(run.thread)}`, 'Fusion 主会话首屏');
 }
+async function openTasks(c, run) {
+  const header = '#fusionHeader [data-fusion-relations]';
+  await c.b.click(await c.b.has(header) ? header : '#fusionTasks');
+  await c.b.wait(`fusionViewOwner?.runId===${attr(run.id)}&&fusionViewOwner.kind==='tasks'`, '关系面板身份');
+}
 async function create(c) {
   if (c.fusion.length) return c.fusion[0];
   const b = c.b, app = c.options.fusionApp, root = path.resolve(c.directory, 'projects', 'fusion');
@@ -71,8 +76,7 @@ export default [
   } },
   { id: 'fusion.navigation', title: '工作台→普通会话→工作台与关系面板', refs: ['F19', 'R04', 'X02', 'X08', 'X11'], mode: 'write', async run(c) {
     const run = await create(c), normal = await c.target(run.app, 'A', true);
-    await open(c, run); await c.b.click('#fusionTasks');
-    await c.b.wait(`fusionViewOwner?.runId===${attr(run.id)}&&fusionViewOwner.kind==='tasks'`, '关系面板身份');
+    await open(c, run); await openTasks(c, run);
     c.equal(await c.b.read('currentFusionRun().id'), run.id, '关系面板绑定同一工作台');
     await c.open(normal); c.check(await c.b.read('!currentFusionRun()'), '普通会话没有残留工作台身份');
     await open(c, run); c.equal(await c.b.read('lastChat.thread'), run.thread, '重回工作台不是管理 ID 或普通会话');
@@ -125,7 +129,7 @@ export default [
     return { run: run.id, tasks: value.tasks, works: value.works, scope: '单子任务闭环；并行、复用和返工仍见待验清单' };
   } },
   { id: 'fusion.stop', title: '停止及核对继续入口', refs: ['F19', 'X10'], mode: 'write', async run(c) {
-    const run = await create(c); await open(c, run); await c.b.click('#fusionTasks');
+    const run = await create(c); await open(c, run); await openTasks(c, run);
     await c.b.click('[data-fusion-stop]:not([data-work]):not([data-task])');
     await c.b.wait(`fusionWorkspaces.get(${attr(c.computer)})?.runs.find(r=>r.id===${attr(run.id)})?.status==='stopped'`, '工作台停止回执');
     c.equal((await current(c, run.id)).status, 'stopped', '停止有确定状态');

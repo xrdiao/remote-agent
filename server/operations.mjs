@@ -44,7 +44,8 @@ export function beginOperation(session, message) {
     },
     emit(message) {
       if (this.done) return;
-      this.events.set(message.t, { revision: ++this.revision, message: { ...message, sel: this.sel, app: this.app } });
+      const sel = this.kind === 'send' && message.t === 'sent' ? message.sel || this.sel : this.sel;
+      this.events.set(message.t, { revision: ++this.revision, message: { ...message, sel, app: this.app } });
       if (['overviewManaged', 'computerFileDone', 'sendFailed', 'termCreated', 'termRemoved', 'termError'].includes(message.t) || message.t === 'sent' && !message.pending) this.done = true;
       this.publish();
     },

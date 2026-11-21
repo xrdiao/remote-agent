@@ -176,7 +176,8 @@ export class Session extends AgentContext {
     if (!this.bindingReady) return;
     const binding = result.attached;
     if (!binding) return;
-    if (this.mode === 'chat' && !result.chat) throw new Error('当前会话内容尚未就绪，请重试');
+    if (this.mode === 'chat' && (!result.chat || result.chat.sel !== this.selectionKey()
+      || result.chat.chat.thread !== (this.threadId || ''))) throw new Error('当前会话内容尚未就绪，请重试');
     this.emit({ ...binding, ready: true, windowId: this.windowId || '', threadId: this.threadId || '',
       sel: this.selectionKey(), ...(result.chat ? { chat: result.chat.chat } : {}),
       ...(result.project ? { projectReady: result.project } : {}) }, result.chatSent);
@@ -321,8 +322,9 @@ export class Session extends AgentContext {
     }
     if (req.project && !req.projectSwitch) {
       // Bind only the app first. The saved project, not a fallback window, owns the thread.
-      const carrier = app === 'devin' && (req.threadId && devinSource(req.threadId, req.windowId)?.win
-        || nativeTargets().find(win => win.app === app && win.id === req.windowId));
+      const source = app === 'devin' && req.threadId && !req.project.host
+        ? await devinSource(req.threadId, req.windowId, req.project) : null;
+      const carrier = source?.win || (app === 'devin' && nativeTargets().find(win => win.app === app && win.id === req.windowId));
       await this.attach({ ...req, id: carrier?.id || app, windowId: carrier?.id || '', restore: false, project: null, threadId: '', projectSwitch: true }, windows);
       if (!this.cdp || this.app !== app) throw new Error('所选 Agent 尚未连接，请重试');
       if (!req.project.host) return this.useProject(req.project.root, false, req.threadId || '', '', req.windowId || '');
@@ -458,6 +460,11 @@ export class Session extends AgentContext {
     }
     await this.refreshViewport();
     if (this.app !== 'codex') this.threadId = await this.cdp.evaluate(helpersCall('activeThread()')) || '';
+    if (win.app === 'devin' && !selection.deferred && !selection.threadId && this.threadId
+        && await cdp.evaluate(helpersCall(`nativeSessionInfo('devin', ${JSON.stringify(this.threadId)}, 'missing')`))) {
+      this.selectionHome = true;
+      this.threadId = '';
+    }
     if (selection.deferred && selection.threadId) this.threadId = selection.threadId;
     nativeWindow(cdp).setThread(this.threadId);
     this.selectedThread = this.threadId;
@@ -481,14 +488,14 @@ export class Session extends AgentContext {
       if (!selection.deferred) this.setMode(this.mode).catch(e => this.emit({ t: 'status', ok: false, msg: e.message }));
       return;
     }
-    if (win.app === 'devin' && !selection.deferred
+    if (win.app === 'devin' && !selection.deferred && !this.selectionHome
         && await this.withFocus(() => this.ensureDevinIde(selection.threadId?.replace(/^tab:/, '') || this.threadId))) {
       if (launchDefault) takeLaunched('devin');
       return;
     }
     const restore = !selection.deferred && selection.threadId && selection.threadId !== this.threadId && !launchDefault;
     const recoverInitial = win.app === 'codex' && selection.initial === true && !thread;
-    const startup = !selection.deferred && (launchDefault || recoverInitial || win.app === 'devin' && !this.threadId);
+    const startup = !selection.deferred && !this.selectionHome && (launchDefault || recoverInitial || win.app === 'devin' && !this.threadId);
     if (restore) this.threadId = this.selectedThread = selection.threadId;
     if (startup || (restore && selection.initial)) await attached();
     if (restore) {
@@ -716,7 +723,12 @@ export class Session extends AgentContext {
     if (this.app !== app || this.threadId !== thread) throw new Error('会话已切换，操作未执行');
     const route = resolveRoute(this, msg.t);
     const execute = async () => {
-      if (msg.t === 'draft' && msg.sel !== this.selectionKey()) throw new Error('会话已切换，草稿未同步');
+      if (msg.t === 'draft') {
+        if (msg.sel !== this.selectionKey()) throw new Error('会话已切换，草稿未同步');
+        const epoch = this.draftEpoch || '';
+        if ((msg.draftEpoch || '') !== epoch) return this.emit({ t: 'draftAck', sel: msg.sel, ok: false,
+          draftEpoch: epoch, requestedEpoch: msg.draftEpoch || '', revision: msg.revision });
+      }
       if (route?.native) return this.dispatch(msg, route);
       if (route?.pre) {
         const r = await route.pre(this, msg);
