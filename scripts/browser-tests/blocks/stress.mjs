@@ -53,8 +53,8 @@ export default [
       })()`);
       c.equal(received, 2, '页面依次收到 A 和 B 的卡片点击 ' + i);
       const result = await c.b.wait(`ovOpening?.phase==='error' ? {error:ovOpening.message} :
-        windowReady && !navigationPending && document.body.classList.contains('conv') ?
-        {thread:lastChat?.thread,app:currentApp} : null`, '最后一次点击的正文');
+        windowReady && !navigationPending && !chatStale && lastChat?.thread && document.body.classList.contains('conv') ?
+        {thread:lastChat.thread,app:currentApp} : null`, '最后一次点击的正文');
       if (result.error) throw new Error('最后一次点击打开会话失败：' + result.error);
       c.equal(result.thread, b.thread, '最后选择 B ' + i);
       c.equal(result.app, app, '最后选择的软件 ' + i);
