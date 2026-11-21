@@ -3,7 +3,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { Cdp } from '../cdp.mjs';
+import { Cdp, cdpRead } from '../cdp.mjs';
 import { NativeCdp, nativeWindow } from '../native-windows.mjs';
 import { EDITORS, CODEX_CDP_URL } from '../config.mjs';
 import { codexWindows, editorWorkbenches } from '../windows.mjs';
@@ -17,11 +17,12 @@ import { fusionModelCatalog } from './model-catalog.mjs';
 import { FUSION_TOOLS, fusionControllerPrompt, fusionTaskInput } from './control.mjs';
 import { fusionScheduler } from './scheduler.mjs';
 import { backgroundCodex, nativeAgentProvider, nativeAgentProviders } from './providers.mjs';
+import { fusionOpenCode } from './opencode.mjs';
 import { CODEX_BACKEND, codexBackend } from '../codex/state.mjs';
 import { favoriteSession, removeLibrarySession, publishSessionChange } from '../../lib/session-library.mjs';
 
 const executeFile = promisify(execFile);
-const providerFor = context => context.backend ? backgroundCodex : nativeAgentProvider(context.app);
+const providerFor = context => context.backend === CODEX_BACKEND ? backgroundCodex : nativeAgentProvider(context.app);
 
 export async function fusionWorkspaceSnapshot(project, scope = []) {
   if (project.host) return { available: false, reason: '远程工作区差异需由原生 Agent 提供证据', at: Date.now() };
@@ -69,7 +70,8 @@ export class FusionAgent {
   }
   async softwareCapabilities() {
     return Promise.all(nativeAgentProviders().map(async ({ app, name, controller, worker }) => {
-      try { return { app, name, controller, worker, connected: (await this.carriers(app)).length > 0 }; }
+      try { return { app, name, controller, worker, connected: app === 'opencode'
+        ? await fusionOpenCode.connected() : (await this.carriers(app)).length > 0 }; }
       catch (error) { return { app, name, controller, worker, connected: false, reason: error.message }; }
     }));
   }
@@ -134,17 +136,21 @@ export class FusionAgent {
         if (!page) throw new Error('所选项目的原生窗口已关闭');
       } finally { projectSession.dispose(); }
     }
+    return this.openCarrier(page, project);
+  }
+  async openCarrier(page, project, active = true) {
+    const { app } = page;
     const cdp = new NativeCdp(page.ws, app);
+    const source = nativeWindow(cdp);
     try {
       await cdp.connect();
-      const source = nativeWindow(cdp);
       source.win ||= { app, id: page.id, pageId: page.id, ws: page.ws, editorWs: page.editorWs };
-      const threadId = await cdp.evaluate(helpersCall('activeThread()')) || '';
+      const threadId = active ? await cdp.evaluate(helpersCall('activeThread()')) || '' : '';
       const native = threadId && app !== 'devin' ? await cdp.evaluate(helpersCall(`nativeSessionInfo(${JSON.stringify(app)}, ${JSON.stringify(threadId)}, 'context')`))
         : { app, threadId: '', host: project.host || '', cwd: '', roots: [] };
       if (app === 'devin') native.threadId = threadId;
       return { app, page, cdp, source, native, leaseId: crypto.randomUUID() };
-    } catch (error) { cdp.close(); throw error; }
+    } catch (error) { await this.close({ cdp, source }); throw error; }
   }
   call(context, code, native = context.native) {
     return context.app === 'codex' ? context.source.composerCall(code, native) : context.cdp.evaluate(helpersCall(code, native));
@@ -158,16 +164,36 @@ export class FusionAgent {
     if (!source.watching && !source.clients.size && !source.conversations.size && !source.listeners.size) source.close();
   }
   async openBinding(controller, binding, windowId = binding.windowId) {
+    if (binding.app === 'opencode') return fusionOpenCode.open(binding);
     if (binding.app === 'codex' && binding.windowId === CODEX_BACKEND) {
       const context = await backgroundCodex.open(binding.threadId);
       if (fusionProject(context.native.cwd)?.id !== binding.project.id) throw new Error('后台 Codex 会话目录与该任务项目不一致');
       return context;
     }
+    if (binding.role === 'main') {
+      const pages = await this.carriers(binding.app);
+      const previous = pages.find(page => page.id === binding.windowId.replace(/^(cursor|devin|codex):/, ''));
+      const errors = [];
+      for (const page of [previous, ...pages.filter(row => row !== previous)].filter(Boolean)) {
+        try { return await this.bindCarrier(binding, await this.openCarrier(page, binding.project, false)); }
+        catch (error) { errors.push(error.message); }
+      }
+      throw new Error(`${binding.app} 主会话的原生工具未连接：${errors[0] || '没有已打开的原生窗口'}`);
+    }
     const context = await this.carrierFor(controller, binding.app, binding.project, binding.reuseWindow ? binding.windowId : windowId);
+    return this.bindCarrier(binding, context);
+  }
+  async bindCarrier(binding, context) {
     try {
       context.native = { app: binding.app, threadId: binding.threadId, host: binding.host || '', cwd: binding.project.root,
         roots: [{ root: binding.project.root, host: binding.host || '' }] };
-      const actual = await nativeAgentProvider(binding.app).info(this, context, 'bind', context.leaseId);
+      const provider = nativeAgentProvider(binding.app);
+      if (binding.role === 'main') {
+        const identity = await provider.info(this, context, 'context');
+        if (identity.threadId !== binding.threadId || fusionProject(identity.cwd, identity.host || '')?.id !== binding.project.id)
+          throw new Error('这个窗口未找到同一主会话及项目');
+      }
+      const actual = await provider.info(this, context, 'bind', context.leaseId);
       context.pinned = binding.app === 'cursor';
       if (fusionProject(actual.cwd, actual.host || '')?.id !== binding.project.id) throw new Error('原生会话目录与该任务项目不一致，未切换任何普通窗口');
       context.native = actual;
@@ -227,13 +253,38 @@ export class FusionAgent {
     this.mainProjects.delete(controller.id);
     context?.dispose();
   }
-  async capabilities(controller, app, { knowledge = false, worker = false } = {}) {
+  async capabilities(controller, app, { worker = false } = {}) {
+    if (app === 'opencode' && worker) {
+      if (controller.project.host) throw new Error('OpenCode 仅支持本机 Fusion 子任务');
+      const models = await fusionOpenCode.models(controller.project.root);
+      return this.catalog.enrich(nativeCostSnapshot(app, models, null, { windowId: fusionOpenCode.windowId, host: '', read: 'native-model-catalog' }));
+    }
     if (worker && app === 'codex' && !controller.project.host) {
       const models = await backgroundCodex.models();
       if (!models.length) throw new Error('未读取到 Codex 后台模型候选');
-      if (knowledge) await this.catalog.refresh(models.map(model => ({ app, model: model.id })));
       return this.catalog.enrich({ ...nativeCostSnapshot(app, models, null, { windowId: CODEX_BACKEND, host: '', read: 'native-model-catalog' }),
         source: 'Codex 后台模型目录' });
+    }
+    if (worker && !controller.project.host) {
+      const pages = await this.carriers(app);
+      let error = new Error(`${app} 未提供已打开窗口的原生模型`);
+      const deadline = AbortSignal.timeout(5000);
+      for (const page of pages) {
+        let context;
+        try {
+          const models = await cdpRead.run(deadline, async () => {
+            context = await this.openCarrier(page, controller.project, false);
+            return nativeAgentProvider(app).models(this, context);
+          });
+          if (models?.length) return this.catalog.enrich(nativeCostSnapshot(app, models, null,
+            { windowId: page.id, host: '', read: 'native-model-catalog' }));
+        } catch (failure) {
+          if (deadline.aborted) throw new Error(`${app} 已打开，但原生模型目录读取超时`);
+          error = failure;
+        }
+        finally { await this.close(context); }
+      }
+      throw error;
     }
     const main = controller.bindings.find(row => row.id === controller.main.bindingId);
     const context = await this.carrierFor(controller, app, controller.project,
@@ -257,7 +308,6 @@ export class FusionAgent {
         }
       }
       if (!models?.length) throw catalogError || new Error('未读取到当前窗口实际原生模型候选');
-      if (knowledge) await this.catalog.refresh(models.map(model => ({ app, model: model.id })));
       return this.catalog.enrich(nativeCostSnapshot(app, models, { available: false, reason: '未读取账号账单；不能推算子任务费用' },
         { windowId: sourceWindow, host: context.native.host, read: 'native-model-catalog' }));
     } finally { await this.close(context); }
@@ -266,16 +316,19 @@ export class FusionAgent {
     const ownerId = role === 'main' ? '' : owner.id;
     const currentOwner = () => role === 'main' ? controller.main : controller.agents.find(row => row.id === ownerId);
     let creation = currentOwner().creations?.findLast(row => row.app === app && row.projectId === project.id && !['rejected', 'bound'].includes(row.status));
-    const backend = app === 'codex' && role === 'worker' && !project.host && (!creation || creation.windowId === CODEX_BACKEND);
-    const context = backend ? { app, backend, page: { id: CODEX_BACKEND }, native: { app, threadId: '', host: '' } }
+    const backend = app === 'opencode' ? fusionOpenCode.windowId
+      : app === 'codex' && role === 'worker' && !project.host && (!creation || creation.windowId === CODEX_BACKEND) ? CODEX_BACKEND : '';
+    if (app === 'opencode' && project.host) throw new Error('OpenCode 仅支持本机 Fusion 子任务');
+    const context = backend ? { app, backend, page: { id: backend }, native: { app, threadId: '', host: '' } }
       : await this.carrierFor(controller, app, project, creation?.windowId || preferred);
     const provider = providerFor(context);
     try {
       currentOwner().creations ||= [];
       let actual;
       if (creation && backend) {
-        if (!creation.nativeThreadId) throw Object.assign(new Error('Codex 后台创建结果无法确认，不能重新创建会话'), { creationUnknown: true });
-        actual = (await backgroundCodex.open(creation.nativeThreadId)).native;
+        if (!creation.nativeThreadId) throw Object.assign(new Error(`${app} 后台创建结果无法确认，不能重新创建会话`), { creationUnknown: true });
+        actual = (backend === CODEX_BACKEND ? await backgroundCodex.open(creation.nativeThreadId)
+          : await fusionOpenCode.open({ threadId: creation.nativeThreadId, project })).native;
       } else if (creation) {
         const record = await provider.info(this, context, 'creation', creation.id);
         if (!record) throw Object.assign(new Error('后台创建结果无法确认，不能重新创建会话'), { creationUnknown: true });
@@ -362,7 +415,10 @@ export class FusionAgent {
     try {
       if (!recovering) {
         if (cancelled()) throw Object.assign(new Error('未提交的任务已取消'), { cancelled: true });
-        if (task) await this.configure(context, controller, current());
+        if (task) {
+          if (provider.prepareTask) current().messageId = await provider.prepareTask(context, current(), task);
+          else await this.configure(context, controller, current());
+        }
         const before = await provider.readTurn(this, context);
         if (task) {
           const input = fusionTaskInput(controller, task, current());
@@ -379,7 +435,7 @@ export class FusionAgent {
         if (cancelled()) { runtime.cancelBeforeSend(); return observing; }
         Object.assign(current(), { status: 'submitting', submission: 'submitting', submittedAt: Date.now() }); this.publish(controller);
         try {
-          await provider.action(this, context, 'send', { text: prompt, requestId: attemptId });
+          await provider.action(this, context, 'send', { text: prompt, requestId: attemptId, messageId: current().messageId });
         } catch (error) { runtime.fail(error); }
         runtime.check();
       }
@@ -404,14 +460,14 @@ export class FusionAgent {
         if (reading) { again = true; return; }
         reading = true;
         try {
-          const turn = await provider.readTurn(this, context, { id: current().native?.messageId || '', attemptId,
+          const turn = await provider.readTurn(this, context, { id: current().native?.messageId || current().messageId || '', attemptId,
             previous: current().beforeIds || [], generationId: current().native?.generationId || '' });
           const nativeError = await provider.info(this, context, 'sendError', attemptId);
           if (turn.threadId !== binding.threadId) throw new Error('原生结果身份与 Binding 不一致');
           let snapshot = {};
           if (!turn.ended) {
             try {
-              snapshot = context.backend ? await backgroundCodex.snapshot(context) : await context.source.readConversation(context.native, true);
+              snapshot = context.backend ? await provider.snapshot(context) : await context.source.readConversation(context.native, true);
               delete current().contentError;
               fusionLive.set(binding.id, { ...snapshot, at: Date.now() });
             } catch (error) {
@@ -459,14 +515,14 @@ export class FusionAgent {
           }
           if (nativeError?.status === 'error') throw Object.assign(new Error(nativeError.message), { nativeRejected: nativeError.outcome === 'rejected' });
           if (recovering && !turn.id && current().submission === 'submitting') throw new Error('未找到可核对的原生接受事实，不能自动重发');
-          if (recovering && context.backend && !codexBackend.hasWriter(binding.threadId)) throw new Error('后台 Codex 没有可继续观察的原生轮次，结果待核对');
+          if (recovering && context.backend === CODEX_BACKEND && !codexBackend.hasWriter(binding.threadId)) throw new Error('后台 Codex 没有可继续观察的原生轮次，结果待核对');
           if (runtime.stopping && current().native) await this.stop(attemptId);
           this.publish(controller, false);
         } catch (error) { finish(null, error); }
         finally { reading = false; if (again && !done) { again = false; runtime.check(); } }
       };
       const changed = error => error ? finish(null, error) : runtime.check();
-      runtime.unsubscribe = context.backend ? backgroundCodex.subscribe(context, changed) : context.source.subscribe(changed, context.native);
+      runtime.unsubscribe = context.backend ? provider.subscribe(context, changed) : context.source.subscribe(changed, context.native);
       if (recovering) runtime.check();
     });
   }
@@ -489,7 +545,8 @@ export class FusionAgent {
     if (attempt.endedAt) throw new Error('该次执行已结束，不能处理其它执行的原生交互');
     const binding = controller.bindings.find(row => row.id === attempt.bindingId), context = await this.openBinding(controller, binding);
     try {
-      if (context.backend && action.kind === 'codexRequest') return backgroundCodex.answer(binding.threadId, attempt.native?.turnId, action);
+      if (binding.app === 'opencode') return fusionOpenCode.interaction(context, action, attempt.native?.turnId);
+      if (context.backend === CODEX_BACKEND && action.kind === 'codexRequest') return backgroundCodex.answer(binding.threadId, attempt.native?.turnId, action);
       if (binding.app === 'codex' && action.kind === 'codexRequest')
         return this.call(context, `codexRequestAction(${JSON.stringify(String(action.id))}, ${Number(action.n)}, ${JSON.stringify(action.fields || [])})`);
       if (binding.app === 'devin' && action.kind === 'codexRequest' || ['cursor', 'devin'].includes(binding.app) && action.kind === 'question')
@@ -532,8 +589,8 @@ export class FusionAgent {
     } finally { await this.close(context); }
   }
   async cleanupBinding(controller, binding) {
-    const context = binding.app === 'codex' && binding.windowId === CODEX_BACKEND
-      ? await this.openBinding(controller, binding)
+    const context = binding.app === 'opencode' ? await fusionOpenCode.open(binding, { archived: true })
+      : binding.app === 'codex' && binding.windowId === CODEX_BACKEND ? await this.openBinding(controller, binding)
       : await this.carrierFor(controller, binding.app, binding.project, binding.reuseWindow ? binding.windowId : '');
     context.native = { app: binding.app, threadId: binding.threadId, host: binding.project.host || '', cwd: binding.project.root };
     try {

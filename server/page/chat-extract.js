@@ -408,12 +408,27 @@
       if (Array.isArray(value) && value.some(item => item?.itemId && item.type)) itemTypes = value;
       if (Array.isArray(value?.entries) && Number.isFinite(value.length)) slots = value;
     }
+    if (!metadata) return null;
     const types = new Map(itemTypes.map(item => [item.itemId, item.type]));
     const nativeOrder = [...nativeItems.keys()];
     const nativeComplete = nativeOrder.length > 0 && (!slots || nativeOrder.length === slots.length
       && slots.entries.every(slot => nativeOrder[slot.index] === slot.itemId));
-    const ids = nativeComplete ? nativeOrder : slots ? [...slots.entries].sort((a, b) => a.index - b.index).map(e => e.itemId) : entry.turnItemIds || [];
-    const positions = new Map(nativeComplete || !slots ? ids.map((id, index) => [id, index]) : slots.entries.map(slot => [slot.itemId, slot.index]));
+    let ids = nativeComplete ? nativeOrder : slots ? [...slots.entries].sort((a, b) => a.index - b.index).map(e => e.itemId) : entry.turnItemIds || [];
+    const pagination = metadata.itemsPagination;
+    const input = pagination?.oldestUserInput ?? metadata.params?.input;
+    const clientId = pagination?.oldestUserInput == null ? metadata.params?.clientUserMessageId : pagination.openingUserMessageClientId;
+    const openingId = pagination?.openingUserMessageId || clientId;
+    // Codex stores the opening input separately from the visible item slots.
+    const opening = openingId && input?.length && !metadata.pendingUserMessageAdmission && !ids.includes(openingId)
+      && ![...nativeItems.values()].some(item => item.type === 'userMessage' && clientId && item.clientId === clientId);
+    const offset = opening ? 1 : 0;
+    const positions = new Map(nativeComplete || !slots ? ids.map((id, index) => [id, index + offset])
+      : slots.entries.map(slot => [slot.itemId, slot.index + offset]));
+    if (opening) {
+      positions.set(openingId, 0);
+      types.set(openingId, 'userMessage');
+      ids = [openingId, ...ids];
+    }
     const selected = usersOnly ? ids.filter(id => {
       const type = nativeItems.get(id)?.type || types.get(id);
       return !type || ['userMessage', 'steeringUserMessage', 'steered'].includes(type);
@@ -422,15 +437,13 @@
       const count = selected.filter(id => bindings.get(itemKey(id))?.value?.get?.()?.id === id).length;
       if (count > matchedItems) { itemBindings = bindings; matchedItems = count; }
     }
-    if (!metadata) return null;
     const readItem = id => {
       const native = nativeItems.get(id) || itemBindings?.get(itemKey(id))?.value?.get();
-      return native || (types.get(id) === 'userMessage' && Array.isArray(metadata.params?.input) && metadata.params.input.length > 0
-        ? { type: 'userMessage', id, clientId: metadata.params.clientUserMessageId, content: metadata.params.input } : null);
+      return native || (id === openingId && input?.length ? { type: 'userMessage', id, clientId, content: input } : null);
     };
     const rawItems = selected.map(readItem);
     const userItems = range ? ids.filter(id => ['userMessage', 'steeringUserMessage', 'steered'].includes(nativeItems.get(id)?.type || types.get(id))).map(readItem).filter(Boolean) : [];
-    return { metadata, rawItems, userItems, positions, nativeComplete, slots, ids, selected };
+    return { metadata, rawItems, userItems, positions, nativeComplete, slots, ids, selected, offset };
   };
   const codexUserItem = (item, metadata, steering) => {
     if (!item) return null;
@@ -474,9 +487,9 @@
     }).map(item => ({ ...item, sourceIndex: positions.get(item.callId || item.responseAnnotationTargetId || item.id || item.nativeIds?.[0]) }));
     if (!patchesOnly && CAPACITY_ERROR.test(metadata.error?.message || '')) items.push({
       type: 'system-error', id: entry.turnId + ':error', content: metadata.error.message,
-      sourceIndex: slots?.length ?? ids.length,
+      sourceIndex: slots ? slots.length + source.offset : ids.length,
     });
-    const partial = !nativeComplete && slots && (slots.entries.length < slots.length || availableItems < slots.entries.length);
+    const partial = !nativeComplete && slots && (slots.entries.length < slots.length || availableItems < slots.entries.length + source.offset);
     items.push({ type: 'worked-for', startedAtMs: metadata.turnStartedAtMs,
       completedAtMs: complete && Number.isFinite(metadata.durationMs) ? metadata.turnStartedAtMs + metadata.durationMs : null });
     return { status: complete ? 'complete' : metadata.status, items, partial };
@@ -734,11 +747,11 @@
       }
     }
     items.reverse();
-    if (headEntry && items[0]?.k !== 'human') {
+    if (headEntry && items[0].order > headEntry.turnNumber * 10000) {
       const source = codexTurnSource(headEntry, state.scopes, true);
       const turn = codexStoredTurn(headEntry, state.scopes, false, source);
-      const head = codexTurnItems(null, { ...headEntry, turn }).findLast(item => item.k === 'human' && item.order <= items[0].order);
-      if (head && !seen.has(head.i)) items.unshift(head);
+      const inputs = codexTurnItems(null, { ...headEntry, turn }).filter(item => item.k === 'human' && item.order < items[0].order && !seen.has(item.i));
+      items.unshift(...inputs);
     }
     // A history page carries bodies, never replayable capacity operations.
     for (const item of items) if (item.capacity) { delete item.b; delete item.actions; delete item.btnItem; }
@@ -1411,6 +1424,7 @@
             ...(file ? { f: file } : {}), done: tool.status === 'completed' || tool.status === 'cancelled',
             ...(tool.error || tool.status === 'error' ? { keep: true } : {}) };
           if (pending.has(tool.toolCallId) && tool.name !== 'ask_question') {
+            row.approvalId = tool.toolCallId;
             row.b = ['Run', 'Skip']; row.actions = [tool.toolCallId + ':accept', tool.toolCallId + ':reject'];
           }
           items.push(row);
@@ -1451,7 +1465,7 @@
       items = items.map(item => ({ ...item, src: 'devin' }));
     }
     if (history) {
-      for (const item of items) { delete item.b; delete item.actions; delete item.btnItem; }
+      for (const item of items) { delete item.b; delete item.actions; delete item.btnItem; delete item.approvalId; }
       return { thread, items, earlier, before };
     }
     const scopes = [], run = agentRun(app, thread, scopes), changed = items.filter(item => item.kind === 'edit').length;

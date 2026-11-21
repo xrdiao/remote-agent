@@ -6,7 +6,7 @@
 set -euo pipefail
 probe=false
 if [[ "${1:-}" == --probe ]]; then probe=true; shift; fi
-ready() { curl -fsS --max-time 1 "http://127.0.0.1:$1/json/version" >/dev/null 2>&1; }
+ready() { curl --noproxy 127.0.0.1 -fsS --max-time 1 "http://127.0.0.1:$1/json/version" >/dev/null 2>&1; }
 start_agent() {
   local key="$1" name="$2" port="$3" override="$4" command_name="$5" process_name="$6"
   shift 6
@@ -28,8 +28,15 @@ start_agent() {
     echo "RESULT $key running"
     return 1
   fi
-  local log="$HOME/.agent-remote/start-${name,,}.log"
-  nohup env -u ELECTRON_RUN_AS_NODE "$bin" "--remote-debugging-port=$port" >>"$log" 2>&1 </dev/null &
+  local log="$HOME/.agent-remote/start-$key.log"
+  local -a launch_env=(env -u ELECTRON_RUN_AS_NODE) args=("--remote-debugging-port=$port")
+  if [[ "$key" == devin ]]; then
+    launch_env+=(-u VSCODE_IPC_HOOK_CLI -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY -u SOCKS_PROXY -u FTP_PROXY
+      -u http_proxy -u https_proxy -u all_proxy -u socks_proxy -u ftp_proxy
+      -u NODE_USE_ENV_PROXY -u GLOBAL_AGENT_HTTP_PROXY NO_PROXY='*' no_proxy='*')
+    args+=(--no-proxy-server)
+  fi
+  nohup "${launch_env[@]}" "$bin" "${args[@]}" >>"$log" 2>&1 </dev/null &
   for ((n=0; n<30; n++)); do
     if ready "$port"; then echo "$name：已启动，调试端口 $port。"; echo "RESULT $key started"; return; fi
     sleep 1
@@ -47,5 +54,5 @@ has devin && { start_agent devin Devin "${DEVIN_CDP_PORT:-9223}" "${DEVIN_BIN:-}
 has codex && { start_agent codex Codex "${CODEX_CDP_PORT:-9224}" "${CODE_BIN:-}" code code /usr/share/code/code & jobs+=("$!"); }
 failed=0
 for job in "${jobs[@]:-}"; do if [[ -n "$job" ]] && ! wait "$job"; then failed=1; fi; done
-echo 'Codex 需要在 VS Code 中打开 Codex 侧边栏。'
+if has codex; then echo 'Codex 需要在 VS Code 中打开 Codex 侧边栏。'; fi
 exit "$failed"

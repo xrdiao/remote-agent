@@ -81,7 +81,16 @@ export async function openFolder(folder, app, newWindow = false, withDebugPort =
   delete env.ELECTRON_RUN_AS_NODE;
   delete env.VSCODE_IPC_HOOK_CLI;
   const mode = newWindow ? '-n' : '-r';
-  const { command, args } = launchCommand(bin, [mode, ...(withDebugPort ? ['--remote-debugging-port=' + port] : []), real]);
+  const flags = withDebugPort ? ['--remote-debugging-port=' + port] : [];
+  if (app === 'devin') {
+    for (const key of Object.keys(env)) {
+      if (/^(?:(?:https?|all|socks|ftp|no)_proxy|NODE_USE_ENV_PROXY|GLOBAL_AGENT_HTTP_PROXY)$/i.test(key)) delete env[key];
+    }
+    env.NO_PROXY = '*';
+    if (!IS_WIN) env.no_proxy = '*';
+    flags.push('--no-proxy-server');
+  }
+  const { command, args } = launchCommand(bin, [mode, ...flags, real]);
   const native = nativeLauncher(bin);
   const child = spawn(command, args, { env, detached: true, stdio: native ? 'ignore' : ['ignore', 'ignore', 'pipe'], windowsHide: true });
   await new Promise((resolve, reject) => {

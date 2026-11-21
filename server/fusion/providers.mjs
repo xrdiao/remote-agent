@@ -1,6 +1,7 @@
 import { EDITORS } from '../config.mjs';
 import { fusionMcp } from './mcp.mjs';
 import { CODEX_BACKEND, codexBackend } from '../codex/state.mjs';
+import { fusionOpenCode } from './opencode.mjs';
 
 const providers = new Map();
 
@@ -23,7 +24,7 @@ export class NativeAgentProvider {
     }
     return this.action(agent, context, 'create', spec);
   }
-  models(agent, context) { return agent.call(context, 'modelItemsFast(true)', context.native.threadId ? context.native : null); }
+  models(agent, context) { return agent.call(context, 'modelItemsFast(true)', context.native.threadId || this.app === 'devin' ? context.native : null); }
   readTurn(agent, context, { id = '', attemptId = '', previous = [], generationId = '' } = {}) {
     return agent.call(context, `codexFusionTurn(${JSON.stringify(id)}, ${JSON.stringify(attemptId)}, ${JSON.stringify(previous)}, ${JSON.stringify(generationId)})`);
   }
@@ -75,13 +76,14 @@ export function nativeAgentProviders() { return [...providers.values()]; }
 
 for (const { app, name } of EDITORS)
   registerNativeAgentProvider(new NativeAgentProvider({ app, name, transport: app === 'devin' ? 'mcp' : 'native' }));
+registerNativeAgentProvider(fusionOpenCode);
 
 const codexThread = id => codexBackend.threads.get(id) || codexBackend.read(id);
 const codexIdentity = thread => ({ app: 'codex', threadId: thread.id, host: '', cwd: thread.cwd, roots: [{ root: thread.cwd, host: '' }] });
 export const backgroundCodex = {
   async open(threadId) {
     const thread = await codexBackend.read(threadId);
-    return { app: 'codex', backend: true, page: { id: CODEX_BACKEND }, native: codexIdentity(thread) };
+    return { app: 'codex', backend: CODEX_BACKEND, page: { id: CODEX_BACKEND }, native: codexIdentity(thread) };
   },
   async create(_agent, _context, spec) {
     return codexIdentity(await codexBackend.create(spec.root, spec));

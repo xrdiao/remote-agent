@@ -177,18 +177,33 @@ foreach ($app in $agentConfigs) {
     continue
   }
   if ($ProbeOnly) { Write-Output "RESULT $key installed"; continue }
-  Write-Host "启动：$bin --remote-debugging-port=$($app.Port)"
-  $electronMode = $env:ELECTRON_RUN_AS_NODE
+  $arguments = @("--remote-debugging-port=$($app.Port)")
+  $launchEnv = @{ ELECTRON_RUN_AS_NODE = $null }
+  if ($key -eq 'devin') {
+    $arguments += '--no-proxy-server'
+    foreach ($name in @('HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'SOCKS_PROXY', 'FTP_PROXY',
+        'NODE_USE_ENV_PROXY', 'GLOBAL_AGENT_HTTP_PROXY', 'VSCODE_IPC_HOOK_CLI')) {
+      $launchEnv[$name] = $null
+    }
+    $launchEnv['NO_PROXY'] = '*'
+  }
+  Write-Host "启动：$bin $arguments"
+  $previousEnv = @{}
   try {
-    $env:ELECTRON_RUN_AS_NODE = $null
-    Start-Process -FilePath $bin -ArgumentList "--remote-debugging-port=$($app.Port)" -WorkingDirectory (Split-Path -Parent $bin) -WindowStyle Normal | Out-Null
+    foreach ($name in $launchEnv.Keys) {
+      $previousEnv[$name] = [Environment]::GetEnvironmentVariable($name, 'Process')
+      [Environment]::SetEnvironmentVariable($name, $launchEnv[$name], 'Process')
+    }
+    Start-Process -FilePath $bin -ArgumentList $arguments -WorkingDirectory (Split-Path -Parent $bin) -WindowStyle Normal | Out-Null
   } catch {
     Write-Host "启动失败：$($_.Exception.Message)"
     Write-Output "RESULT $key failed"
     $failed++
     continue
   } finally {
-    $env:ELECTRON_RUN_AS_NODE = $electronMode
+    foreach ($name in $previousEnv.Keys) {
+      [Environment]::SetEnvironmentVariable($name, $previousEnv[$name], 'Process')
+    }
   }
   $pending += @{ App = $app; Started = Get-Date }
 }

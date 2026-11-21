@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import { FUSION_TOOLS, fusionAutonomyContext, fusionControllerPrompt } from './control.mjs';
+import { FUSION_TOOLS, fusionControllerPrompt } from './control.mjs';
 import { fusionEvent, newFusionAttempt, publishFusion } from './state.mjs';
 import { nativeAgentProvider } from './providers.mjs';
 import { FusionControlError } from './contract.mjs';
@@ -9,6 +9,7 @@ import { FusionControlError } from './contract.mjs';
 export class FusionController {
   constructor(runner) { this.runner = runner; this.controller = runner.run; this.pending = new Set(); this.waiting = new Map(); this.delivering = new Set(); }
   async start() {
+    if (this.disconnecting) await this.disconnecting;
     if (this.context) return;
     if (this.starting) return this.starting;
     this.starting = this.connect().finally(() => { this.starting = null; });
@@ -23,6 +24,10 @@ export class FusionController {
       context.fusionChanged = () => this.check();
       await this.bind(context);
       this.context = context;
+      if (binding.windowId !== context.page.id || controller.main.windowId !== context.page.id) {
+        binding.windowId = controller.main.windowId = context.page.id;
+        publishFusion(controller);
+      }
       context.cdp.onclose = error => this.failed(error);
       this.unsubscribe = context.source.subscribe(error => error ? this.failed(error) : this.check(), context.native, 'fusion-control');
       await this.check();
@@ -31,7 +36,7 @@ export class FusionController {
   async bind(context) {
     const result = await nativeAgentProvider(this.controller.main.app).bindController(this.runner.agent, context, this.controller, {
       names: FUSION_TOOLS.map(row => row.name), tools: FUSION_TOOLS,
-      authorization: fusionAutonomyContext(this.controller), instructions: fusionControllerPrompt(this.controller),
+      instructions: fusionControllerPrompt(this.controller),
     });
     this.profileReady = result.profileReady;
   }
@@ -54,7 +59,7 @@ export class FusionController {
       attempt.status = 'unknown'; attempt.error = error.message;
     }
     this.runner.blockMain(error);
-    this.close().catch(() => {});
+    this.disconnecting = this.close().catch(() => {}).finally(() => { this.disconnecting = null; });
   }
   acknowledgeUserAnswers() {
     const run = this.controller, threadId = run.bindings.find(row => row.id === run.main.bindingId)?.threadId;

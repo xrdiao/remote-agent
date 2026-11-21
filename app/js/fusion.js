@@ -512,8 +512,20 @@ function fusionNativeHtml(run, attempt) {
   const questionActions = questions?.list?.length ? questionButton(I18N.tr('跳过'), 0, 0, 'skip')
     + questionButton(I18N.tr('提交'), 0, 0, 'submit', questions.canSubmit ? '' : 'disabled')
     + (questions.pager ? questionButton('‹', 0, 0, 'prev', questions.canPrev ? '' : 'disabled') + questionButton('›', 0, 0, 'next', questions.canNext ? '' : 'disabled') : '') : '';
-  return buttons + requests + questionRows + questionActions;
+  const openCode = (attempt.openCodeQuestions || []).map(question => openCodeQuestionHtml(question,
+    `data-fusion-opencode data-attempt="${esc(attempt.attemptId)}" data-binding="${esc(attempt.bindingId)}"`)).join('');
+  return buttons + requests + questionRows + questionActions + openCode;
 }
+document.addEventListener('submit', event => {
+  const form = event.target.closest('form[data-fusion-opencode]');
+  const card = form?.closest('[data-fusion-native-card]');
+  if (!card) return;
+  event.preventDefault();
+  const reject = event.submitter?.name === 'reject', answers = openCodeQuestionAnswers(form);
+  if (!reject && answers.some(values => !values.length)) return status(I18N.tr('请回答所有问题'), false);
+  sendFusion(card.dataset.fusionComputer, { t: 'fusionNative', runId: card.dataset.fusionRun, attemptId: form.dataset.attempt,
+    action: { kind: 'opencodeQuestion', bindingId: form.dataset.binding, id: form.dataset.opencodeQuestion, answers, reject } });
+});
 function fusionPreserveSheet(paint, surface = null) {
   const root = surface || fusionSurface(), scroll = root.scrollTop;
   const dialogue = root.querySelector('[data-fusion-dialogue]');

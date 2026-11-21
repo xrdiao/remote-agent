@@ -241,7 +241,11 @@ export class Session extends AgentContext {
         this.currentRoots().then(roots => {
           if (this.bindingReady && this.liveRead(cdp, sel) && obj.sel === this.selectionKey()) {
             rememberSelection(this.deviceId, { ...selection, project: roots[0] || null });
-            if (this.fusionRun) rememberFusionMainWindow(this.fusionRun, selection, roots);
+            if (this.fusionRun) {
+              const run = this.fusionRun, runner = fusionRunner(run);
+              rememberFusionMainWindow(run, selection, roots);
+              if (!runner.controller.context) cdpRead.run(null, () => runner.ensureMain()).catch(() => {});
+            }
             this.rememberedSelection = obj.sel;
           }
         }).catch(() => {}).finally(() => {
@@ -578,6 +582,10 @@ export class Session extends AgentContext {
   // Warms the phone's sheet caches with whatever can be read without opening visible UI.
 
   async prefetchMenus() {
+    if (this.app === 'codex') {
+      if (this.bindingReady && this.mode === 'chat' && this.threadId) await this.adapter.readModelMenu.call(this, 'model');
+      return;
+    }
     const cdp = this.cdp;
     if (!cdp || this.app === 'fusion' || !this.visible) return;
     const sel = this.selectionKey(), generation = this.sel;
@@ -703,6 +711,8 @@ export class Session extends AgentContext {
         && msg.sel && msg.sel !== this.selectionKey()) throw new Error('会话已切换，操作未执行');
     if (['send', 'pickMenu', 'queue', 'codexRequest', 'codexPlan', 'codexPick', 'stop'].includes(msg.t))
       msg = await this.followCodexOwner(msg);
+    if (msg.t === 'send' && msg.submit !== false && this.mode === 'chat' && this.fusionRun)
+      await cdpRead.run(null, () => this.fusionWorker().ensureMain());
     if (this.app !== app || this.threadId !== thread) throw new Error('会话已切换，操作未执行');
     const route = resolveRoute(this, msg.t);
     const execute = async () => {

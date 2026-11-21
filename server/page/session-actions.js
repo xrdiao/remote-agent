@@ -375,7 +375,8 @@
       if (catalog === 'modelPage') return manager.sendRequest('model/list', nativeValue(previous));
       const settings = conversation.latestThreadSettings || {};
       return { model: settings.model || conversation.latestModel, effort: settings.effort ?? conversation.latestReasoningEffort,
-        serviceTier: settings.serviceTier ?? null, modelProvider: settings.modelProvider || conversation.modelProvider };
+        serviceTier: settings.serviceTier ?? null, modelProvider: settings.modelProvider || conversation.modelProvider,
+        ...(previous === true ? { account: await manager.requestClient.sendRequest('account/read', { refreshToken: false }) } : {}) };
     })();
     if (catalog === 'cleanup' || catalog === 'name') return nativeSessionCleanup(app, id);
     if (catalog === 'settings') {

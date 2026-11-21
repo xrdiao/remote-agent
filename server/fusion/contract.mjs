@@ -5,16 +5,17 @@ export const FUSION_ACTIONS = [...FUSION_READ_ACTIONS, 'create_work', 'plan', 'd
   'continue_task', 'review', 'wait', 'ask_user', 'cancel_task', 'finish', 'set_priority'];
 export const ACTION_FIELDS = {
   read_task: ['taskId'], list_models: ['app'], create_work: ['title', 'goal'],
-  plan: ['workId', 'summary', 'scope', 'criteria', 'requiresConfirmation'], dispatch: ['workId', 'tasks', 'input'],
+  plan: ['workId', 'summary', 'scope', 'criteria', 'requiresConfirmation'], dispatch: ['workId', 'tasks'],
   continue_task: ['taskId', 'input', 'execution', 'cost'], review: ['taskId', 'attemptId', 'verdict', 'reason', 'summary'],
   ask_user: ['workId', 'question'], cancel_task: ['taskId', 'reason'],
   finish: ['workId', 'summary', 'evidence'], set_priority: ['taskId', 'priority'],
 };
-export const WORKSPACE_VIEWS = ['overview', 'worker', 'reviews', 'history', 'protocol'];
+export const WORKSPACE_VIEWS = ['overview', 'dispatch', 'worker', 'reviews', 'history', 'protocol'];
 export const MODEL_VIEWS = ['index', 'profile', 'source'];
 export const MODEL_PAGE_LIMIT = 8;
 export const EVIDENCE_FIELDS = { criterion: '返回的标准ID，不是标准正文', detail: '主控实际核对的证据和结论',
-  reference: '证据位置，不是执行ID', attemptId: 'finish每项明确来源执行ID；review使用顶层attemptId' };
+  reference: '证据位置；本轮主控成果填 management.evidenceReference',
+  attemptId: 'finish引用已结束的来源时填写；本轮主控成果省略此字段。review使用顶层attemptId' };
 export class FusionControlError extends Error {
   constructor(message, field, expected, read) {
     super(message); this.feedback = { message, field, expected, ...(read ? { read } : {}) };
@@ -98,8 +99,8 @@ const criterion = { type: 'object', additionalProperties: false, required: ['id'
 const execution = { type: 'object', additionalProperties: false, required: ['app', 'model', 'effort', 'input'], properties: {
   app: { ...string, description: 'A registered native application ID from read_workspace.apps.' }, model: { ...string, description: 'Exact model ID returned by list_models.' }, effort: string, input: string,
 } };
-const cost = { type: 'object', additionalProperties: false, required: ['selfExecute', 'delegate', 'overhead', 'reason', 'sources'], properties: {
-  selfExecute: string, delegate: string, overhead: { ...string, description: 'Include planning, review, context transfer and rework.' }, reason: string,
+const cost = { type: 'object', additionalProperties: false, required: ['reason', 'sources'], properties: {
+  selfExecute: string, delegate: string, overhead: string, reason: { ...string, description: 'Task fit and total coordination cost.' },
   sources: { ...strings, description: 'IDs of real capability snapshots, not event IDs.' },
   estimate: { type: 'object', additionalProperties: false, required: ['amount', 'unit'], properties: { amount: { type: 'number' }, unit: string } },
 } };
@@ -109,18 +110,24 @@ const task = { type: 'object', additionalProperties: false, required: ['goal', '
   acceptance: { ...strings, minItems: 1, description: 'An array of plain criterion text, not objects. RA returns the resulting criterion IDs.' },
   required: { type: 'boolean' }, priority: { type: 'integer' },
 } };
-const dispatchedTask = { ...task, required: [...task.required, 'id', 'execution', 'cost'], properties: { ...task.properties, execution, cost } };
+const worker = { type: 'object', additionalProperties: false, required: ['workerId', 'label', 'reason'], properties: {
+  workerId: { type: ['string', 'null'] }, label: string, reason: string,
+  compared: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['workerId', 'reason'],
+    properties: { workerId: string, reason: string } } },
+} };
+const dispatchedTask = { ...task, required: [...task.required, 'id', 'execution', 'cost'], properties: { ...task.properties, execution, cost, worker } };
 const evidence = { type: 'object', additionalProperties: false, required: ['criterion', 'detail', 'reference'], properties: {
   ...Object.fromEntries(Object.entries(EVIDENCE_FIELDS).map(([name, description]) => [name, { ...string, description }])),
 } };
 export const FUSION_TOOLS = [{ type: 'function', name: 'ra_fusion',
-  description: '管理 RA 原生子 Agent；主 Agent 自己的工作直接使用普通原生能力，无需工作台登记。管理子任务时按需 read_workspace，遵循 AGENTS.md 与用户授权；登记／排队不等于已执行或已验收。',
+  description: '发现原生模型、派工和验收。用 list_models(app=all) 查看已打开软件，按返回的 read 读取详情。',
   inputSchema: { type: 'object', additionalProperties: false, required: ['action'], properties: {
     action: { type: 'string', enum: FUSION_ACTIONS }, workId: { ...string, description: 'read_workspace工作详情直接填此ID；input只填section及分页条件。其他动作使用同一真实工作ID。' }, taskId: string, attemptId: string,
     title: string, goal: string, project: { type: 'object', additionalProperties: false, required: ['root'], properties: { root: string, host: string } }, app: { ...string, description: 'list_models: native app ID, or all for connected software. Execution always uses a native app ID.' }, summary: { ...string, description: 'review: concise work memory with conclusion, verification and remaining issues; do not copy logs. plan/finish: scope or delivery summary.' }, scope,
-    criteria: { type: 'array', minItems: 1, items: criterion }, requiresConfirmation: { type: 'boolean' }, policyEvidence: string,
+    criteria: { type: 'array', minItems: 1, items: criterion }, requiresConfirmation: { type: 'boolean',
+      description: 'Required for plan. True when user or project approval is still needed.' }, policyEvidence: string,
     tasks: { type: 'array', minItems: 1, items: dispatchedTask },
-    input: { ...string, description: `read_workspace默认agents含职责及memory预览；详情用顶层workId，input仅section/offset/length；其他view=${WORKSPACE_VIEWS.join('/')}，worker需id。list_models默认${MODEL_PAGE_LIMIT}张，翻页／详情复制read；needs可写任务需求。dispatch.input按taskId给{workerId:null或已有id,label:职责短名,reason,compared:[{workerId,reason}]}；有同软件同项目候选时新建须比较实际读过的候选。continue_task只写变化并明确execution。read_task默认证据索引；按返回模板review或明确处理失败。ask_user可用attemptId关联待处理执行。` },
+    input: { ...string, description: 'JSON for read options (copy returned read). For continue_task, plain text with changes only.' },
     execution, cost,
     verdict: { type: 'string', enum: ['accept', 'rework'] }, evidence: { type: 'array', items: evidence },
     reason: string, question: string, options: strings, priority: { type: 'integer' },

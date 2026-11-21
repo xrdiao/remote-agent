@@ -31,6 +31,16 @@ export class FusionRunner {
     await this.controller.start();
     this.wake();
   }
+  async ensureMain() {
+    if (!this.run.main.bindingId || this.run.stopRequested) return;
+    if (!this.controller.context || this.recovering) {
+      try { await this.recover(); }
+      catch (error) { this.blockMain(error); throw error; }
+    }
+    if (this.controller.profileReady === false) await this.controller.check();
+    if (!this.controller.context || this.controller.profileReady === false)
+      throw new Error('Fusion 主会话的原生工具尚未就绪，请在当前轮次结束后重试');
+  }
   async control(action, native) {
     const run = this.run, key = fusionActor(run, native);
     const previous = run.commands.find(row => row.key === key);
@@ -38,21 +48,23 @@ export class FusionRunner {
     if (action?.action === 'list_models' && !previous) {
       if (!query.snapshotIds) {
         const apps = action.app === 'all' ? (await this.agent.softwareCapabilities())
-          .filter(row => row.connected || row.app === 'codex' && !run.project.host).map(row => row.app) : [action.app];
+          .filter(row => row.worker && (row.connected || row.app === 'codex' && !run.project.host)).map(row => row.app) : [action.app];
         const snapshots = await Promise.all(apps.map(async app => {
           try { return await this.agent.capabilities(run, app, { worker: true }); }
           catch (error) { return { ...nativeCostSnapshot(app, [], null, { read: 'native-model-catalog' }), error: error.message }; }
         }));
-        await this.agent.catalog.refresh(snapshots.flatMap(snapshot => snapshot.models.map(model => ({ app: snapshot.app, model: model.model }))));
-        commitFusion(run, next => { next.capabilities.unshift(...snapshots.map(snapshot => this.agent.catalog.enrich(snapshot))); });
-        action = { ...action, input: JSON.stringify({ ...query, snapshotIds: snapshots.map(snapshot => snapshot.id) }) };
+        commitFusion(run, next => { next.capabilities.unshift(...snapshots); });
+        query.snapshotIds = snapshots.map(snapshot => snapshot.id);
+        action = { ...action, input: JSON.stringify(query) };
       }
+      if (query.view === 'source' || query.view === 'profile')
+        await this.agent.catalog.refresh(query.model ? [{ app: action.app, model: query.model }] : []);
     }
     let result = applyFusionControl(run, action, native, { catalog: this.agent.catalog });
     const attempt = run.attempts.find(row => row.kind === 'main' && row.native?.turnId === native.turnId);
     if (attempt && !previous) {
       const workIds = new Set([action.workId, result.workId, run.tasks.find(row => row.id === action.taskId)?.workId,
-        ...(action.action === 'read_workspace' ? result.events.map(row => row.data.workId) : []),
+        ...(action.action === 'read_workspace' ? (result.events || []).map(row => row.data.workId) : []),
       ].filter(Boolean));
       for (const workId of workIds) await this.recordMainWork(attempt, workId);
     }
@@ -415,9 +427,14 @@ export class FusionRunner {
     this.publish();
     fusionWorkers.delete(JSON.stringify([run.computer, run.deviceId, run.id]));
   }
-  async recover() {
+  recover() {
+    this.recovering ||= this.restore().finally(() => { this.recovering = null; });
+    return this.recovering;
+  }
+  async restore() {
     this.finishStop();
     if (this.run.stopRequested && this.run.status === 'stopped') return;
+    const reconnecting = !this.controller.context;
     await this.controller.start();
     for (const attempt of this.run.attempts.filter(row => NATIVE_UNSETTLED.includes(row.status) || row.status === 'queued')) {
       if (this.jobs.has(attempt.id)) continue;
@@ -435,12 +452,17 @@ export class FusionRunner {
           if (turn.ended) await this.mainEnded(attempt.id, turn);
           else if (!turn.id) this.attemptFailed(attempt.id, new Error('无法确认主会话原生轮次，不能自动重发'), true);
           else if (this.run.stopRequested) await this.controller.stop(attempt);
+          else if (turn.current && attempt.status === 'unknown') { attempt.status = 'running'; delete attempt.error; }
         }
       } else if (this.run.tasks.find(row => row.id === attempt.taskId)?.executor !== 'main') {
         this.schedule(attempt.id, attempt.submission !== 'not_submitted');
       }
     }
-    if (this.run.status === 'recovering') { this.run.status = 'waiting'; this.run.blockedReason = ''; }
+    if ((this.run.status === 'recovering' || reconnecting && this.run.status === 'blocked')
+      && !this.run.attempts.some(row => row.kind === 'main' && row.status === 'unknown') && !this.run.reviewBlock) {
+      this.run.status = this.run.attempts.some(row => row.kind === 'main' && row.status === 'running') ? 'running' : 'waiting';
+      this.run.blockedReason = '';
+    }
     this.publish(); this.wake();
   }
 }

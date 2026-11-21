@@ -37,16 +37,26 @@ function nativeInteractions(run) {
     if (!live) return [];
     const requests = live.chat?.questions?.codex ? live.chat.questions.requests || [] : [];
     const questions = live.chat?.questions?.codex ? null : live.chat?.questions;
+    const openCodeQuestions = attempt.app === 'opencode' ? live.chat.items.filter(row => row.k === 'opencodeQuestion') : [];
     const items = (live.chat?.items || []).flatMap(item => {
       const key = item.btnItem || item.i, waiting = live.state?.waiting;
+      if (attempt.app === 'cursor') {
+        if (!item.approvalId || !live.state?.waitingToolIds?.includes(item.approvalId)) return [];
+        const buttons = (item.b || []).flatMap((label, n) => {
+          const actionId = item.actions?.[n];
+          return [item.approvalId + ':accept', item.approvalId + ':reject'].includes(actionId) ? [{ label, n, actionId }] : [];
+        });
+        return buttons.length ? [{ i: item.i, btnItem: key, buttons }] : [];
+      }
       if (typeof waiting !== 'string' || !waiting.startsWith(key + ':')) return [];
       const labels = waiting.slice(key.length + 1).split('/');
       const buttons = (item.b || []).flatMap((label, n) => labels.includes(label) ? [{ label, n, actionId: item.actions?.[n] || '' }] : []);
       return buttons.length ? [{ i: item.i, btnItem: key, buttons }] : [];
     });
-    if (!requests.length && !questions?.list?.length && !items.length) return [];
+    if (!requests.length && !questions?.list?.length && !items.length && !openCodeQuestions.length) return [];
     return [{ id: attempt.id, taskId: task.id, workId: task.workId, goal: task.goal, app: attempt.app,
-      attemptId: attempt.id, bindingId: attempt.bindingId, native: attempt.native, items, requests, questions }];
+      attemptId: attempt.id, bindingId: attempt.bindingId, native: attempt.native, items, requests, questions,
+      ...(openCodeQuestions.length ? { openCodeQuestions } : {}) }];
   });
 }
 function taskSummaries(run, taskId, index) {

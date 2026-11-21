@@ -724,7 +724,12 @@ export class CodexState extends EventEmitter {
       return [...row.items, ...(plan.length ? [{ type: 'todo-list', id: row.id + ':tasks', plan }] : [])].map(item => ({ item, turn: row, finalReply: item === last }));
     }).filter(({ item }) => item.type === 'reasoning' ? !!reasoningText(item).trim()
       : item.type === 'agentMessage' || item.type === 'plan' ? !!item.text?.trim() : chatTypes.has(item.type));
-    for (const { item, turn: owner, finalReply } of all.slice(-limit)) {
+    const start = Math.max(0, all.length - limit);
+    const firstTurn = all[start]?.turn;
+    const opening = [];
+    for (let i = start - 1; i >= 0 && all[i].turn === firstTurn; i--)
+      if (all[i].item.type === 'userMessage') opening.unshift(all[i]);
+    for (const { item, turn: owner, finalReply } of [...opening, ...all.slice(start)]) {
       const base = { i: item.id, order: owner.startedAt * 1000 || thread.createdAt * 1000 };
       if (item.type === 'userMessage') {
         const images = item.content.filter(part => part.type === 'image').map(part => part.url).filter(Boolean);

@@ -59,27 +59,26 @@ export function fusionModelView(controller, app, query = {}, catalog = fusionMod
     const snapshot = current.find(row => row.models.some(model => model.model === query.model));
     const model = snapshot?.models.find(row => row.model === query.model);
     if (!model) throw new FusionControlError('型号不属于所选原生目录', 'input.model', '复制模型索引中对应型号的read', selector({}));
-    return { app: snapshot.app, snapshotId: snapshot.id, model,
-      publicSources: snapshot.publicSources || [], history: modelHistory(controller, snapshot.app, model.model, true) };
+    return { app: snapshot.app, snapshotId: snapshot.id, model: { ...model, knowledge: catalog.profile(snapshot.app, model.model) },
+      publicSources: catalog.index().map(source => ({ ...source, ...(source.kind === 'official-software-document'
+        ? { read: selector({ view: 'source', source: source.id }) } : {}) })),
+      history: modelHistory(controller, snapshot.app, model.model, true) };
   }
   const groups = current.map(row => row.models.map(model => ({ snapshot: row, model })));
   const rows = []; for (let i = 0; groups.some(group => i < group.length); i++) for (const group of groups) if (group[i]) rows.push(group[i]);
   const offset = query.offset ?? 0, limit = query.limit ?? MODEL_PAGE_LIMIT;
   if (offset > rows.length) throw new FusionControlError('模型索引分页需要有效 offset，limit 为 1–8', 'input.offset', { min: 0, max: rows.length, paging: '复制返回read' }, selector({}));
   const end = Math.min(rows.length, offset + limit);
-  const sources = [...new Map(current.flatMap(row => row.publicSources || []).map(source => [source.id, source])).values()];
   return { app, snapshotIds: snapshots, available: current.some(row => row.available), total: rows.length, offset, pageLimit: MODEL_PAGE_LIMIT,
-    apps: current.map(row => ({ app: row.app, id: row.id, at: row.at, available: row.available, error: row.error,
-      modelCount: row.models.length, nativeIds: row.models.slice(0, 12).map(model => model.model),
+    apps: current.map(row => ({ app: row.app, snapshotId: row.id, available: row.available, error: row.error,
+      modelCount: row.models.length,
       read: { action: 'list_models', app: row.app, input: JSON.stringify({ snapshotIds: [row.id] }) } })),
-    sources: sources.map(source => ({ ...source, ...(source.kind === 'official-software-document'
-      ? { read: selector({ view: 'source', source: source.id }) } : {}) })),
     models: rows.slice(offset, end).map(({ snapshot, model }) => { const knowledge = modelKnowledgeSummary(model.knowledge); return { app: snapshot.app, model: model.model, label: model.label,
       snapshotId: snapshot.id, efforts: model.efforts.map(row => row.label || row), pricing: model.pricing,
-      knowledge, fit: taskFit(knowledge, query.needs), history: modelHistory(controller, snapshot.app, model.model),
+      fit: taskFit(knowledge, query.needs),
       read: { action: 'list_models', app: snapshot.app, input: JSON.stringify({ view: 'profile', model: model.model, snapshotIds: [snapshot.id] }) } }; }),
     nextOffset: end < rows.length ? end : null, ...(end < rows.length ? { read: selector({ offset: end, limit }) } : {}),
-    basis: '仅原生候选；公开能力/API价作参考，套餐及额度单列。历史总耗时含工具等待、错误不直接代表模型能力。按任务比较并引用snapshotId，不按API价承诺桌面账单。' };
+    basis: '原生候选。详细能力、价格参考和历史按 read 查看。' };
 }
 export function validateExecution(controller, execution) {
   if (!execution?.app || !nativeAgentProvider(execution.app).worker) throw new Error('请选择实际执行软件');
@@ -92,8 +91,7 @@ export function validateExecution(controller, execution) {
   return model;
 }
 export function validateCost(controller, cost, execution) {
-  for (const field of ['selfExecute', 'delegate', 'overhead', 'reason'])
-    if (typeof cost?.[field] !== 'string' || !cost[field].trim()) throw new Error(`成本选择需要 ${field}`);
+  if (typeof cost?.reason !== 'string' || !cost.reason.trim()) throw new Error('成本选择需要 reason');
   if (!Array.isArray(cost.sources) || !cost.sources.length || cost.sources.some(id => !controller.capabilities.some(row => row.id === id)))
     throw new Error('成本来源不属于实际读取的原生资料');
   if (!controller.capabilities.some(row => row.app === execution.app && cost.sources.includes(row.id))) throw new Error('缺少选中软件的成本／能力来源');

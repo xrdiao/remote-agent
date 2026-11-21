@@ -274,6 +274,7 @@ async function bindBackend(s, req) {
   s.codexAccount = codexAccountMetadata(account);
   rememberSelection(s.deviceId, { id: 'codex', app: 'codex', windowId: CODEX_BACKEND, threadId: thread.id, project: { root: thread.cwd, host: '' } });
   backendAttached(s, req.initial === true);
+  s.prefetchMenus().catch(() => {});
   await s.setMode(s.mode, true);
   if (req.project) s.projectReady({ root: directory, newSession: !id, threadId: id });
 }
@@ -362,8 +363,9 @@ async function withCodexModelOwner(s, action, readOnly = false) {
   if (!s.codexBackend) return action({ id, cdp: s.cdp });
   const owner = await s.adapter.backendOwner(id, !readOnly);
   if (!owner) {
-    await ensureBackendAccount(s);
-    return readOnly ? action({ id, thread: await codexBackend.readModelState(id) }) : codexBackend.withWriter(id, thread => action({ id, thread }));
+    const account = await ensureBackendAccount(s);
+    return readOnly ? action({ id, account, thread: await codexBackend.readModelState(id) })
+      : codexBackend.withWriter(id, thread => action({ id, account, thread }));
   }
   const cdp = new Cdp(owner.chatWs), context = { app: 'codex', threadId: id, host: '', cwd: owner.cwd };
   try {
@@ -372,9 +374,10 @@ async function withCodexModelOwner(s, action, readOnly = false) {
   } finally { cdp.close(); }
 }
 
-async function codexModelSettings(owner) {
-  if (owner.thread) return { ...owner.thread.settings, model: owner.thread.settings.model || owner.thread.model };
-  return owner.cdp.evaluate(helpersCall(`nativeSessionInfo('codex', ${JSON.stringify(owner.id)}, 'modelSettings')`, owner.context));
+async function codexModelSettings(owner, withAccount = false) {
+  if (owner.thread) return { ...owner.thread.settings, model: owner.thread.settings.model || owner.thread.model,
+    ...(withAccount ? { account: owner.account } : {}) };
+  return owner.cdp.evaluate(helpersCall(`nativeSessionInfo('codex', ${JSON.stringify(owner.id)}, 'modelSettings', ${withAccount})`, owner.context));
 }
 
 async function codexModelList(owner, settings) {
@@ -390,6 +393,26 @@ async function codexModelList(owner, settings) {
   return models;
 }
 
+const codexModelLists = new WeakMap();
+async function codexMenuModels(owner, settings, account) {
+  if (!account?.account) return codexModelList(owner, settings);
+  const source = owner.thread ? codexBackend.client : nativeWindowAt(owner.cdp.wsUrl) || owner.cdp;
+  const key = JSON.stringify([accountStamp(account), accountPlan(account), settings.modelProvider || null,
+    owner.thread ? codexBackend.client.generation : owner.cdp.wsUrl, owner.context?.host || '']);
+  const previous = codexModelLists.get(source);
+  if (previous?.key === key && previous.until > Date.now()) return previous.result;
+  const entry = { key, until: Infinity };
+  entry.result = cdpRead.run(null, () => codexModelList(owner, settings)).then(models => {
+    entry.until = Date.now() + 60000;
+    return models;
+  }, error => {
+    if (codexModelLists.get(source) === entry) codexModelLists.delete(source);
+    throw error;
+  });
+  codexModelLists.set(source, entry);
+  return entry.result;
+}
+
 const codexModelId = model => model.model || model.id;
 const codexFastTier = model => model?.serviceTiers?.find(tier =>
   ['priority', 'fast'].includes(tier.id) || ['fast', 'priority'].includes(String(tier.name || '').trim().toLowerCase()));
@@ -401,12 +424,30 @@ function codexFastState(model, settings) {
 
 async function readCodexModelMenu(kind, requestId) {
   const sel = this.selectionKey(), id = this.threadId, generation = this.sel;
-  const { settings, models } = await withCodexModelOwner(this, async owner => {
-    const settings = await codexModelSettings(owner);
-    return { settings, models: await codexModelList(owner, settings) };
-  }, true);
-  if (this.selectionKey() !== sel || this.threadId !== id || this.sel !== generation) return;
-  this.codexModelCatalog = { id, provider: settings.modelProvider || null, models };
+  const prefetch = requestId == null;
+  const previous = this.codexModelRead;
+  const sameSelection = previous && previous.sel === sel && previous.generation === generation;
+  if (prefetch && sameSelection) return;
+  const read = this.codexModelRead = { sel, generation, prefetch };
+  const load = async owner => {
+    const { account, ...settings } = await codexModelSettings(owner, true);
+    const models = await codexMenuModels(owner, settings, account);
+    return { settings, models, account: accountStamp(account) };
+  };
+  // A prefetch may use the current backend account, but must not switch it.
+  const query = () => withCodexModelOwner(this, load, true);
+  const warm = async () => {
+    const account = await codexBackend.account();
+    if (accountStamp(account) !== this.codexAccount?.account || !account.account || this.selectionKey() !== sel || this.sel !== generation) return null;
+    return load({ id, account, thread: await codexBackend.readModelState(id) });
+  };
+  const pending = !prefetch && sameSelection && previous.prefetch ? previous.pending : null;
+  read.pending = prefetch && this.codexBackend ? warm() : pending
+    ? pending.then(result => result || query(), query) : query();
+  const result = await read.pending.finally(() => { read.pending = null; });
+  if (!result || this.codexModelRead !== read || this.selectionKey() !== sel || this.threadId !== id || this.sel !== generation) return;
+  const { settings, models, account } = result;
+  this.codexModelCatalog = { id, account, provider: settings.modelProvider || null, models };
   const current = models.find(row => codexModelId(row) === settings.model);
   const modelItems = models.filter(row => !row.hidden).map(row => ({ label: row.displayName || codexModelId(row),
     id: codexModelId(row), checked: codexModelId(row) === settings.model }));
@@ -423,7 +464,8 @@ async function pickCodexModelMenu(kind, label, name) {
   const id = this.threadId, sel = this.selectionKey(), generation = this.sel, catalog = this.codexModelCatalog;
   if (!catalog || catalog.id !== id) throw new Error('请重新打开 Codex 模型菜单');
   const result = await withCodexModelOwner(this, async owner => {
-    const settings = await codexModelSettings(owner);
+    const { account, ...settings } = await codexModelSettings(owner, true);
+    if (accountStamp(account) !== catalog.account) throw new Error('Codex 账号已切换，请重新打开菜单');
     if ((settings.modelProvider || null) !== catalog.provider) throw new Error('Codex 模型来源已变化，请重新打开菜单');
     const current = catalog.models.find(row => codexModelId(row) === settings.model);
     let update;
@@ -846,21 +888,16 @@ export const adapter = {
       })];
       for (const win of nativeTargets().filter(win => win.app === 'codex')) {
         const source = nativeWindowAt(win.ws), context = { app: 'codex', threadId: this.threadId, host: '', cwd: this.codexDirectory };
-        let stopConversation;
         const changed = error => {
           if (error) { this.emit({ t: 'status', ok: false, msg: error.message }); return; }
           if (codexBackend.hasWriter(context.threadId)) refresh();
           else codexBackend.read(context.threadId).then(refresh, changed);
         };
-        const visible = () => {
+        stops.push(source.subscribe(changed, context), source.subscribe(() => {
           if (source.snapshot?.chat?.thread !== context.threadId || source.snapshot.chat.readonly) return;
           this.adapter.syncBackendDraft.call(this).catch(error => changed(error));
-          if (stopConversation) return;
-          stopConversation = source.subscribe(changed, context);
-          source.readConversation(context).then(() => changed(), changed);
-        };
-        stops.push(source.subscribe(visible), () => stopConversation?.());
-        visible();
+        }));
+        source.readConversation(context).catch(() => {});
       }
       return () => { for (const stop of stops) stop(); };
     }, sent => backendPublish(this, sent));

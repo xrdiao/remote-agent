@@ -16,46 +16,31 @@
       bridge.threads.set(id, new Set(name.names));
       const client = manager.requestClient;
       const clients = window.__remoteAgentFusionRequests ||= new WeakMap();
-      let requests = clients.get(client);
-      if (!requests) {
-        requests = { original: client.sendRequest, threads: new Map() };
-        client.sendRequest = function(method, params, ...options) {
-          const authorization = (method === 'turn/start' || method === 'turn/steer') && requests.threads.get(params.threadId);
-          return requests.original.call(this, method, authorization ? { ...params,
-            additionalContext: { ...params.additionalContext, ra_fusion_user_authorization: authorization },
-          } : params, ...options);
-        };
-        clients.set(client, requests);
-      }
-      requests.threads.set(id, name.authorization);
-      requests.profiles ||= new Map();
-      if (requests.profiles.get(id) !== name.instructions && !manager.isConversationStreaming(id)) {
+      let profiles = clients.get(client);
+      if (!profiles) { profiles = new Map(); clients.set(client, profiles); }
+      if (profiles.get(id) !== name.instructions && !manager.isConversationStreaming(id)) {
         const conversation = manager.getConversation(id), settings = conversation.latestThreadSettings, permissions = conversation.currentPermissions;
-        await requests.original.call(client, 'thread/resume', nativeValue({
+        await client.sendRequest('thread/resume', nativeValue({
           threadId: id, excludeTurns: true, developerInstructions: name.instructions,
           model: settings.model, serviceTier: settings.serviceTier, cwd: settings.cwd,
           approvalPolicy: permissions.approvalPolicy, approvalsReviewer: permissions.approvalsReviewer,
           permissions: permissions.activePermissionProfile?.id, runtimeWorkspaceRoots: permissions.runtimeWorkspaceRoots,
           ...(settings.effort ? { config: { model_reasoning_effort: settings.effort } } : {}),
         }));
-        requests.profiles.set(id, name.instructions);
+        profiles.set(id, name.instructions);
       }
-      return { profileReady: requests.profiles.get(id) === name.instructions };
+      return { profileReady: profiles.get(id) === name.instructions };
   };
   const fusionCodexUnbind = (id) => {
       const manager = codexConversationManager(id, codexHistoryScopes(), remoteContext?.host || 'local');
-      const bridge = window.__remoteAgentNativeTools.get(manager);
+      const bridge = window.__remoteAgentNativeTools?.get(manager);
+      if (!bridge) return true;
       bridge.threads.delete(id);
       if (!bridge.threads.size) {
         manager.threadExecution.executeDynamicToolCall = bridge.original;
         window.__remoteAgentNativeTools.delete(manager);
       }
-      const client = manager.requestClient, requests = window.__remoteAgentFusionRequests.get(client);
-      requests.threads.delete(id);
-      if (!requests.threads.size) {
-        client.sendRequest = requests.original;
-        window.__remoteAgentFusionRequests.delete(client);
-      }
+      window.__remoteAgentFusionRequests?.get(manager.requestClient)?.delete(id);
       return true;
   };
   const fusionCodexReply = (id, name) => {

@@ -139,8 +139,8 @@ async function list(s, m = {}) {
   s.emit({ t: 'agents', app: 'opencode', sel: s.selectionKey(), silent: m.silent === true, list: rows });
 }
 
-async function createSession(directory) {
-  const native = await openCode.client.request('/session', { directory, method: 'POST', body: {}, signal: cdpRead.getStore() });
+export async function createSession(directory, body = {}) {
+  const native = await openCode.client.request('/session', { directory, method: 'POST', body, signal: cdpRead.getStore() });
   native.directory = localFilePath(native.directory);
   openCode.sessions.set(native.id, native);
   openCode.selections.set(native.id, openCode.selection(directory));

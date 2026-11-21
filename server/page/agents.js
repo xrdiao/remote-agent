@@ -447,7 +447,8 @@
       const capability = data.capabilities.find(capability => typeof capability.getPendingUserDecisionGroup === 'function');
       const decisions = capability?.getPendingUserDecisionGroup()() || [];
       const uri = data.workspaceIdentifier?.uri;
-      return { waiting: decisions.length ? JSON.stringify([thread, ...decisions.map(decision => decision.toolCallId)]) : null,
+      const waitingToolIds = decisions.map(decision => decision.toolCallId);
+      return { waiting: decisions.length ? JSON.stringify([thread, ...waitingToolIds]) : null, waitingToolIds,
         waitingText: decisions.map(decision => {
           const tool = capability.getBubbleDataByToolCallId(decision.toolCallId);
           return tool?.params?.questions?.map(question => question.prompt).join('\n') || tool?.params?.command || tool?.name || '';
@@ -470,17 +471,20 @@
       const host = row.host || 'local';
       const session = app === 'devin' ? devinSessionRecord(row.thread) : null;
       if (app === 'codex' && !managers.has(host)) managers.set(host, codexConversationManager(null, scopes, host));
-      const run = agentRun(app, row.thread, scopes, managers.get(host));
-      return { ...row, ...(session?.cwd ? { workspace: localFilePath(session.cwd) } : {}), ...(run ? { run, busy: run.status === 'running' || !!row.busy,
+      const manager = managers.get(host);
+      const run = agentRun(app, row.thread, scopes, manager);
+      const native = manager && nativeWaiting('codex', row.thread, manager);
+      return { ...row, ...(native || (session?.cwd ? { workspace: localFilePath(session.cwd) } : {})), ...(run ? { run, busy: run.status === 'running' || !!row.busy,
         ...(run.status !== 'unknown' ? { runId: app + ':' + run.id, runAt: run.startedAt } : {}) } : {}) };
     };
     let generation = null;
     try { generation = state && typeof cursorBubbleTimes === 'function' ? cursorBubbleTimes()?.generation : null; } catch {}
     const current = generation ? { ...state, generation } : state;
-    if (codexThread()) {
-      const meta = codexQueryClient()?.getQueryData(['recent-conversations-meta', 'updated_at', '[]', 'live'])?.find(t => t.conversationId === codexThread());
+    if (app === 'codex') {
+      const thread = codexThread();
+      const meta = codexQueryClient()?.getQueryData(['recent-conversations-meta', 'updated_at', '[]', 'live'])?.find(t => t.conversationId === thread);
       const agents = new Map(codexChatRows(true).map(row => [row.id, { thread: row.id, host: row.host, title: row.title, lastUsed: row.lastUsed || 0 }]));
-      if (current) agents.set(current.thread, { ...current, host: meta?.hostId === 'local' ? '' : meta?.hostId || '', lastUsed: meta?.updatedAt || 0 });
+      if (current && thread) agents.set(current.thread, { ...current, host: meta?.hostId === 'local' ? '' : meta?.hostId || '', lastUsed: meta?.updatedAt || 0 });
       return [...agents.values()].map(withRun);
     }
     const agents = agentList();

@@ -109,14 +109,24 @@ export default [
     const before = await c.b.read('({ids:lastChat.items.map(i=>i.i),earlier:lastChat.earlier,cursor:lastChat.historyBefore})');
     if (!await c.b.has('#older')) throw new Unavailable('所选会话没有更早历史；需要 --targets 配置 long 会话');
     const backend = app === 'codex' && await c.b.read("viewSel.startsWith('codex|backend|')");
-    if (backend) c.equal(before.ids.length, 60, 'Codex 后台首屏保持 60 项');
+    const backendWindow = async limit => {
+      const opening = await c.b.read(`(() => {
+        const items=lastChat.items, start=Math.max(0,items.length-${limit});
+        return items.slice(0,start).every(item=>item.k==='human'&&item.order===items[start].order);
+      })()`);
+      c.check(opening, '超出后台分页预算的记录均为页首轮次的用户消息');
+    };
+    if (backend) {
+      c.check(before.ids.length >= 60, 'Codex 后台首屏包含最近 60 条记录');
+      await backendWindow(60);
+    }
     await c.b.click('#older');
     await c.b.wait(`!historyRequest&&!historyRendering&&lastChat.items.length > ${before.ids.length}`, '新增历史条目');
     const after = await c.b.read('({ids:lastChat.items.map(i=>i.i),thread:lastChat.thread,cursor:historyCursor})');
     c.equal(after.thread, target.thread, '分页不改变会话'); c.equal(new Set(after.ids).size, after.ids.length, '历史按 ID 去重');
     c.check(after.ids.length > before.ids.length, '加载后确实增加历史条目');
     c.check(before.ids.every(id => after.ids.includes(id)), '分页保留原来尾部消息');
-    if (backend) c.check(after.ids.length <= before.ids.length + 160, 'Codex 后台一次追加不超过 160 项');
+    if (backend) await backendWindow(220);
     return { initial: before.ids.length, after: after.ids.length, cursor: after.cursor };
   } },
   { id: 'conversation.details', title: '工具与文件差异实际展开和收起', refs: ['F07', 'F18', 'R08'], mode: 'read', apps: true, async run(c, app) {

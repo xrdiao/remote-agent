@@ -19,14 +19,15 @@ const projectId = (app, root, host, windowId) => JSON.stringify([app, host || ''
 function codexCardState(native, backend, hasWriter) {
   if (!native || native.statusKnown === false) return backend || native;
   if (!backend || backend.statusKnown === false) return native;
+  if (hasWriter) return backend;
+  if (native.nativeOwner) return native;
   const a = native.run, b = backend.run;
   if (a?.startedAt && b?.startedAt && a.startedAt !== b.startedAt) return a.startedAt > b.startedAt ? native : backend;
   if (a?.id && a.id === b?.id && a.status !== b.status) {
     if (a.completedAt && !b.completedAt) return native;
     if (b.completedAt && !a.completedAt) return backend;
   }
-  if (!hasWriter && (native.busy || native.waiting)) return native;
-  if (hasWriter && (backend.busy || backend.waiting)) return backend;
+  if (native.busy || native.waiting) return native;
   if (!!a !== !!b) return a ? native : backend;
   return (native.observedAt || 0) >= (backend.observedAt || 0) ? native : backend;
 }
@@ -65,8 +66,14 @@ export function overviewSnapshot(deviceId, selection) {
       projectRows.set(key, { ...rows.get(key), ...row, lastUsed: row.lastUsed || rows.get(key)?.lastUsed || 0 });
     for (const state of source.overviewStates(selectedThread)) {
       const key = sessionId(win.app, state.thread), row = projectRows.get(key), known = rows.get(key) || local.get(key);
-      if (row || key === sessionId(win.app, snap?.chat?.thread) && (!known?.workspace || belongs(known))) {
-        const value = { ...row, ...state, id: key, title: state.title || row?.title || '', lastUsed: state.lastUsed || row?.lastUsed || 0 };
+      // A Codex window can run a session that belongs to a different open project.
+      const backend = win.app === 'codex' && !state.host && codexBackend.records.get(key);
+      const matchesBackend = backend && state.workspace && samePath(backend.cwd, state.workspace);
+      if (row || matchesBackend || key === sessionId(win.app, snap?.chat?.thread) && (!known?.workspace || belongs(known))) {
+        const previous = row || (matchesBackend ? known : null);
+        const value = { ...previous, ...state, id: key, title: state.title || previous?.title || '',
+          lastUsed: state.lastUsed || previous?.lastUsed || 0 };
+        if (win.app === 'codex' && state.run && state.run.status !== 'unknown') value.statusKnown = true;
         if (win.app === 'cursor' && known?.workspaceConfirmed) value.workspace = known.workspace;
         projectRows.set(key, value);
       }
@@ -87,7 +94,7 @@ export function overviewSnapshot(deviceId, selection) {
         win: id, windowId, threadId: key, app: win.app, projectId: project, title: record?.title || s.title || '未命名会话',
         busy: !!s.busy, waiting: s.waiting || '', waitingText: s.waitingText || '', last: preview?.available ? preview.last : s.last || '',
         run: s.run || null, statusKnown: s.statusKnown ?? (!!s.busy || !!s.waiting || !!s.run),
-        ...(win.app === 'codex' ? { observedAt: s.observedAt || source.updatedAt || 0 } : {}),
+        ...(win.app === 'codex' ? { nativeOwner: !!s.nativeOwner, observedAt: s.observedAt || source.updatedAt || 0 } : {}),
         startedAt: s.busy ? (s.run?.startedAt || (Number.isFinite(s.runAt) ? s.runAt : Number.isFinite(s.generation?.start) ? s.generation.start : 0)) : 0,
         tasks: s.tasks?.total > 0 ? { done: s.tasks.done, total: s.tasks.total, current: s.tasks.current || '' } : null,
         actions: s.actions || [], devin: !!s.devin, changed: s.changed || 0, acceptAll: !!s.acceptAll, changes: s.changes || null, lastUsed: Number.isFinite(s.lastUsed) ? s.lastUsed : 0,
@@ -98,7 +105,7 @@ export function overviewSnapshot(deviceId, selection) {
       const identity = JSON.stringify([project, key]), previous = collected.get(identity);
       const quality = Number(!!s.run && s.run.status !== 'unknown') * 4 + Number(!!s.run) * 2
         + Number(key === sessionId(win.app, snap?.chat?.thread));
-      const owner = win.app === 'codex' ? 0 : win.app === 'devin'
+      const owner = win.app === 'codex' ? Number(!!s.nativeOwner) : win.app === 'devin'
         ? Number(local.has(key) || source.devinCatalog?.has(key)) : Number(belongs({ ...row, workspace }));
       if (!previous || owner > previous.owner || owner === previous.owner && ((s.run?.startedAt || 0) > (previous.value.run?.startedAt || 0)
         || (s.run?.startedAt || 0) === (previous.value.run?.startedAt || 0)
