@@ -53,15 +53,14 @@ export class Context {
     }
     const selected = this.options.targets?.[app]?.[slot];
     if (slot === 'long' && !selected) throw new Unavailable(`${app} 需要通过 --targets 登记真实 long 会话，不用普通空闲会话替代`);
-    if (selected) {
-      const label = `${app} 已登记的 ${slot} 会话`;
-      try {
-        await this.b.wait(`ovRecs().some(r=>r.comp===${attr(this.computer)}&&r.app===${attr(app)}
-          &&r.threadId===${attr(selected)}&&!r.off&&!r.workspaceMissing)`, label);
-      } catch (error) {
-        if (error.message.startsWith(label + '超时')) throw new Unavailable(error.message);
-        throw error;
-      }
+    const label = selected ? `${app} 已登记的 ${slot} 会话` : `${app} 可读的空闲会话`;
+    const candidate = selected ? `r.threadId===${attr(selected)}` : "r.threadId&&r.state!=='run'";
+    try {
+      await this.b.wait(`ovRecs().some(r=>r.comp===${attr(this.computer)}&&r.app===${attr(app)}
+        &&!r.off&&!r.workspaceMissing&&(${candidate}))`, label);
+    } catch (error) {
+      if (error.message.startsWith(label + '超时')) throw new Unavailable(error.message);
+      throw error;
     }
     const rows = await this.rows(app);
     const target = selected ? rows.find(row => row.thread === selected && !row.missing) : rows.find(row => row.thread && row.state !== 'run' && !row.missing);

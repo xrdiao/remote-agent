@@ -4,10 +4,12 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 
 async function withTools(c, app, inspect) {
-  await c.open(await c.target(app, 'long'));
+  const target = await c.target(app, 'long');
+  await c.open(target);
   const shown = await c.b.read('executionRecordsShown()');
   try {
     if (!shown) { await c.b.menu('executionToggle'); await c.b.dismiss(); }
+    await c.b.wait(`windowReady&&!navigationPending&&!chatStale&&lastChat?.thread===${attr(target.thread)}`, '指定会话的执行记录就绪');
     return await inspect();
   } finally {
     if (!shown) { await c.b.menu('executionToggle'); await c.b.dismiss(); }
