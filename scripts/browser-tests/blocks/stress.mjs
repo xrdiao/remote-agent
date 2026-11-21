@@ -33,12 +33,31 @@ export default [
     const rows = (await c.rows(app)).filter(row => row.thread && row.state !== 'run' && !row.missing);
     const a = rows.find(row => row.thread === c.options.targets?.[app]?.A) || rows[0];
     const b = rows.find(row => row.thread === c.options.targets?.[app]?.B && row.thread !== a?.thread) || rows.find(row => row.thread !== a?.thread);
-    if (!a || !b) throw new Unavailable(`${app} 缺少两个项目目录可用的空闲会话`);
+    if (!a || !b) throw new Unavailable(`${app} 缺少两个可用的空闲会话`);
     c.check(a.thread !== b.thread, '真实目录选定两个不同的空闲会话');
-    // Each navigation starts from the actual home cards; no direct ovOpen calls.
+    await c.open(b);
     for (let i = 0; i < c.options.iterations; i++) {
-      await c.reveal(a); await c.b.click(`[data-ov-session=${attr(a.key)}] [data-ov="full"]`);
-      await c.b.home(); const last = await c.open(b); c.equal(last.thread, b.thread, '最后选择 B ' + i);
+      const first = `${await c.reveal(a, 'sessions')} [data-ov="full"]`;
+      const last = `${await c.reveal(b, 'sessions')} [data-ov="full"]`;
+      // Activate both visible cards before a server reply can replace the board.
+      const received = await c.b.read(`(()=>{
+        const button = selector => document.querySelector(selector);
+        const visible = element => element && !element.disabled && element.getClientRects().length;
+        const a = button(${attr(first)}), b = button(${attr(last)});
+        if (!visible(a) || !visible(b)) return 0;
+        const before = ovOpenRequest;
+        a.click();
+        const next = button(${attr(last)});
+        if (visible(next)) next.click();
+        return ovOpenRequest - before;
+      })()`);
+      c.equal(received, 2, '页面依次收到 A 和 B 的卡片点击 ' + i);
+      const result = await c.b.wait(`ovOpening?.phase==='error' ? {error:ovOpening.message} :
+        windowReady && !navigationPending && document.body.classList.contains('conv') ?
+        {thread:lastChat?.thread,app:currentApp} : null`, '最后一次点击的正文');
+      if (result.error) throw new Error('最后一次点击打开会话失败：' + result.error);
+      c.equal(result.thread, b.thread, '最后选择 B ' + i);
+      c.equal(result.app, app, '最后选择的软件 ' + i);
     }
     return { iterations: c.options.iterations, a: a.thread, b: b.thread };
   } },
