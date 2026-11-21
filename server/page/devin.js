@@ -51,6 +51,19 @@
     const config = options?.find(option => option.category === 'model');
     return config?.options.flatMap(group => group.options || [group]).find(option => option.value === config.currentValue);
   };
+  const devinEditExcerpt = ({ oldText, newText }) => {
+    const lines = text => typeof text === 'string' ? text.replace(/\r\n/g, '\n').split('\n') : [];
+    const before = lines(oldText), after = lines(newText);
+    let start = 0, oldEnd = before.length, newEnd = after.length;
+    while (start < oldEnd && start < newEnd && before[start] === after[start]) start++;
+    if (start === oldEnd && start === newEnd) return '原生工具未改变文件内容';
+    while (oldEnd > start && newEnd > start && before[oldEnd - 1] === after[newEnd - 1]) { oldEnd--; newEnd--; }
+    const excerpt = (rows, end) => {
+      const text = rows.slice(Math.max(0, start - 2), end + 2).join('\n');
+      return text.length > 1800 ? text.slice(0, 1800) + '\n…' : text;
+    };
+    return `修改前\n${excerpt(before, oldEnd)}\n\n修改后\n${excerpt(after, newEnd)}`;
+  };
   const devinMessageItems = (messages, prefix = 'acp', start = 0) => messages.flatMap((message, index) => {
     const id = prefix + (start + index), items = [];
     if (['user_message', 'agent_message', 'agent_thought'].includes(message.kind)) {
@@ -63,12 +76,16 @@
       else if (text || images.length) items.push(nativeMarkdownItem(id, message.kind === 'user_message' ? 'human' : 'assistant', text, at, images));
     } else if (message.kind === 'tool_call') {
       const tool = message.content;
+      const nativeContent = tool.content || [];
+      const edits = nativeContent.filter(block => block.type === 'diff' && typeof block.newText === 'string');
+      const output = nativeContent.flatMap(block => block.type === 'content' && block.content?.type === 'text' ? [block.content.text]
+        : edits.includes(block) ? [devinEditExcerpt(block)] : []).join('\n').slice(0, 4000);
+      const file = tool.locations?.[0]?.path || edits[0]?.path;
       items.push({ i: id, k: 'tool', src: 'devin', kind: tool.kind === 'execute' ? 'command' : tool.kind || 'other', t: tool.title || '',
         cmd: typeof tool.rawInput?.command === 'string' ? tool.rawInput.command : '',
-        output: (tool.content || []).filter(block => block.type === 'content' && block.content?.type === 'text').map(block => block.content.text).join('\n').slice(0, 4000),
-        ...(tool.locations?.[0]?.path ? { f: tool.locations[0].path } : {}),
+        output, ...(file ? { f: file } : {}),
         done: tool.status === 'completed', ...(tool.status === 'failed' ? { keep: true } : {}) });
-      const images = (tool.content || []).filter(block => block.type === 'content' && block.content?.type === 'image')
+      const images = nativeContent.filter(block => block.type === 'content' && block.content?.type === 'image')
         .map(block => `data:${block.content.mimeType};base64,${block.content.data}`);
       if (images.length) items.push(nativeMarkdownItem(id + ':images', 'assistant', '', 0, images));
     } else if (message.kind === 'plan') {

@@ -545,10 +545,11 @@ export const methods = {
     const pending = this.pendingProject;
     if (!pending) return;
     if ((await this.editorCdp.evaluate(helpersCall('workspaceTrustState()'))).required) throw new Error('请先确认项目是否可信');
+    if (this.app === 'cursor') await this.adapter.ensureProjectPanel.call(this);
     if (this.fusionBinding && this.app === 'cursor' && !await this.waitFor('control("model")', 250))
       throw new Error('主会话的原生模型控件尚未就绪');
     if (this.app === 'cursor') {
-      const state = await this.waitFor('agentStartupState("cursor", true)', 250);
+      const state = await this.waitFor('agentStartupState("cursor")', 250);
       if (!state) throw new Error('Cursor 项目已切换，会话面板尚未就绪');
       if (!pending.threadId && !pending.newSession) {
         const context = state.thread && await this.cdp.evaluate(helpersCall(`nativeSessionInfo('cursor', ${JSON.stringify(state.thread)}, 'context')`));

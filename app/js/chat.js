@@ -267,13 +267,15 @@ function renderTool(el, it) {
     return;
   }
   if (it.kind === 'edit') {
-    const stats = it.src === 'codex' && (it.add == null || it.del == null) ? '<span class="stat">差异行数未获取</span>'
+    const stats = it.src === 'devin' && it.add == null && it.del == null ? ''
+      : it.src === 'codex' && (it.add == null || it.del == null) ? '<span class="stat">差异行数未获取</span>'
       : it.src === 'codex' && it.add === 0 && it.del === 0 ? '<span class="stat">无文本行变化</span>'
         : `<span class="stat add">+${it.add || 0}</span><span class="stat del">-${it.del || 0}</span>`;
     const diff = (it.diff || []).map(([ty, text]) => `<div class="dl ${ty === '+' ? 'di' : ty === '-' ? 'dd' : ty === '…' ? 'dm' : ''}">${esc(ty === '…' ? text : ty + ' ' + text)}</div>`).join('');
     el.innerHTML = `<div class="trow toggle" data-ttoggle${it.lazy ? ' data-lazy="1"' : ''}>${icon}<span class="tl">${esc(TOOL_LABEL.edit)}</span><code class="chip" data-file="${esc(it.f || '')}">${esc(it.f || '')}</code>`
       + stats + '<span class="chev">▾</span></div>'
-      + `<div class="tdiff">${diff}</div>`;
+      + (diff || it.src !== 'devin' ? `<div class="tdiff">${diff}</div>` : '')
+      + (it.src === 'devin' && it.output ? `<pre class="tcmd">${esc(it.output)}</pre>` : '');
     return;
   }
   const label = TOOL_LABEL[it.kind] || ((it.t || '').match(/^\S+/) || [''])[0];

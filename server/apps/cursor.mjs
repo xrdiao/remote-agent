@@ -19,7 +19,18 @@ export const capabilities = {
 };
 
 export const adapter = {
+  async ensureProjectPanel() {
+    const hidden = await this.cdp.evaluate(`(() => {
+      const workbench = document.querySelector('.monaco-workbench');
+      const panel = workbench?.querySelector('.part.auxiliarybar');
+      return !!panel && (workbench.classList.contains('noauxiliarybar') || panel.getBoundingClientRect().width === 0);
+    })()`);
+    if (!hidden) return;
+    await this.withFocus(() => this.key(mod('i')));
+    if (!await this.waitFor('agentStartupState("cursor")', 250)) throw new Error('Cursor 会话面板尚未就绪');
+  },
   async newChat(project = '') {
+    await this.adapter.ensureProjectPanel.call(this);
     const before = project ? '' : await this.cdp.evaluate(helpersCall('activeThread()'));
     const created = project ? await this.cdp.evaluate(helpersCall(`nativeSessionAction('cursor', '', 'createProjectChat', ${JSON.stringify(project)})`)) : '';
     if (!project) await this.pressControl('newChat');
@@ -46,6 +57,7 @@ export const adapter = {
 
   // A cold start keeps the native home/new-chat view.
   async openDefaultSession() {
+    await this.adapter.ensureProjectPanel.call(this);
     const st = await this.waitFor('agentStartupState("cursor")', 250);
     if (!st) throw new Error('Cursor 项目与会话尚未就绪，请重试');
   },
@@ -63,6 +75,8 @@ export const adapter = {
     let confirmed = false;
     this.switchingThread = true;
     try {
+      await this.adapter.ensureProjectPanel.call(this);
+      if (!await this.waitFor('agentStartupState("cursor")', 250)) throw new Error('Cursor 会话面板尚未就绪');
       await this.cdp.evaluate(`(async () => {
         const h = ${PAGE_SRC}, id = ${JSON.stringify(id)};
         const info = await h.nativeSessionInfo('cursor', id, 'context');

@@ -196,8 +196,14 @@ export class Context {
       const receipt = await b.read(`({thread:lastChat.thread,draftLength:text.value.length,pending:pendingSends.size,
         ids:lastChat.items.filter(i=>i.k==='human'&&!${JSON.stringify(before)}.includes(i.i)).map(i=>i.i)})`);
       assert.equal(receipt.ids.length, 1, '同一次发送出现重复原生用户消息');
-      if (options.complete !== false) await this.prerequisite(`generation:${target.app}:${target.thread}`,
-        () => this.finishGeneration(target, '原生生成完成'));
+      if (options.complete !== false) {
+        try { await this.finishGeneration(target, '原生生成完成'); }
+        catch (error) {
+          try { await this.stopOwnedRun(target); }
+          catch (stopError) { this.cleanup.errors.push({ thread: target.thread, error: stopError.message }); }
+          throw error;
+        }
+      }
       return receipt;
     });
   }
@@ -249,14 +255,18 @@ export class Context {
   async terminalMenu() {
     if (await this.b.read('sheetKind') !== 'terminals') await this.b.click('#pickTerms');
   }
+  async stopOwnedRun(target) {
+    const b = this.b;
+    const active = `currentApp===${attr(target.app)}&&lastChat?.thread===${attr(target.thread)}&&lastChat.busy`;
+    if (!await b.read(active)) return;
+    if (await b.read("document.getElementById('composerFold').getAttribute('aria-expanded')==='false'")) await b.click('#composerFold');
+    await b.click('#stop'); await b.click('#askOk');
+    await b.wait(`!(${active})`, '停止本轮测试会话后清理');
+  }
   async cleanupSession(target) {
     const b = this.b; await b.dismiss();
     await this.open(target);
-    if (await b.read('lastChat.busy')) {
-      if (await b.read("document.getElementById('composerFold').getAttribute('aria-expanded')==='false'")) await b.click('#composerFold');
-      await b.click('#stop'); await b.click('#askOk');
-      await b.wait('!lastChat.busy', '停止本轮测试会话后清理');
-    }
+    await this.stopOwnedRun(target);
     const card = await this.reveal(target); await b.hold(`${card} .ov-title`);
     await b.wait("sheetKind==='agent-actions'&&!document.querySelector('#sheet [role=status]')&&document.querySelector('#sheet [data-agent-action=rename]')", '原生会话管理操作加载');
     const archive = '#sheet [data-agent-action="archive"]', remove = '#sheet [data-agent-action="delete"]';

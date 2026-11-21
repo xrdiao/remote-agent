@@ -108,6 +108,16 @@ export default [
   } },
   { id: 'conversation.history', title: '历史分页、消息身份及首屏不变', refs: ['F07', 'F18', 'R07', 'S04'], mode: 'read', apps: true, async run(c, app) {
     const target = await c.target(app, 'long'); await c.open(target);
+    if (await c.b.has('#cachedMore')) {
+      const ids = "[...document.querySelectorAll('#items > [data-i]')].map(row=>row.dataset.i)";
+      const before = await c.b.read(ids);
+      await c.b.click('#cachedMore');
+      const after = await c.b.wait(`(() => { const ids=${ids}; return ids.length>${before.length}&&!historyRendering?ids:null; })()`, '更早的本地历史呈现');
+      c.equal(await c.b.read('lastChat.thread'), target.thread, '本地分页保留原生会话身份');
+      c.equal(new Set(after).size, after.length, '本地翻页没有重复条目');
+      c.check(before.every(id => after.includes(id)), '本地翻页保留原有消息');
+      return { source: 'cached', initial: before.length, after: after.length };
+    }
     const before = await c.b.read('({ids:lastChat.items.map(i=>i.i),earlier:lastChat.earlier,cursor:lastChat.historyBefore})');
     if (!await c.b.has('#older')) throw new Unavailable('所选会话没有更早历史；需要 --targets 配置 long 会话');
     const backend = app === 'codex' && await c.b.read("viewSel.startsWith('codex|backend|')");

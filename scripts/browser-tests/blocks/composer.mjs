@@ -167,7 +167,7 @@ export default [
   { id: 'composer.image-only', title: '纯图片发送有缩略图和确定回执', refs: ['F06', 'F11', 'R10'], mode: 'generate', apps: true, async run(c, app) {
     const target = await c.target(app, 'A', true); await c.open(target); await c.draft('');
     const image = path.resolve(c.directory, 'pixel.png');
-    await fs.writeFile(image, Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=', 'base64'));
+    await fs.writeFile(image, Buffer.from('iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAAAFElEQVR4nGPYQiJgGNUwqmH4agAAE4UcH7xKE4UAAAAASUVORK5CYII=', 'base64'));
     await c.b.files('#imgFile', [image]);
     await c.b.wait('desktopAttachments.length>0&&desktopAttachments.every(f=>!f.pending)', '原生图片附加');
     c.check(await c.b.read("document.querySelectorAll('#attachments img').length>0"), '发送前显示真实图片缩略图');
