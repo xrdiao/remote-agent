@@ -1,11 +1,10 @@
 // 项目与会话：项目目录、窗口复用、会话切换
 import fs from 'node:fs';
-import crypto from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { workspaces, windowRoots, workspaceLabel, editorRoots } from '../../lib/files.mjs';
-import { IS_WIN, IS_MAC, mod, normPath, findBin, localFilePath, pathKey, samePath, projectPathAllowed, projectDrives, projectParent, nativeLauncher, launchCommand } from '../../lib/platform.mjs';
+import { IS_WIN, IS_MAC, mod, normPath, findBin, localFilePath, pathKey, samePath, validLocalName, projectPathAllowed, projectDrives, projectParent, nativeLauncher, launchCommand } from '../../lib/platform.mjs';
 import { Cdp, cdpRead, awaitCdpRead } from '../cdp.mjs';
 import { NativeCdp, nativeWindowAt } from '../native-windows.mjs';
 import { openCodexSidebar as openCodexSidebarWindows } from '../platform/windows/codex.mjs';
@@ -65,7 +64,7 @@ export function projectList(dir) {
 
 export function createProjectFolder(parent, name) {
   const { real } = safeHomePath(parent);
-  if (!name || name === '.' || name === '..' || path.basename(name) !== name) throw new Error('请输入一个文件夹名称，不要包含路径');
+  if (!validLocalName(name)) throw new Error('请输入有效的文件夹名称');
   const folder = path.join(real, name);
   fs.mkdirSync(folder);
   return folder;
@@ -229,20 +228,12 @@ export const methods = {
         selected = catalog.rows.filter(row => !row.archived && this.projectMatches([{ root: row.workspace, host: row.host || '' }], real))
           .sort((a, b) => b.lastUsed - a.lastUsed || a.id.localeCompare(b.id))[0]?.id || '';
       }
-      const native = selected && !newSession
-        ? await this.cdp.evaluate(helpersCall(`nativeSessionInfo('devin', ${JSON.stringify(selected)}, 'context')`))
-        : await this.cdp.evaluate(helpersCall(`nativeSessionAction('devin', ${JSON.stringify(this.threadId)}, 'create', ${JSON.stringify({ root: real, requestId: crypto.randomUUID() })})`));
-      if (!this.projectMatches(native.roots, real)) throw new Error('Devin 返回的会话项目与所选目录不一致');
+      const native = await this.resolveDevinProjectSession(real, newSession ? '' : selected);
       const switching = this.switchingThread, previousCdp = this.cdp;
       this.switchingThread = true;
       this.bindingReady = false;
       try {
-        await this.adapter.openAgent.call(this, native.threadId);
-        if (newSession && this.cdp.nativeWindow) {
-          const source = this.cdp.nativeWindow;
-          source.devinCatalog ||= new Map();
-          source.devinCatalog.set(native.threadId, { id: native.threadId, archived: false });
-        }
+        await this.openDevinProjectSession(native.threadId, newSession);
         this.pendingProject = null;
         this.bindingReady = true;
         this.projectReady({ root: real, newSession, threadId: selected });
@@ -579,7 +570,8 @@ export const methods = {
         const roots = await (IS_WIN && this.app === 'devin' ? this.devinWindowRoots() : editorRoots(this.editorCdp, this.app));
         if (!roots.some(w => !w.host && samePath(w.root, pending.root))) throw new Error('当前窗口不属于所选项目，尚未创建会话');
       }
-      await this.adapter.newChat.call(this, this.app === 'cursor' ? pending.root : undefined);
+      const createInProject = this.app === 'cursor' || IS_WIN && this.app === 'devin' && !this.fusionBinding;
+      await this.adapter.newChat.call(this, createInProject ? pending.root : undefined);
       const expected = this.threadId;
       for (let i = 0; i < 20; i++) {
         chat = await this.cdp.evaluate(helpersCall('extract()'));

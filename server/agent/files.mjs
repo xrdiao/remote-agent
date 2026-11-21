@@ -182,7 +182,7 @@ export const methods = {
     try {
       const f = await this.resolveFile(text);
       const body = await buildFilePreview(f, this.deviceId, () => this.fileTheme());
-      emit({ t: 'file', name: body.video || body.pdf ? path.basename(f.path) : path.posix.basename(f.path), path: f.path,
+      emit({ t: 'file', name: (f.host ? path.posix : path).basename(f.path), path: f.path,
         size: f.size, ...(body.video || body.pdf ? {} : { host: f.host, line: f.line }), ...body });
       // Gutter marks come afterwards — the git calls shouldn't hold the first paint.
       if (body.text) {

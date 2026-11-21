@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import path from 'node:path';
 import { windowRoots, editorRoots } from '../../lib/files.mjs';
 import { agentMarks } from '../../lib/marks.mjs';
@@ -23,8 +24,10 @@ export const adapter = {
   async answerRequest(message) {
     await this.cdp.evaluate(helpersCall(`nativeSessionAction('devin', ${JSON.stringify(this.threadId)}, 'question', ${JSON.stringify({ id: message.id, n: message.n, fields: message.fields })})`));
   },
-  async newChat() {
-    return this.devinNewChat();
+  async newChat(projectRoot) {
+    if (!projectRoot) return this.devinNewChat();
+    const { threadId } = await this.resolveDevinProjectSession(projectRoot);
+    await this.openDevinProjectSession(threadId, true);
   },
 
   // A cold start keeps the native home/new-chat view.
@@ -225,6 +228,23 @@ export const adapter = {
 };
 
 export const methods = {
+async resolveDevinProjectSession(root, threadId = '') {
+  const native = threadId
+    ? await this.cdp.evaluate(helpersCall(`nativeSessionInfo('devin', ${JSON.stringify(threadId)}, 'context')`))
+    : await this.cdp.evaluate(helpersCall(`nativeSessionAction('devin', ${JSON.stringify(this.threadId)}, 'create', ${JSON.stringify({ root, requestId: crypto.randomUUID() })})`));
+  if (!this.projectMatches(native.roots, root)) throw new Error('Devin 返回的会话项目与所选目录不一致');
+  return native;
+},
+
+async openDevinProjectSession(threadId, remember) {
+  await this.adapter.openAgent.call(this, threadId);
+  const source = this.cdp.nativeWindow;
+  if (remember && source) {
+    source.devinCatalog ||= new Map();
+    source.devinCatalog.set(threadId, { id: threadId, archived: false });
+  }
+},
+
 async devinWindowRoots(cdp = this.editorCdp) {
   return (await editorRoots(cdp, IS_WIN ? 'code' : 'devin')).map(root => ({ ...root, source: 'devin' }));
 },
