@@ -51,8 +51,19 @@ export class Context {
       const target = await this.prerequisite(`create:${app}:${slot}`, () => previous?.thread ? previous : this.create(app, slot, previous));
       return target;
     }
-    const rows = await this.rows(app), selected = this.options.targets?.[app]?.[slot];
+    const selected = this.options.targets?.[app]?.[slot];
     if (slot === 'long' && !selected) throw new Unavailable(`${app} 需要通过 --targets 登记真实 long 会话，不用普通空闲会话替代`);
+    if (selected) {
+      const label = `${app} 已登记的 ${slot} 会话`;
+      try {
+        await this.b.wait(`ovRecs().some(r=>r.comp===${attr(this.computer)}&&r.app===${attr(app)}
+          &&r.threadId===${attr(selected)}&&!r.off&&!r.workspaceMissing)`, label);
+      } catch (error) {
+        if (error.message.startsWith(label + '超时')) throw new Unavailable(error.message);
+        throw error;
+      }
+    }
+    const rows = await this.rows(app);
     const target = selected ? rows.find(row => row.thread === selected && !row.missing) : rows.find(row => row.thread && row.state !== 'run' && !row.missing);
     if (!target) throw new Unavailable(`${app} 没有可读的空闲会话`);
     return target;
@@ -196,14 +207,7 @@ export class Context {
       const receipt = await b.read(`({thread:lastChat.thread,draftLength:text.value.length,pending:pendingSends.size,
         ids:lastChat.items.filter(i=>i.k==='human'&&!${JSON.stringify(before)}.includes(i.i)).map(i=>i.i)})`);
       assert.equal(receipt.ids.length, 1, '同一次发送出现重复原生用户消息');
-      if (options.complete !== false) {
-        try { await this.finishGeneration(target, '原生生成完成'); }
-        catch (error) {
-          try { await this.stopOwnedRun(target); }
-          catch (stopError) { this.cleanup.errors.push({ thread: target.thread, error: stopError.message }); }
-          throw error;
-        }
-      }
+      if (options.complete !== false) await this.finishGeneration(target, '原生生成完成');
       return receipt;
     });
   }
@@ -227,7 +231,14 @@ export class Context {
       if(!lastChat.busy)return {done:true};
       const approval=lastChat.questions?.requests?.find(request=>request.id.startsWith('devin-permission:')&&request.text.includes(${attr(this.marker)}));
       return approval?{approval:approval.id}:null;
-    })()`, label, this.options.generationTimeout);
+    })()`, label, this.options.generationTimeout).catch(async error => {
+      if (this.owned.some(row => row.app === target.app && row.thread === target.thread)
+        || this.fusion.some(row => row.app === target.app && row.thread === target.thread)) {
+        try { await this.stopOwnedRun(target); }
+        catch (stopError) { this.cleanup.errors.push({ thread: target.thread, error: stopError.message }); }
+      }
+      throw error;
+    });
     if (result.error) {
       this.prerequisites.set('model:' + target.app, result.error);
       throw Object.assign(new Unavailable(result.error), { kind: 'environment' });
