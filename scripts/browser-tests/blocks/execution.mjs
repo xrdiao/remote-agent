@@ -1,9 +1,9 @@
 import { attr, by } from '../context.mjs';
 import { Unavailable } from '../browser.mjs';
 
-async function generating(c, app) {
+async function generating(c, app, lines = 400) {
   const target = await c.target(app, 'execution', true); await c.open(target);
-  await c.send(target, `不要使用任何工具。先写出 ${c.marker}，再输出从 1 到 400 的编号，每个数字单独一行。`, { complete: false });
+  await c.send(target, `不要使用工具、执行命令或修改文件。先写出 ${c.marker}，然后逐行输出数字 1 到 ${lines}，每个数字单独一行。`, { complete: false });
   if (!await c.b.read('lastChat.busy')) throw new Unavailable('模型已完成，未捕捉到真实生成窗口');
   return target;
 }
@@ -21,7 +21,7 @@ async function stopGeneration(c) {
 }
 export default [
   { id: 'execution.queue-delivery', title: '排队后按顺序自然发送', refs: ['F06'], mode: 'generate', apps: ['codex', 'cursor', 'devin'], async run(c, app) {
-    const target = await generating(c, app), marker = c.marker + '-QUEUE-NATURAL'; await enqueue(c, marker);
+    const target = await generating(c, app, 120), marker = c.marker + '-QUEUE-NATURAL'; await enqueue(c, marker);
     c.check(await c.b.read('lastChat.queued.length>0'), '真实队列含待发送消息');
     await c.finishGeneration(target, '排队执行完成');
     await c.b.wait(`!lastChat.busy&&!lastChat.queued?.length&&lastChat.items.some(i=>i.k==='human'&&i.t?.includes(${attr(marker)}))`, '排队后自动执行', c.options.generationTimeout);

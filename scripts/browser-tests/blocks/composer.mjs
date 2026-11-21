@@ -177,7 +177,7 @@ export default [
   } },
   { id: 'composer.queue', title: '排队、编辑和删除', refs: ['F06'], mode: 'generate', apps: ['codex', 'cursor', 'devin'], async run(c, app) {
     const target = await c.target(app, 'queue', true); await c.open(target);
-    await c.send(target, `仅在当前测试项目运行一条等待约 20 秒再输出 ${c.marker} 的命令，不修改任何文件。`, { complete: false });
+    await c.send(target, `不要使用工具、执行命令或修改文件。先写出 ${c.marker}，然后逐行输出数字 1 到 120，每个数字单独一行。`, { complete: false });
     if (!await c.b.read("lastChat.busy&&document.getElementById('send').textContent.includes('排队')"))
       throw new Unavailable('原生生成已结束或当前不提供排队窗口；没有制造假排队');
     const marker = c.marker + '-QUEUED'; await c.draft(`只回复 ${marker}`); await c.b.click('#send');
