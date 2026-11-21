@@ -40,6 +40,12 @@ function transferCount() {
   $('transferDownload').disabled = !transferSelection.size || transferDownloadRequest?.selection === transferSelection;
   $('transferClearFooter').hidden = !transferSelection.size;
 }
+function updateTransferActions(directory) {
+  const selected = transferSelection.size > 0;
+  for (const id of ['transferCopy', 'transferCut', 'transferZip', 'transferExtract']) $(id).disabled = !selected || !!transferFileOperation || !!transferPicker;
+  for (const id of ['transferNewFile', 'transferNewFolder']) $(id).disabled = !directory?.path || !!transferFileOperation;
+  $('transferPaste').disabled = !directory?.path || !!transferFileOperation || !transferClipboard || transferClipboard.computer !== transferComputer.id;
+}
 function renderTransferPage() {
   const picking = !!transferPicker, downloading = transferTab === 'download';
   $('transferDownloadTab').setAttribute('aria-selected', String(downloading));
@@ -67,10 +73,7 @@ function renderTransferPage() {
     renderTransferRows();
   }
   transferCount();
-  const selected = transferSelection.size > 0;
-  for (const id of ['transferCopy', 'transferCut', 'transferZip', 'transferExtract']) $(id).disabled = !selected || !!transferFileOperation || !!transferPicker;
-  for (const id of ['transferNewFile', 'transferNewFolder']) $(id).disabled = !directory?.path || !!transferFileOperation;
-  $('transferPaste').disabled = !directory?.path || !!transferFileOperation || !transferClipboard || transferClipboard.computer !== transferComputer.id;
+  updateTransferActions(directory);
   renderTransferUploads();
 }
 function renderTransferRows() {
@@ -306,8 +309,8 @@ async function transferFileAction(action, extra = {}) {
   if (transferFileOperation) return;
   const computer = { ...transferComputer }, link = computerSockets.get(computer.key);
   if (!link?.authed || link.socket.readyState !== 1) return transferStatus('未连接，文件操作未发送', true);
-  const directory = transferCurrentDirectory().path;
-  const message = { t: 'computerFileAction', requestId: crypto.randomUUID(), action, directory,
+  const directory = transferCurrentDirectory();
+  const message = { t: 'computerFileAction', requestId: crypto.randomUUID(), action, directory: directory.path,
     paths: [...transferSelection.keys()], collision: $('transferCollision').value, ...extra };
   const operation = transferFileOperation = { computer: computer.id, message, request: transferRequest };
   $('transferMore').open = false; renderTransferPage(); transferStatus('正在处理文件…');
@@ -319,13 +322,20 @@ async function transferFileAction(action, extra = {}) {
       transferClipboard.paths = transferClipboard.paths.filter(file => !moved.has(file));
       if (!transferClipboard.paths.length) transferClipboard = null;
     }
-    renderTransferPage();
-    if (transferComputer.id !== computer.id) return;
+    const current = transferCurrentDirectory();
+    if (transferComputer.id !== computer.id || transferRequest !== operation.request || current !== directory) {
+      updateTransferActions(current);
+      return;
+    }
     const errors = result.ok ? result.results.filter(row => !row.ok).map(row => row.error) : [result.error];
-    if (transferRequest === operation.request && ['copy', 'move', 'zip', 'extract'].includes(action))
+    if (['copy', 'move', 'zip', 'extract'].includes(action))
       for (const file of message.paths) transferSelection.delete(file);
-    transferBrowse(transferCurrentDirectory().path).then(() => transferStatus(errors.length ? errors.join('；') : '文件操作已完成', !!errors.length));
     renderTransferPage();
+    const refresh = transferBrowse(directory.path, !!directory.atRoots);
+    const request = transferRequest;
+    refresh.then(() => {
+      if (transferRequest === request) transferStatus(errors.length ? errors.join('；') : '文件操作已完成', !!errors.length);
+    });
   } });
 }
 for (const [id, action] of [['transferNewFile', 'create-file'], ['transferNewFolder', 'create-folder']]) $(id).onclick = () => {
