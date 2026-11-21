@@ -296,11 +296,17 @@ window.addEventListener('pagehide', suspendComputerConnections);
 
 async function runAgentMenuAction(id, action, extra, target, entry) {
   if (target) {
+    const pending = !target.fusion && action === 'rename' ? ovToast(`<span>${ovT('正在重命名…')}</span>`, null, true) : null;
+    const feedback = (message, ok = true) => {
+      if (pending) ovToast(`<span>${esc(I18N.tr(message))}</span>`);
+      else status(message, ok);
+    };
     try {
       await ovManageSession(target, action, extra);
-      status(action === 'favorite' ? extra.favorite ? '已收藏' : '已取消收藏' : target.fusion
+      feedback(action === 'favorite' ? extra.favorite ? '已收藏' : '已取消收藏' : target.fusion
         ? action === 'rename' ? '已重命名工作台' : action === 'stop' ? '已请求停止工作台' : '已删除工作台' : action === 'rename' ? '已重命名会话' : '已删除／归档会话');
-    } catch (error) { status(error.message, false); }
+    } catch (error) { feedback(error.message, false); }
+    finally { pending?.remove(); }
     return;
   }
   projectEntry = entry;
@@ -377,7 +383,8 @@ $('sheet').addEventListener('click', async e => {
     if (b.dataset.agentAction === 'rename') {
       const next = window.prompt(target?.fusion ? I18N.tr('新的工作台名称') : '新的会话名称', name);
       if (!next?.trim()) return;
-      closeSheet(); status('正在重命名…');
+      closeSheet();
+      if (!target || target.fusion) status('正在重命名…');
       return runAgentMenuAction(id, 'rename', { name: next.trim().slice(0, 80) }, target, entry);
     }
     if (target?.fusion) {

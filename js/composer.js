@@ -58,6 +58,8 @@ function sendReceipt(value) {
   const requestId = [...crypto.getRandomValues(new Uint8Array(16))].map(b => b.toString(16).padStart(2, '0')).join('');
   if (mode === 'chat') {
     clearTimeout(draftPushTimer);
+    draftRevision++;
+    pendingDesktopDraft = null;
     draftEpoch = requestId;
   }
   const targetThread = viewSel.split('|').pop() || '';
@@ -65,6 +67,7 @@ function sendReceipt(value) {
   const latest = candidate?.thread === targetThread ? candidate : null;
   pendingSends.set(requestId, { requestId, draft: activeDraft, text: value, computer: currentComputer()?.id || '', app: currentApp, mode, version: draftVersions.get(activeDraft) || 0, revision: inputRevision,
     mentions: JSON.stringify(mentionsFor(value)), attachmentIds: desktopAttachments.map(file => file.id),
+    imageCount: currentApp === 'devin' ? desktopAttachments.filter(file => file.preview).length : 0,
     ...(mode === 'chat' ? { scope: messageScope(), thread: targetThread, before: new Set((latest?.items || []).filter(it => it.k === 'human').map(it => it.i)),
       beforeQueues: new Set((latest?.queued || []).map(it => it.id)), queuedSameText: (latest?.queued || []).filter(it => echoTextMatches(it, value)).length } : {}) });
   document.dispatchEvent(new Event('composer-state'));
@@ -142,8 +145,9 @@ function failPendingSend(requestId, message = '发送失败，请重试', report
   const hadEcho = pendingEchoes.some(p => p.requestId === requestId);
   pendingEchoes = pendingEchoes.filter(p => p.requestId !== requestId);
   if (hadEcho) queueChatRender();
-  if (sent && (currentComputer()?.id || '') === sent.computer && draftKey() === sent.draft && text.value === '') {
-    text.value = sent.text; autosize();
+  if ((currentComputer()?.id || '') === sent.computer && draftKey() === sent.draft) {
+    if (text.value === '') { text.value = sent.text; autosize(); saveDraft(); }
+    if (sent.mode === 'chat') queueDraftSync();
   }
   if (report && (currentComputer()?.id || '') === sent.computer && draftKey() === sent.draft) status(message, false);
   document.dispatchEvent(new Event('composer-state'));
@@ -158,12 +162,13 @@ function disconnectPendingSends() {
   if (pendingEchoes.length) queueChatRender();
 }
 function reconcileSent(chat) {
-  if (currentApp === 'codex') return; // Codex receipts come from the relay's native message source.
+  if (currentApp === 'codex' || currentApp === 'opencode') return;
   const matched = new Set(submittedMessages.filter(sent => sent.scope === messageScope() && (!sent.thread || sent.thread === chat.thread))
     .flatMap(sent => [sent.messageId, sent.queueId].filter(Boolean)));
   for (const [requestId, sent] of pendingSends) {
     if (sent.mode !== 'chat' || sent.scope !== messageScope() || (sent.thread && sent.thread !== chat.thread)) continue;
-    const queued = (chat.queued || []).find(it => !sent.beforeQueues.has(it.id) && !matched.has(it.id) && it.t?.trim() === sent.text.trim().slice(0, 4000));
+    const queued = (chat.queued || []).find(it => !sent.beforeQueues.has(it.id) && !matched.has(it.id)
+      && (it.imageCount || 0) >= sent.imageCount && it.t?.trim() === sent.text.trim().slice(0, 4000));
     if (queued) { matched.add(queued.id); confirmSent({ requestId, queueId: queued.id, messageId: queued.messageId, sel: viewSel, queued: true }, false); continue; }
     if (sent.queuedSameText) continue;
     const item = chat.items.find(it => receiptMatchesHuman(it, sent) && !matched.has(it.i) && !it.nativeIds?.some(id => matched.has(id)) && !messageTimes.has(generationKey(chat) + '|' + it.i));
@@ -172,6 +177,7 @@ function reconcileSent(chat) {
 }
 function receiptMatchesHuman(it, receipt) {
   if (it.k !== 'human' || receipt.before.has(it.i) || (it.nativeIds || []).some(id => receipt.beforeQueues.has(id))) return false;
+  if ((it.images?.length || 0) < (receipt.imageCount || 0)) return false;
   if (receipt.messageId) return it.i === receipt.messageId;
   if (receipt.queueId && it.nativeIds?.length) return it.nativeIds.includes(receipt.queueId);
   return echoTextMatches(it, receipt.text);
@@ -224,7 +230,15 @@ function queueDraftSync() {
   }, 400);
 }
 function receiveDraft(m) {
-  if (mode !== 'chat' || questionCompose || m.sel !== viewSel || m.draftEpoch !== draftEpoch || m.revision !== draftRevision) return;
+  if (mode !== 'chat' || questionCompose || m.sel !== viewSel || m.revision !== draftRevision) return;
+  if (m.t === 'draftAck' && !m.ok && m.requestedEpoch === draftEpoch && m.draftEpoch !== draftEpoch) {
+    draftEpoch = m.draftEpoch;
+    draftRevision++;
+    pendingDesktopDraft = null;
+    queueDraftSync();
+    return;
+  }
+  if (m.draftEpoch !== draftEpoch) return;
   if (m.t === 'draftAck') {
     if (m.ok && m.read) { draftAckRevision = m.revision; receiveDraft({ ...m, t: 'draft' }); }
     else if (m.ok && text.value === m.text) { draftAckRevision = m.revision; mirroredDraft = m.text; dirtyDrafts.delete(activeDraft); }

@@ -732,7 +732,7 @@ function renderChat(chat, stale, loading = false, keepReading = true, historyIns
   if (chat && !historyExpanded && Number.isFinite(chat.historyBefore)) historyCursor = chat.historyBefore;
   if (chat?.earlier === true && (currentApp !== 'codex' || !historyExpanded)) historyAtEnd = false;
   const paged = currentApp === 'codex' && Number.isFinite(chat?.historyBefore) && !stale && !previousStale;
-  if (chat && previous?.thread === chat.thread && (historyExpanded || paged) && currentApp !== 'devin' && !chat.windowed) {
+  if (chat && previous?.thread === chat.thread && (historyExpanded || paged) && !chat.windowed) {
     const updates = new Map(chat.items.map(it => [it.i, it]));
     const bodies = previous.items.flatMap(item => {
       if (updates.has(item.i)) return [currentApp === 'codex' ? scKeep(item, updates.get(item.i)) : updates.get(item.i)];
@@ -751,7 +751,7 @@ function renderChat(chat, stale, loading = false, keepReading = true, historyIns
       if (!followingChat()) for (const el of itemsEl.children) keep.add(el.dataset.i);
       merged = merged.filter(item => keep.has(String(item.i)));
     }
-    chat = { ...chat, items: merged };
+    chat = { ...chat, items: merged, ...(currentApp === 'devin' && historyExpanded && historyCursor !== null ? { earlier: historyCursor > 0 } : {}) };
   }
   if ((chatTouching || chatMomentum || chatScrolling || turnNavPointer?.dragging) && chat && previous?.thread === chat.thread) {
     lastChat = chat;
