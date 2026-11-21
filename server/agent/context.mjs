@@ -23,7 +23,6 @@ export const FOCUS_COMPOSER = `(() => {
 })()`;
 
 
-export const codexUsage = { data: null, refresh: null, retryAt: 0, failures: 0 };
 export const cursorUsage = { data: null, initial: null };
 export const appPlans = {};
 

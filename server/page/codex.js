@@ -800,7 +800,8 @@
   const codexFacts = () => {
     const add = [...doc.querySelectorAll('[data-composer-navigation-target="add-context"]')].find(vis);
     if (!add) return null;
-    const plan = codexNativeManager()?.getConversation(codexThread())?.latestCollaborationMode?.mode === 'plan';
+    const conversation = codexNativeManager()?.getConversation(codexThread());
+    const plan = conversation?.latestCollaborationMode?.mode === 'plan';
     let ideStatus = '', autoContext, hasDraftAttachments;
     let fiber = add?.[Object.keys(add).find(k => k.startsWith('__reactFiber'))];
     for (let i = 0; i < 40 && fiber; i++) {
@@ -829,6 +830,7 @@
       hasDraftAttachments: hasDraftAttachments === true,
       view: {
         plan, follow, run, enter: codexQueryClient()?.getQueryData(['vscode', 'get-settings'])?.values?.composerEnterBehavior || 'enter',
+        goal: conversation?.threadGoal?.status || '',
         actions: !!codexButtonPoint('actions'),
         ide: ideBtn || ideStatus ? { on: ideOn, file: ideOn ? file : null } : null,
       },

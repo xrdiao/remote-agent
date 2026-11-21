@@ -37,9 +37,10 @@ export class FusionRunner {
     const query = previous ? null : validateFusionAction(action);
     if (action?.action === 'list_models' && !previous) {
       if (!query.snapshotIds) {
-        const apps = action.app === 'all' ? (await this.agent.softwareCapabilities()).filter(row => row.connected).map(row => row.app) : [action.app];
+        const apps = action.app === 'all' ? (await this.agent.softwareCapabilities())
+          .filter(row => row.connected || row.app === 'codex' && !run.project.host).map(row => row.app) : [action.app];
         const snapshots = await Promise.all(apps.map(async app => {
-          try { return await this.agent.capabilities(run, app); }
+          try { return await this.agent.capabilities(run, app, { worker: true }); }
           catch (error) { return { ...nativeCostSnapshot(app, [], null, { read: 'native-model-catalog' }), error: error.message }; }
         }));
         await this.agent.catalog.refresh(snapshots.flatMap(snapshot => snapshot.models.map(model => ({ app: snapshot.app, model: model.model }))));

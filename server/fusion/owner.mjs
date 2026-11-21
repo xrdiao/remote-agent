@@ -143,7 +143,8 @@ function controllerView(run, tasks, index) {
     run.works.map(work => [work.id, work.status, work.deliveries.map(row => [row.mainAttemptId, row.nativeTurnId, row.endedAt])]),
   ])).digest('hex') : '';
   const binding = run.bindings.find(row => row.id === bindingId);
-  const nativeWindowId = binding && (binding.app === 'codex' ? binding.windowId : `${binding.app}:${binding.windowId}`);
+  const nativeWindowId = binding && (binding.app === 'codex' || binding.windowId.startsWith(binding.app + ':')
+    ? binding.windowId : `${binding.app}:${binding.windowId}`);
   const target = binding ? { computer: run.computer, win: binding.app === 'codex' ? 'codex' : nativeWindowId,
     windowId: nativeWindowId, threadId: binding.threadId, project: { root: binding.project.root, host: binding.host || '' } } : null;
   return { ...fusionSummary(run), main: { app, model, effort, bindingId, windowId, preparing, error, projectTrust, target },

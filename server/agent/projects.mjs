@@ -12,7 +12,7 @@ import { openCodexSidebar as openCodexSidebarWindows } from '../platform/windows
 import { listWindows, codexWindows } from '../windows.mjs';
 import { CDP_URL, DEVIN_CDP_URL, CODEX_CDP_URL, EDITORS } from '../config.mjs';
 import { PAGE_SRC, helpersCall } from '../page/build.mjs';
-import { fusionProject } from '../fusion/state.mjs';
+import { fusionProject, fusionWindowInUse } from '../fusion/state.mjs';
 import { trackProjectWindow, storedProjectSession, fusionTargets, orderedProjectWindows, ownedProjectWindow } from '../project-windows.mjs';
 import { parseAgentRef } from '../../lib/shared-rules.mjs';
 import { sessionId } from '../../lib/session-library.mjs';
@@ -204,7 +204,7 @@ export const methods = {
     const target = identity(root);
     return !!target && roots.some(project => (project.host || '') === host && identity(project.root) === target);
   },
-  async useProject(folder, newSession = false, threadId = '', title = '', ownerWindow = '') {
+  async useProject(folder, newSession = false, threadId = '', title = '', ownerWindow = '', { reuseOnly = false } = {}) {
     const signal = cdpRead.getStore();
     signal?.throwIfAborted();
     const { real } = safeHomePath(folder);
@@ -289,20 +289,21 @@ export const methods = {
       }
     }
     let reused = false;
-    if (!IS_WIN && !target && app === 'cursor' && !this.fusionBinding) {
+    if (!target && app === 'cursor' && (reuseOnly || !IS_WIN && !this.fusionBinding)) {
       for (const page of projectPages) {
-        if (!ownedProjectWindow(app, page.id)) continue;
+        if (!ownedProjectWindow(app, page.id) && !reuseOnly) continue;
         const state = await this.projectWindowState(page, '', true);
-        if (state.busy || state.draft) continue;
+        if (state.busy || state.draft || reuseOnly && fusionWindowInUse({ app, id: page.id })) continue;
         const cdp = new Cdp(page.webSocketDebuggerUrl);
         try {
           await cdp.connect();
           const lifecycle = await cdp.evaluate(helpersCall('projectWindowProbe()'));
           if (!lifecycle.ready || lifecycle.dirty || lifecycle.dialog || lifecycle.agentBusy || lifecycle.terminalBusy) continue;
+          if (reuseOnly && page.title === 'Cursor Agents' && !ownedProjectWindow(app, page.id)) continue;
           this.stopChatUpdates();
           this.bindingReady = false;
           if (this.editorCdp?.wsUrl === page.webSocketDebuggerUrl) this.detach();
-          await cdp.evaluate(helpersCall(`nativeSessionAction('cursor', '', 'project', ${JSON.stringify(real)})`));
+          if (!await cdp.evaluate(helpersCall(`nativeSessionAction('cursor', '', 'project', ${JSON.stringify(real)})`))) continue;
         } finally { cdp.close(); }
         const deadline = Date.now() + 25000;
         while (!target && Date.now() < deadline) {
@@ -317,6 +318,7 @@ export const methods = {
     }
     const newWindow = !target;
     if (!target) {
+      if (reuseOnly) throw new Error('没有可安全切换的项目窗口，请先在桌面打开所选项目');
       const previous = new Set(projectPages.map(p => p.id));
       const findTarget = async () => {
         const pages = await (await fetch(`${editor.url}/json/list`, { signal })).json();
@@ -334,7 +336,7 @@ export const methods = {
 
     }
     if (!target) throw new Error('应用尚未打开所选项目，请检查电脑上的窗口');
-    trackProjectWindow(app, target, real, newWindow || reused);
+    trackProjectWindow(app, target, real, newWindow || reused && !reuseOnly);
     const switching = this.switchingThread, previousCdp = this.cdp;
     this.switchingThread = true;
     this.bindingReady = false;
@@ -362,7 +364,7 @@ export const methods = {
       else await this.resumeProjectSwitch(previousCdp);
     }
     if (newSession) await this.listAgents(true);
-    if (newWindow || reused) cdpRead.run(null, async () => {
+    if (!reuseOnly && (newWindow || reused)) cdpRead.run(null, async () => {
         try {
           const { webSocketDebuggerUrl } = await (await fetch(`${editor.url}/json/version`)).json();
           const browser = new Cdp(webSocketDebuggerUrl);

@@ -254,20 +254,22 @@
     const meta = codexQueryClient()?.getQueryData(['recent-conversations-meta', 'updated_at', '[]', 'live'])?.find(t => t.conversationId === codexThread());
     return { root: meta?.cwd || codexWorkspaceRoots()[0] || '', host: meta?.hostId && meta.hostId !== 'local' ? meta.hostId : '' };
   };
-  const refreshCodexUsage = async (refresh = true) => {
-    const client = codexQueryClient();
-    if (!client) throw new Error('没找到 Codex 的额度查询');
-    if (refresh) await client.refetchQueries({ queryKey: ['rate-limit-status'], exact: true, type: 'all' }, { throwOnError: true, cancelRefetch: false });
-    const data = client.getQueryData(['rate-limit-status']);
-    if (!data?.rate_limit && !refresh) return null;
-    if (!data?.rate_limit) throw new Error('没有读到额度');
-    const limits = [data.rate_limit.primary_window, data.rate_limit.secondary_window].filter(Boolean).map(window => ({
-      label: window.limit_window_seconds === 604800 ? '每周限制' : window.limit_window_seconds === 18000 ? '5 小时限制' : '额度限制',
-      kind: 'limit', basis: 'remaining', pct: 100 - window.used_percent,
-      reset: new Date(window.reset_at * 1000).toLocaleString('zh-CN'),
-    }));
-    const plan = data.plan_type ? data.plan_type[0].toUpperCase() + data.plan_type.slice(1) : '';
-    return { cached: !refresh, updated: client.getQueryState(['rate-limit-status']).dataUpdatedAt, missing: !limits.length, quota: [], limits, ...(plan ? { plan } : {}) };
+  const refreshCodexUsage = async (refresh = true, waitForAccount = false) => {
+    const managerForView = () => codexConversationManager(codexThread(), codexHistoryScopes(), remoteContext?.host || 'local');
+    let manager = managerForView();
+    if (!manager && waitForAccount) {
+      const deadline = Date.now() + 6000;
+      while (!manager && !codexNeedsLogin() && Date.now() < deadline) {
+        await new Promise(resolve => setTimeout(resolve, 100));
+        manager = managerForView();
+      }
+    }
+    if (!manager) {
+      if (codexNeedsLogin()) return { account: null, requiresOpenaiAuth: true };
+      return null;
+    }
+    if (refresh) return manager.requestClient.sendRequest('account/rateLimits/read', {});
+    return manager.requestClient.sendRequest('account/read', { refreshToken: false });
   };
 
   // Named controls in Cursor's UI; each entry lists fallbacks from newest to oldest Cursor layouts.

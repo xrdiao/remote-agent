@@ -12,6 +12,8 @@ import { codexFileDiff } from '../../lib/codex-diff.mjs';
 import { generatedImageSource } from './images.mjs';
 
 export const CODEX_BACKEND = 'backend';
+export const codexAccountKey = value => value ? JSON.stringify([value.account?.type || '', value.userId || '',
+  value.workspaceRouting?.chatgptAccountId || '']) : '';
 const textInput = input => input.filter(part => part.type === 'text').map(part => part.text).join('\n');
 const busyTurn = thread => thread?.turns.findLast(turn => turn.status === 'inProgress');
 const mergeTurnItems = (first, second) => [...new Map([...first, ...second].map(item => [item.id, item])).values()];
@@ -66,6 +68,7 @@ export class CodexState extends EventEmitter {
     this.reading = new Map();
     this.queueReads = new Map();
     this.queueRevisions = new Map();
+    this.goals = new Map();
     this.retrySettings = new Map();
     this.retryAttempts = new Map();
     this.retrying = new Map();
@@ -78,6 +81,7 @@ export class CodexState extends EventEmitter {
       this.releasing.clear();
       for (const thread of this.threads.values()) thread.disconnected = error.message;
       this.requests.clear();
+      this.goals.clear();
       this.queues.clear();
       this.childChats.clear();
       this.manualCompactions.clear();
@@ -98,6 +102,30 @@ export class CodexState extends EventEmitter {
   }
   owns(id) { return this.records.has(id); }
   hasWriter(id) { return this.writers.has(id); }
+  async account() {
+    await this.client.connect();
+    return this.client.request('account/read', { refreshToken: false });
+  }
+  async alignAccount(expected) {
+    const key = codexAccountKey(expected);
+    if (!key) return this.account();
+    return this.runCommand('account', async () => {
+      const current = await this.account();
+      if (codexAccountKey(current) === key) return current;
+      if (!expected.account) throw new Error('请先在电脑端登录 Codex');
+      const workspace = expected.workspaceRouting?.chatgptAccountId;
+      if (expected.account.type !== 'chatgpt' || !expected.userId || !workspace)
+        throw new Error('无法确认后台与电脑窗口使用同一个 Codex 账号');
+      const { sessions } = await this.client.request('accountSession/list');
+      const session = sessions.find(row => row.userId === expected.userId && row.workspaces.some(item => item.accountId === workspace));
+      if (!session) throw new Error('Codex 后台尚未识别电脑端选中的账号，请先在电脑端打开该会话');
+      if (this.writers.size || this.using.size || this.loading.size) throw new Error('Codex 后台还有会话占用账号，结束后可同步电脑端账号');
+      await this.client.request('accountSession/switch', { sessionId: session.sessionId, accountId: workspace, allowBrowserLogin: false });
+      const updated = await this.account();
+      if (codexAccountKey(updated) !== key) throw new Error('Codex 后台尚未确认账号切换完成');
+      return updated;
+    });
+  }
   async runCommand(id, action) {
     const previous = this.commands.get(id) || Promise.resolve();
     const command = previous.then(action, action);
@@ -106,9 +134,10 @@ export class CodexState extends EventEmitter {
     finally { if (this.commands.get(id) === command) this.commands.delete(id); }
   }
 
-  async withWriter(id, action) {
+  async withWriter(id, action, options) {
+    await this.commands.get('account');
     this.using.set(id, (this.using.get(id) || 0) + 1);
-    try { return await action(await this.load(id)); }
+    try { return await action(await this.load(id, options)); }
     finally {
       const remaining = this.using.get(id) - 1;
       if (remaining) this.using.set(id, remaining); else this.using.delete(id);
@@ -119,6 +148,7 @@ export class CodexState extends EventEmitter {
     const parent = this.childParents.get(id);
     const thread = this.threads.get(id);
     return this.writers.has(id) && !this.using.has(id) && !busyTurn(thread) && thread?.status?.type !== 'active'
+      && this.goals.get(id)?.status !== 'active'
       && !this.queueReads.has(id) && !this.queues.get(id)?.length
       && !this.manualCompactions.has(id) && !this.retrying.has(id) && ![...this.requests.values()].some(row => row.params.threadId === id)
       && !(parent && this.hasWriter(parent) && busyTurn(this.threads.get(parent)));
@@ -281,24 +311,28 @@ export class CodexState extends EventEmitter {
       cdpRead.run(null, () => withOperation(null, () => this.emit('catalogChanged', thread.id)));
   }
 
-  async create(cwd) {
+  async create(cwd, { title = '新会话', model, effort } = {}) {
     cwd = localFilePath(cwd);
     await this.client.connect();
-    const thread = await this.acquireWriter('thread/start', { cwd }, async thread => {
+    const thread = await this.acquireWriter('thread/start', { cwd, ...(model ? { model } : {}) }, async thread => {
       if (!samePath(path.resolve(localFilePath(thread.cwd)), path.resolve(cwd))) throw new Error('Codex 返回的会话项目与所选目录不一致');
       // Native naming commits an empty thread before it can be restored after process exit.
-      await this.client.request('thread/name/set', { threadId: thread.id, name: '新会话' });
-      thread.name = '新会话';
+      await this.client.request('thread/name/set', { threadId: thread.id, name: title });
+      thread.name = title;
+      if (effort) {
+        await this.client.request('thread/settings/update', { threadId: thread.id, effort });
+        thread.settings.effort = effort;
+      }
     });
     try {
-      this.records.set(thread.id, { untitled: true });
+      if (title === '新会话') this.records.set(thread.id, { untitled: true });
       this.remember(thread);
       this.changed(thread.id);
       return thread;
     } finally { await this.releaseIdle(thread.id); }
   }
 
-  load(id) {
+  load(id, { deferGoalContinuation = false } = {}) {
     if (this.loading.has(id)) return this.loading.get(id);
     if (this.writers.has(id) && !this.releasing.has(id)) return Promise.resolve(this.threads.get(id));
     if (!this.loading.has(id)) this.loading.set(id, (async () => {
@@ -306,7 +340,7 @@ export class CodexState extends EventEmitter {
       await this.releasing.get(id)?.promise;
       let thread = this.threads.get(id);
       if (!this.writers.has(id)) {
-        thread = await this.acquireWriter('thread/resume', { threadId: id }, thread => {
+        thread = await this.acquireWriter('thread/resume', { threadId: id, ...(deferGoalContinuation ? { deferGoalContinuation } : {}) }, thread => {
           if (thread.id !== id) throw new Error('Codex 返回的会话 ID 与所选会话不一致');
           const previous = this.records.get(id);
           if (previous && !samePath(path.resolve(localFilePath(thread.cwd)), path.resolve(localFilePath(previous.cwd)))) throw new Error('Codex 原生会话项目已变化，请重新选择项目');
@@ -344,6 +378,7 @@ export class CodexState extends EventEmitter {
     const settings = { ...this.records.get(id)?.settings, ...old?.settings,
       ...(thread.model ? { model: thread.model } : {}), ...(thread.reasoningEffort ? { effort: thread.reasoningEffort } : {}) };
     const current = Object.assign(old || {}, thread, { settings, revision: (old?.revision || 0) + 1 });
+    current.observedAt = Date.now();
     this.threads.set(id, current);
     delete current.disconnected;
     if (reconcile) {
@@ -434,6 +469,12 @@ export class CodexState extends EventEmitter {
   }
 
   notification({ method, params: p }) {
+    if (method === 'thread/goal/updated' || method === 'thread/goal/cleared') {
+      this.goals.set(p.threadId, p.goal || null);
+      this.changed(p.threadId);
+      this.releaseIdle(p.threadId).catch(error => this.changed(p.threadId, error));
+      return;
+    }
     if (method === 'thread/closed') {
       this.threadClosed(p.threadId);
       return;
@@ -456,6 +497,7 @@ export class CodexState extends EventEmitter {
     }
     if (method === 'serverRequest/resolved' && this.requests.get(p.requestId)?.params.threadId === id) this.requests.delete(p.requestId);
     if (!thread) return;
+    thread.observedAt = Date.now();
     const becameIdle = method === 'thread/status/changed' && thread.status?.type === 'active' && p.status.type === 'idle';
     thread.revision = (thread.revision || 0) + 1;
     if (method === 'thread/settings/updated') thread.settings = { ...thread.settings, ...p.threadSettings };
@@ -550,8 +592,9 @@ export class CodexState extends EventEmitter {
     });
   }
 
-  async answer(id, requestId, n, fields = []) {
-    const request = [...this.requests.values()].find(row => requestKey(row) === requestId && row.params.threadId === id);
+  async answer(id, requestId, n, fields = [], expectedTurnId) {
+    const request = [...this.requests.values()].find(row => requestKey(row) === requestId && row.params.threadId === id
+      && (expectedTurnId === undefined || row.params.turnId === expectedTurnId));
     if (!request) throw new Error('这条请求已处理或不属于当前会话');
     const p = request.params;
     let result;
@@ -575,9 +618,10 @@ export class CodexState extends EventEmitter {
     await this.client.replyToRequest(request, result);
   }
 
-  async stop(id) {
+  async stop(id, expectedTurnId) {
     const turn = busyTurn(this.threads.get(id));
     if (!turn) return;
+    if (expectedTurnId !== undefined && turn.id !== expectedTurnId) throw new Error('原生已不在该任务轮次');
     if (!this.hasWriter(id) || this.releasing.has(id)) {
       await this.refresh(id);
       return;
@@ -622,6 +666,7 @@ export class CodexState extends EventEmitter {
   async send(id, input, when, requestId) {
     return this.withWriter(id, async thread => {
       const turn = busyTurn(thread);
+      if (turn && when === 'idle') throw new Error('Codex 后台会话仍有未结束的轮次');
       this.retryAttempts.delete(id);
       const title = textInput(input).trim().split('\n')[0].slice(0, 100);
       if (this.records.get(id).untitled && title) await this.manage(id, 'rename', title);
@@ -642,7 +687,8 @@ export class CodexState extends EventEmitter {
         delete thread.error;
       }
       this.changed(id);
-      if (!thread.turns.some(row => row.items.some(item => item.type === 'userMessage' && item.clientId === requestId)))
+      // Fusion tracks the first turn through native events while its transcript is materializing.
+      if (when !== 'idle' && !thread.turns.some(row => row.items.some(item => item.type === 'userMessage' && item.clientId === requestId)))
         this.refresh(id).catch(error => this.changed(id, error));
       return { queued: false, thread: id, turnId: result.turn?.id || result.turnId,
         messageId: `${id}:user-message:${requestId}` };
@@ -741,7 +787,7 @@ export class CodexState extends EventEmitter {
     const task = items.findLast(item => item.k === 'tasks');
     return { thread: id, title: thread.name || this.records.get(id)?.title || thread.preview, items, busy: !!turn,
       tasks: task ? { done: task.done, total: task.total, current: task.items.find(item => item.status === 'in_progress')?.t || '' } : null,
-      run: latest ? { id: latest.id, status: turn ? 'running' : ({ interrupted: 'stopped', failed: 'error' }[latest.status] || latest.status),
+      run: latest ? { id: latest.id, status: turn ? 'running' : ({ inProgress: 'unknown', interrupted: 'stopped', failed: 'error' }[latest.status] || latest.status),
         startedAt: latest.startedAt * 1000, completedAt: latest.completedAt * 1000 } : null,
       model: settings.model || thread.model || '', effort: settings.effort ?? settings.reasoningEffort ?? thread.reasoningEffort,
       permission: settings.approvalsReviewer === 'auto_review' || IS_WIN && settings.approvalsReviewer === 'guardian_subagent' ? 'Approve for me' : settings.sandboxPolicy?.type === 'dangerFullAccess' ? 'Full access' : 'Ask for approval',
@@ -749,7 +795,8 @@ export class CodexState extends EventEmitter {
       queued: (this.queues.get(id) || []).map(row => ({ id: row.id, t: textInput(row.input), src: 'codex', messageId: `${id}:user-message:${row.clientUserMessageId}` })),
       questions: { codex: true, requests }, global: [], subagents: [], changed: 0,
       waiting: requests.length ? 'approval' : '', waitingText: requests[0]?.text || '',
-      codex: { plan: settings.collaborationMode?.mode === 'plan', follow: 'queue', actions: true },
+      codex: { plan: settings.collaborationMode?.mode === 'plan', follow: 'queue', actions: true,
+        ...(this.goals.has(id) ? { goal: this.goals.get(id)?.status || '' } : {}) },
       generation: latest?.startedAt ? { start: latest.startedAt * 1000, end: turn || thread.disconnected ? null : latest.completedAt * 1000 || null } : null,
       performance: latest ? { source: 'codex', runId: latest.id, busy: !!turn, model: current?.model || '',
         unit: 'tokens', counter: current?.usage?.total?.outputTokens ?? null,
@@ -763,7 +810,7 @@ export class CodexState extends EventEmitter {
     this.manualCompactions.delete(id);
     this.childChats.delete(id);
     for (const children of this.childChats.values()) children.delete(id);
-    this.records.delete(id); this.threads.delete(id); this.queues.delete(id); this.drafts.delete(id); this.draftTimes.delete(id); this.nativeDrafts.delete(id); this.statistics.delete(id); this.save();
+    this.records.delete(id); this.threads.delete(id); this.queues.delete(id); this.goals.delete(id); this.drafts.delete(id); this.draftTimes.delete(id); this.nativeDrafts.delete(id); this.statistics.delete(id); this.save();
     this.writers.delete(id);
     this.retryAttempts.delete(id);
     for (const [key, request] of this.requests) if (request.params.threadId === id) this.requests.delete(key);
@@ -787,8 +834,9 @@ export class CodexState extends EventEmitter {
   states(threadId) {
     const ids = threadId ? (this.threads.has(threadId) ? [threadId] : []) : [...this.threads.keys()];
     return ids.filter(id => !this.childParents.has(id)).map(id => {
-      const chat = this.chat(id);
+      const thread = this.threads.get(id), chat = this.chat(id);
       return { thread: id, title: chat.title, busy: chat.busy, waiting: chat.waiting, waitingText: chat.waitingText,
+        observedAt: thread.observedAt || 0, statusKnown: !thread.disconnected && (!!chat.run || ['active', 'idle'].includes(thread.status?.type)),
         last: chat.items.findLast(item => item.k === 'assistant')?.t || '', generation: chat.generation,
         runId: chat.run?.id || '', run: chat.run, tasks: chat.tasks };
     });

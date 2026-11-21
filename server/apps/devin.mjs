@@ -36,7 +36,7 @@ export const adapter = {
     return st;
   },
 
-  async openAgent(id, title = '') {
+  async openAgent(id, title = '', { reuseWindow = false } = {}) {
     if (IS_WIN && id.startsWith('window:devin:')) {
       await this.attach(id.slice('window:'.length));
       await this.listAgents();
@@ -47,7 +47,10 @@ export const adapter = {
     let focusedCdp;
     this.switchingThread = true;
     try {
-      await this.ensureDevinIde(id.replace(/^tab:/, ''));
+      if (reuseWindow) {
+        if (await this.cdp.evaluate(helpersCall('devinSurface()')) !== 'editor')
+          throw new Error('请先把已绑定的 Devin 窗口切到 Editor，再打开 Fusion 主会话');
+      } else await this.ensureDevinIde(id.replace(/^tab:/, ''));
       if (id.startsWith('tab:')) {
         const key = id.slice(4);
         const tabs = await this.cdp.evaluate(helpersCall('devinSession()'));

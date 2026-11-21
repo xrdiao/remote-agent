@@ -14,7 +14,7 @@ npm run peer -- trust '<对方电脑 ID>' '<对方电脑的 SHA256 指纹>'
 
 两端以本机登记的指纹验签，请求和对应回执均验证身份。命令、文件和输出的保密性由 HTTPS 提供。
 
-在同一个网页入口配对两台电脑。主页底栏点「互控」，选择发起电脑 A 和目标电脑 B。第一次为该方向授权时，输入 B 上项目的绝对路径，勾选允许使用目标终端，再点「授权并进入会话」。A 有多个可用 Agent 时，选择装有下文 `ra_peer` MCP 的那一个。
+在同一个网页入口配对两台电脑。主页底栏点「互控」，选择发起电脑 A 和目标电脑 B。第一次为该方向授权时，输入 B 上项目的绝对路径，勾选允许使用目标终端，再点「授权并进入会话」。可选择 A 上的 Cursor 或 Devin Local，也可选已按下文配置 `ra_peer` 的 Codex 或 OpenCode。
 
 在会话里可以说「在目标项目列出文件，读取 README，并在目标终端运行 `pwd`」。A 的 Agent 使用工作区工具，由 B 的中继读取、创建和保存项目文本文件，也可以在 B 打开终端、发送命令、读取输出或中断前台命令。
 
@@ -60,7 +60,11 @@ npm run peer -- trust '<对方电脑 ID>' '<对方电脑的 SHA256 指纹>'
 
 ## 在发起端配置 `ra_peer` MCP
 
-在发起端的 Agent 中登记 `cli/peer-mcp.mjs`。同一套工具也支持在普通会话里发起预设任务。例如可以说「列出另一台电脑授权的任务，请运行检查项目，并把结果告诉我」。Agent 会查目标授权、发起任务，再按原任务号查询。
+从手机进入互控时，RA 会为发起端已连接的 Cursor 和 Devin 自动在互控项目中登记 `ra_peer`。已有授权从「互控」重新进入即可补齐。Cursor 使用 `.cursor/mcp.json`，Devin Local 使用 `.devin/mcp_config.json`。如提示信任项目或批准工具，确认当前项目为 RA 的互控项目后按原生提示操作。[Cursor MCP](https://cursor.com/docs/mcp) · [Devin Local MCP](https://docs.devin.ai/desktop/devin-local/customizations#mcp-servers)
+
+Cursor 首次加载新的项目 MCP 时，若 `ra_peer` 显示为 Disabled，在该互控项目的 **Customize → MCPs** 中启用它，再回到手机会话。
+
+在 Codex 和 OpenCode 中手动登记 `cli/peer-mcp.mjs`。同一套工具也支持在普通会话里发起预设任务。例如可以说「列出另一台电脑授权的任务，请运行检查项目，并把结果告诉我」。Agent 会查目标授权、发起任务，再按原任务号查询。
 
 以本机 Codex 控制另一台电脑为例，在本机运行以下命令。把 Node 和仓库路径换成实际的绝对路径，然后在已加载该工具的 Codex 对话中操作：
 

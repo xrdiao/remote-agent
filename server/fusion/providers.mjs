@@ -1,5 +1,6 @@
 import { EDITORS } from '../config.mjs';
 import { fusionMcp } from './mcp.mjs';
+import { CODEX_BACKEND, codexBackend } from '../codex/state.mjs';
 
 const providers = new Map();
 
@@ -74,3 +75,89 @@ export function nativeAgentProviders() { return [...providers.values()]; }
 
 for (const { app, name } of EDITORS)
   registerNativeAgentProvider(new NativeAgentProvider({ app, name, transport: app === 'devin' ? 'mcp' : 'native' }));
+
+const codexThread = id => codexBackend.threads.get(id) || codexBackend.read(id);
+const codexIdentity = thread => ({ app: 'codex', threadId: thread.id, host: '', cwd: thread.cwd, roots: [{ root: thread.cwd, host: '' }] });
+export const backgroundCodex = {
+  async open(threadId) {
+    const thread = await codexBackend.read(threadId);
+    return { app: 'codex', backend: true, page: { id: CODEX_BACKEND }, native: codexIdentity(thread) };
+  },
+  async create(_agent, _context, spec) {
+    return codexIdentity(await codexBackend.create(spec.root, spec));
+  },
+  async models() {
+    await codexBackend.client.connect();
+    const models = [];
+    let cursor = null;
+    do {
+      const page = await codexBackend.client.request('model/list', { cursor, limit: 100, includeHidden: false });
+      models.push(...page.data.map(row => ({ id: row.model || row.id, label: row.displayName || row.id,
+        efforts: (row.supportedReasoningEfforts || []).map(item => item.reasoningEffort), source: 'Codex 后台模型目录' })));
+      cursor = page.nextCursor;
+    } while (cursor);
+    return models;
+  },
+  async info(_agent, { native: { threadId } }, catalog) {
+    if (catalog === 'sendError') return null;
+    const thread = await codexThread(threadId);
+    const { model = thread.model, effort = thread.reasoningEffort } = thread.settings || {};
+    const usage = Object.values(codexBackend.statistics.get(threadId) || {}).findLast(row => row.usage)?.usage;
+    return { model, effort, family: model, usage: usage || null, usageBasis: 'Codex 后台原生会话用量' };
+  },
+  async readTurn(_agent, { native: { threadId } }, { id = '', attemptId = '', generationId = '' } = {}) {
+    const { turns } = await codexThread(threadId);
+    const message = item => item.type === 'userMessage' && (item.clientId ? `${threadId}:user-message:${item.clientId}` : item.id);
+    const receipt = attemptId ? `${threadId}:user-message:${attemptId}` : id;
+    const turn = generationId ? turns.find(row => row.id === generationId)
+      : receipt ? turns.find(row => row.items.some(item => message(item) === receipt)) : turns.at(-1);
+    const user = turn?.items.find(item => message(item) && (!receipt || message(item) === receipt));
+    const ended = ['completed', 'failed', 'interrupted'].includes(turn?.status);
+    const text = turn?.items.findLast(item => item.type === 'agentMessage' && item.text?.trim())?.text || '';
+    return { threadId, id: user && message(user), ids: turns.flatMap(row => row.items.map(message).filter(Boolean)),
+      turnId: turn?.id, generationId: turn?.id, accepted: !!user, current: turn === turns.at(-1),
+      ended, completed: turn?.status === 'completed' && !!text, text, error: turn?.error?.message };
+  },
+  action(_agent, { native: { threadId } }, action, value) {
+    if (action === 'send') return codexBackend.send(threadId, [{ type: 'text', text: value.text, text_elements: [] }], 'idle', value.requestId);
+    if (action === 'stop') return codexBackend.stop(threadId, value);
+    if (!['model', 'effort'].includes(action)) throw new Error('不支持的 Codex 后台会话操作');
+    const field = action === 'effort' ? 'effort' : 'model';
+    return codexBackend.withWriter(threadId, async thread => {
+      await codexBackend.client.request('thread/settings/update', { threadId, [field]: value });
+      thread.settings[field] = value;
+      codexBackend.remember(thread);
+    });
+  },
+  async content(_agent, { native: { threadId } }, history, before) {
+    const thread = await codexThread(threadId);
+    const chat = codexBackend.chat(threadId, history ? Infinity : 80, thread);
+    if (history && before != null) {
+      const index = chat.items.findIndex(item => item.i === before);
+      if (index < 0) throw new Error('没有找到所选历史位置');
+      chat.items = chat.items.slice(Math.max(0, index - 80), index);
+      chat.earlier = index > 80;
+    }
+    if (chat.earlier) chat.before = chat.items[0]?.i;
+    return chat;
+  },
+  subscribe(context, changed) { return codexBackend.subscribe(context.native.threadId, changed); },
+  async snapshot(context) {
+    const threadId = context.native.threadId;
+    const chat = await this.content(null, context, false);
+    return { chat, state: { run: chat.run, waiting: chat.questions.requests[0]?.id || '', waitingText: chat.waitingText,
+      thread: threadId, busy: chat.busy } };
+  },
+  answer(threadId, expectedTurn, action) {
+    if (!expectedTurn) throw new Error('尚未核对该任务的原生轮次');
+    return codexBackend.answer(threadId, String(action.id), Number(action.n), action.fields || [], expectedTurn);
+  },
+  async cleanupState(_agent, { native: { threadId } }) {
+    const thread = await codexThread(threadId);
+    return { exists: true, running: thread.turns.some(turn => turn.status === 'inProgress'), context: codexIdentity(thread) };
+  },
+  async cleanup(_agent, { native: { threadId } }) {
+    await codexBackend.manage(threadId, 'archive');
+    return { confirmed: true, action: 'archive' };
+  },
+};

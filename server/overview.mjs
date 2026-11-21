@@ -16,6 +16,21 @@ const APP = { cursor: 'Cursor', codex: 'Codex', devin: 'Devin' };
 const FUSION_RECENT_MS = 24 * 3600 * 1000;
 const projectId = (app, root, host, windowId) => JSON.stringify([app, host || '', root ? pathKey(root, !host) : windowId]);
 
+function codexCardState(native, backend, hasWriter) {
+  if (!native || native.statusKnown === false) return backend || native;
+  if (!backend || backend.statusKnown === false) return native;
+  const a = native.run, b = backend.run;
+  if (a?.startedAt && b?.startedAt && a.startedAt !== b.startedAt) return a.startedAt > b.startedAt ? native : backend;
+  if (a?.id && a.id === b?.id && a.status !== b.status) {
+    if (a.completedAt && !b.completedAt) return native;
+    if (b.completedAt && !a.completedAt) return backend;
+  }
+  if (!hasWriter && (native.busy || native.waiting)) return native;
+  if (hasWriter && (backend.busy || backend.waiting)) return backend;
+  if (!!a !== !!b) return a ? native : backend;
+  return (native.observedAt || 0) >= (backend.observedAt || 0) ? native : backend;
+}
+
 export function overviewSnapshot(deviceId, selection) {
   const now = Date.now(), projects = new Map(), collected = new Map(), excluded = fusionTargets(), errors = [];
   const selectedApp = String(selection?.win || '').split(':')[0], selectedThread = selection?.threadId;
@@ -57,7 +72,6 @@ export function overviewSnapshot(deviceId, selection) {
       }
     }
     for (const [key, row] of projectRows) {
-      if (win.app === 'codex' && codexBackend.owns(key)) continue;
       const record = readLibrary()[win.app]?.[key];
       if (!key || row.archived || record?.archived || record?.deleted || excluded.sessions.has(win.app + ':' + key)) continue;
       const s = { ...row, busy: row.busy ?? row.running };
@@ -73,6 +87,7 @@ export function overviewSnapshot(deviceId, selection) {
         win: id, windowId, threadId: key, app: win.app, projectId: project, title: record?.title || s.title || '未命名会话',
         busy: !!s.busy, waiting: s.waiting || '', waitingText: s.waitingText || '', last: preview?.available ? preview.last : s.last || '',
         run: s.run || null, statusKnown: s.statusKnown ?? (!!s.busy || !!s.waiting || !!s.run),
+        ...(win.app === 'codex' ? { observedAt: s.observedAt || source.updatedAt || 0 } : {}),
         startedAt: s.busy ? (s.run?.startedAt || (Number.isFinite(s.runAt) ? s.runAt : Number.isFinite(s.generation?.start) ? s.generation.start : 0)) : 0,
         tasks: s.tasks?.total > 0 ? { done: s.tasks.done, total: s.tasks.total, current: s.tasks.current || '' } : null,
         actions: s.actions || [], devin: !!s.devin, changed: s.changed || 0, acceptAll: !!s.acceptAll, changes: s.changes || null, lastUsed: Number.isFinite(s.lastUsed) ? s.lastUsed : 0,
@@ -95,12 +110,18 @@ export function overviewSnapshot(deviceId, selection) {
   const records = !selection ? codexBackend.records.values() : selectedApp === 'codex' ? [codexBackend.records.get(selectedThread)].filter(Boolean) : [];
   const backendStates = new Map(codexBackend.states(selectedThread).map(row => [row.thread, row]));
   for (const row of records) {
-    const state = backendStates.get(row.id), workspace = localFilePath(row.cwd), key = projectId('codex', workspace, '', CODEX_BACKEND);
+    const record = readLibrary().codex?.[row.id];
+    if (record?.archived || record?.deleted || excluded.sessions.has('codex:' + row.id)) continue;
+    const workspace = localFilePath(row.cwd), key = projectId('codex', workspace, '', CODEX_BACKEND);
+    const desktop = collected.get(JSON.stringify([key, row.id]))?.value;
+    collected.delete(JSON.stringify([key, row.id]));
+    const state = codexCardState(desktop, backendStates.get(row.id), codexBackend.hasWriter(row.id));
     const question = codexAdapter.backendQuestionState(row.id);
     const win = { projectId: key, win: 'codex', windowId: CODEX_BACKEND, app: 'codex', workspace, host: '', project: path.basename(workspace) };
     api.windows.push(win);
     api.sessions.push({ ...win, threadId: row.id, title: row.title, busy: !!state?.busy, waiting: state?.waiting || question.waiting, waitingText: state?.waitingText || question.waitingText,
-      last: state?.last || '', run: state?.run || null, statusKnown: !!state || !!question.waiting, startedAt: state?.generation?.start || 0,
+      last: state?.last || '', run: state?.run || null, statusKnown: !!state?.statusKnown || !!question.waiting,
+      startedAt: state?.busy ? state.run?.startedAt || state.startedAt || state.generation?.start || 0 : 0,
       tasks: state?.tasks || null, actions: [], changed: 0, lastUsed: row.updatedAt * 1000 });
   }
   for (const row of api.windows) projects.set(row.projectId, row);
@@ -143,6 +164,7 @@ export function overviewSnapshot(deviceId, selection) {
   rememberSessionStatuses(sessions);
   for (const row of sessions) if (row.dormant || row.statusKnown === false || row.run?.status === 'unknown') {
     const status = storedSessionStatus(row.app, row.threadId, row.host || '');
+    if (row.app === 'codex' && (status?.busy || status?.waiting || status?.run?.status === 'running')) continue;
     if (status) Object.assign(row, { busy: status.busy, waiting: status.waiting, run: status.run,
       statusKnown: true, cachedStatusAt: status.at, startedAt: status.run?.startedAt || 0 });
   }

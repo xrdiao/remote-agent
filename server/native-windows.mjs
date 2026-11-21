@@ -355,6 +355,11 @@ export class NativeWindow {
   overviewStates(threadId) {
     const rows = this.snapshot?.states || [];
     const states = new Map((threadId ? rows.filter(row => row.thread === threadId) : rows).map(row => [row.thread, row]));
+    if (this.win?.app === 'codex') for (const view of this.conversations.values()) {
+      const state = view.snapshot?.state;
+      if (!state?.thread || threadId && threadId !== state.thread || view.at < this.updatedAt && states.has(state.thread)) continue;
+      states.set(state.thread, { ...states.get(state.thread), ...state, observedAt: view.at });
+    }
     const runs = threadId ? (this.runStates.has(threadId) ? [[threadId, this.runStates.get(threadId)]] : []) : this.runStates;
     for (const [thread, run] of runs) if (!states.get(thread)?.run) {
       const observed = states.get(thread), known = run.status !== 'running';

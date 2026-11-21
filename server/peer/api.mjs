@@ -52,7 +52,7 @@ export async function managePeerTasks(req, res, route, stillPaired) {
       if (route === '/api/peers/workspace') {
         const agents = phoneWindows(await listWindows().catch(() => []));
         if (!agents.length) throw new PeerError(404, '发起电脑没有可用的 Agent');
-        const root = await openPeerWorkspace(data);
+        const root = await openPeerWorkspace(data, agents.map(agent => agent.app));
         return json(req, res, 200, { id: computerId(), root, agents });
       }
       if (route === '/api/peers/workspace-grant') return json(req, res, 200, { grant: grantPeerWorkspace(data) });

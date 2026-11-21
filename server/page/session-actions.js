@@ -137,7 +137,9 @@
     if (!manager || manager.hostId !== 'local') return { ready: false };
     const client = manager.requestClient, rows = [], active = new Set();
     const catalogRow = (row, archived) => ({ id: row.id, archived, path: row.path, title: row.name || '',
-      workspace: localFilePath(row.cwd || ''), host: '', running: row.status?.type === 'active', lastUsed: (row.updatedAt || 0) * 1000 });
+      workspace: localFilePath(row.cwd || ''), host: '', running: row.status?.type === 'active',
+      waiting: row.status?.activeFlags?.includes('waitingOnUserInput') ? 'q:' : row.status?.activeFlags?.includes('waitingOnApproval') ? 'approval' : '',
+      statusKnown: ['active', 'idle', 'systemError'].includes(row.status?.type), lastUsed: (row.updatedAt || 0) * 1000 });
     const request = Array.isArray(ids) ? { ids } : ids;
     let nextCursor = null;
     if (!request.threads) {
@@ -289,7 +291,31 @@
     if (app === 'devin') releaseDevinTurnCache();
     return { confirmed: true, action: after.archived ? 'archive' : 'delete', already: false };
   };
+  const cursorProjectPlacement = root => {
+    const services = cursorSessionServices();
+    const workbench = doc.defaultView.vscode?.context?.configuration?.()?.workspace;
+    const folders = services?.composer.composerChatService._workspaceContextService.getWorkspace().folders || [];
+    const matches = uri => uri?.scheme === 'file' && samePath(uriFilePath(uri), root);
+    return workbench?.id && (matches(workbench.uri) || folders.some(folder => matches(folder.uri)))
+      ? workbench : cursorProjectPicker()?.recentProjects?.find(row => matches(row.workspaceIdentifier?.uri))?.workspaceIdentifier || null;
+  };
   const nativeSessionInfo = (app, id, catalog = false, previous = null) => {
+    if (app === 'cursor' && catalog === 'projectPlacement') return cursorProjectPlacement(previous);
+    if (app === 'codex' && catalog === 'creationReady') return !!codexConversationManager(id, codexHistoryScopes(), 'local');
+    if (app === 'codex' && catalog === 'goal') {
+      const host = remoteContext?.host || codexChatRows(true).find(row => row.id === id)?.host || 'local';
+      const manager = codexConversationManager(id, codexHistoryScopes(), host);
+      if (!manager) throw new Error('Codex 原生会话尚未就绪');
+      if (previous.method === 'thread/goal/set' && previous.params.status === 'active') {
+        const mode = manager.getConversation(id)?.latestCollaborationMode;
+        const settings = mode?.mode === 'plan' ? { collaborationMode: { ...mode, mode: 'default' } } : undefined;
+        const update = previous.params.objective
+          ? manager.setThreadGoal(id, nativeValue({ objective: previous.params.objective, ...(settings ? { threadSettings: settings } : {}) }))
+          : manager.setThreadGoalStatus(id, nativeValue({ status: 'active', ...(settings ? { threadSettings: settings } : {}) }));
+        return update.then(goal => ({ goal }));
+      }
+      return manager.requestClient.sendRequest(previous.method, nativeValue(previous.params));
+    }
     if (catalog === 'history' && (app === 'cursor' || app === 'devin')) return (async () => {
       const context = await nativeSessionContext(app, id);
       if (app === 'devin') await devinReadSession(id, () => true);
@@ -447,6 +473,7 @@
   };
   const nativeCodexCreation = async (id, spec, prepare) => {
     const manager = codexConversationManager(id, codexHistoryScopes(), remoteContext?.host || 'local');
+    if (!manager) throw new Error('当前 Codex 面板未提供 Fusion 所需的原生会话管理接口');
     const host = manager.hostId;
     const parent = manager.getConversation(id);
     const { scope } = await codexComposerScope(codexVisibleThread() || '');
@@ -489,8 +516,8 @@
     }
     if (action === 'project' && app === 'cursor') {
       const services = cursorSessionServices();
-      const uri = services.composer.composerChatService._workspaceContextService.getWorkspace().folders[0].uri;
-      await services.nativeHost.openWindow([{ folderUri: uri.constructor.file(name) }], { forceReuseWindow: true });
+      if (!services) return false;
+      await services.nativeHost.openWindow([{ folderUri: { $mid: 1, ...localFileUri(name), query: '', fragment: '' } }], { forceReuseWindow: true });
       return true;
     }
     if (action === 'question' && app === 'devin') {
@@ -564,11 +591,7 @@
     if (action === 'createProjectChat' && app === 'cursor') {
       const services = cursorSessionServices();
       if (!services) throw new Error('Cursor 原生会话管理器尚未就绪');
-      const workbench = doc.defaultView.vscode?.context?.configuration?.()?.workspace;
-      const folders = services.composer.composerChatService._workspaceContextService.getWorkspace().folders;
-      const matches = uri => uri?.scheme === 'file' && samePath(uriFilePath(uri), name);
-      const workspace = workbench?.id && (matches(workbench.uri) || folders.some(folder => matches(folder.uri)))
-        ? workbench : cursorProjectPicker()?.recentProjects?.find(row => matches(row.workspaceIdentifier?.uri))?.workspaceIdentifier;
+      const workspace = cursorProjectPlacement(name);
       if (!workspace) throw new Error('Cursor 原生窗口尚未确认所选项目');
       const placement = nativeValue({ workspaceIdentifier: workspace });
       const created = await services.composer.createComposer(nativeValue({ skipSelect: true, skipShowAndFocus: true, partialState: placement }));
@@ -586,17 +609,18 @@
     if (action === 'createNative' && app === 'cursor') {
       const services = cursorSessionServices();
       const parent = services.data.getComposerDataIfLoaded(id);
-      if (!parent) throw new Error('主会话尚未在这个 Cursor 窗口就绪');
+      if (!parent && !name.workspacePlacement) throw new Error('主会话尚未在这个 Cursor 窗口就绪');
+      const placement = { name: name.title, ...(name.workspacePlacement ? { workspaceIdentifier: name.workspacePlacement } : {}) };
       const created = await services.composer.createComposer(nativeValue({
         skipSelect: true, skipShowAndFocus: true,
-        partialState: { composerId: name.threadId, name: name.title, unifiedMode: 'agent',
-          modelConfig: name.role === 'main' && name.model ? { ...parent.modelConfig,
+        partialState: { composerId: name.threadId, ...placement, unifiedMode: 'agent',
+          modelConfig: (name.role === 'main' || !parent) && name.model ? { ...parent?.modelConfig,
             selectedModels: [{ modelId: name.model,
-              parameters: name.effort ? [{ id: 'reasoning_effort', value: name.effort }] : [] }] } : parent.modelConfig,
-          ...(name.role === 'main' ? {} : { subagentInfo: { parentComposerId: id, subagentTypeName: 'side-chat' } }) },
+              parameters: name.effort ? [{ id: 'reasoning_effort', value: name.effort }] : [] }] } : parent?.modelConfig,
+          ...(name.role === 'main' || !parent ? {} : { subagentInfo: { parentComposerId: id, subagentTypeName: 'side-chat' } }) },
       }));
       window.__remoteAgentNativeCreations.get(name.requestId).nativeThreadId = created.composerId;
-      await services.data.persistComposerWorkspacePlacement(created.composerId, { name: name.title });
+      await services.data.persistComposerWorkspacePlacement(created.composerId, placement);
       await services.data.syncComposerHeadersFromCanonicalStorage();
       return nativeSessionContext(app, created.composerId);
     }

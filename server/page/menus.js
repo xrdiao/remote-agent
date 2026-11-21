@@ -84,6 +84,14 @@
     return { ...props, selections: service.getSelectedModelsForComposer(handle),
       onSelectionChange: selectedModels => service.setModelConfigForComposer(handle, nativeValue({ selectedModels })) };
   };
+  const cursorModelRows = picker => {
+    const selected = picker.selections || picker.initialSelections || [];
+    const visible = new Set([...(picker.defaultVisibleModelIds || picker.models.filter(model => model.defaultOn).map(model => model.name)),
+      ...(picker.additionalVisibleModelIds || []), ...selected.map(selection => selection.modelId)]);
+    return picker.models.filter(model => visible.has(model.name)).map(model => ({ id: model.name,
+      label: model.clientDisplayName || model.inputboxShortModelName || model.name,
+      checked: selected.some(selection => selection.modelId === model.name), params: !!model.parameterDefinitions?.length }));
+  };
   const normKey = s => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
   // Prop-based model list: no visible menu is opened. Returns null when only the DOM path can answer.
   const agentModelName = () => {
@@ -124,7 +132,7 @@
         efforts: (option.model.supportedReasoningEfforts || []).map(effort => ({ label: effort.reasoningEffort, description: effort.description || '' })),
       }));
       const cursor = !devinSurface() && cursorPickerProps(true);
-      if (cursor) return modelItemsFast(false).map(item => {
+      if (cursor) return cursorModelRows(cursor).map(item => {
         const model = cursor.models.find(value => value.name === item.id);
         const values = model?.parameterDefinitions?.find(value => value.id === 'reasoning_effort')?.parameterType?.enumParameter?.values || [];
         return { id: item.id, label: item.label, checked: item.checked, pricing: item.pricing,
@@ -138,12 +146,8 @@
       if (remoteContext?.app === 'devin' || devinSurface()) return devinAcpModelItems();
     }
     if (remoteContext?.app === 'cursor') {
-      const picker = cursorPickerProps(true), selected = picker.selections || picker.initialSelections || [];
-      const visible = new Set([...(picker.defaultVisibleModelIds || picker.models.filter(model => model.defaultOn).map(model => model.name)),
-        ...(picker.additionalVisibleModelIds || []), ...selected.map(selection => selection.modelId)]);
-      return picker.models.filter(model => visible.has(model.name)).map(model => ({ id: model.name,
-        label: model.clientDisplayName || model.inputboxShortModelName || model.name,
-        checked: selected.some(selection => selection.modelId === model.name), params: !!model.parameterDefinitions?.length }));
+      const picker = cursorPickerProps(true);
+      return picker ? cursorModelRows(picker) : null;
     }
     if (remoteContext?.app === 'codex' || codexModelButton()) {
       const items = MENU_ITEMS.model();

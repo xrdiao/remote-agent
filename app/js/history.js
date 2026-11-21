@@ -2084,6 +2084,52 @@ async function openCodexFilePicker(token, input = composerInput()) {
   };
   await browse('');
 }
+let codexGoalPanel = null, codexGoalRequest = 0;
+const CODEX_GOAL_STATUS = { active: '进行中', paused: '已暂停', blocked: '受阻', usageLimited: '额度受限', budgetLimited: '预算已用完', complete: '已完成' };
+
+function requestCodexGoal(action, objective = '') {
+  const panel = codexGoalPanel;
+  if (!panel || panel.sel !== viewSel || currentApp !== 'codex') return;
+  panel.requestId = ++codexGoalRequest;
+  for (const button of $('sheet').querySelectorAll('[data-goal-action]')) button.disabled = true;
+  const feedback = $('codexGoalFeedback');
+  if (feedback) feedback.textContent = '正在读取 Codex…';
+  if (send({ t: 'codexGoal', action, objective, expected: panel.version, requestId: panel.requestId, sel: panel.sel }) === false)
+    renderCodexGoal({ error: '尚未连接 Codex' });
+}
+
+function openCodexGoal(objective) {
+  codexGoalPanel = { sel: viewSel, objective };
+  openSheet('codex-goal', '<h3>Goal · 目标</h3><p id="codexGoalFeedback" class="hint" role="status">正在读取 Codex…</p>');
+  requestCodexGoal('read');
+}
+
+function receiveCodexGoal(message) {
+  const panel = codexGoalPanel;
+  if (sheetKind !== 'codex-goal' || !panel || message.requestId !== panel.requestId || message.sel !== panel.sel || panel.sel !== viewSel) return;
+  if (!message.error) {
+    panel.goal = message.goal;
+    panel.version = message.version;
+    if (message.action !== 'read') panel.objective = undefined;
+  }
+  renderCodexGoal(message);
+}
+
+function renderCodexGoal(message) {
+  const panel = codexGoalPanel, goal = panel.goal;
+  const objective = message.error && $('codexGoalObjective') ? $('codexGoalObjective').value : panel.objective ?? goal?.objective ?? '';
+  const canResume = goal && ['paused', 'blocked', 'usageLimited', 'budgetLimited'].includes(goal.status);
+  openSheet('codex-goal', `<h3>Goal · 目标</h3><p id="codexGoalFeedback" class="hint" role="status">${esc(message.error || (goal ? CODEX_GOAL_STATUS[goal.status] || goal.status : '当前会话没有目标'))}</p>
+    ${panel.version === undefined ? '' : `<form id="codexGoalForm"><label for="codexGoalObjective">目标</label><textarea id="codexGoalObjective" rows="4" maxlength="4000" required style="box-sizing:border-box;width:100%" placeholder="描述要达到的结果">${esc(objective)}</textarea>
+    <div class="askBtns"><button data-goal-action="set" type="submit">${goal ? '保存目标' : '开始目标'}</button></div></form>`}
+    <div class="askBtns">${goal?.status === 'active' ? '<button type="button" data-goal-action="pause">暂停</button>' : ''}
+    ${canResume ? '<button type="button" data-goal-action="resume">恢复</button>' : ''}${goal ? '<button type="button" data-goal-action="clear">清除目标</button>' : ''}
+    <button type="button" data-goal-action="read">刷新</button></div>`);
+  if ($('codexGoalForm')) $('codexGoalForm').onsubmit = event => { event.preventDefault(); requestCodexGoal('set', $('codexGoalObjective').value); };
+  for (const button of $('sheet').querySelectorAll('[data-goal-action]:not([data-goal-action="set"])'))
+    button.onclick = () => requestCodexGoal(button.dataset.goalAction);
+}
+
 function openComposerAdd(input = text) {
   if (currentApp === 'fusion') return showFusionTasks(lastChat?.fusionRun);
   const c = (input === text ? lastChat : chatBySel.get(chatCacheKey(viewSel)))?.codex;
@@ -2095,7 +2141,7 @@ function openComposerAdd(input = text) {
     $('sheet').querySelectorAll('[data-control]').forEach(b => b.onclick = () => { closeSheet(); $(b.dataset.control).click(); });
     return;
   }
-  const rows = [['new', '新建会话'], ['plan', `Plan：${c.plan ? '开' : '关'}`], ['skills', 'Skill · 技能'], ...(supportsCapability('fileReferences') ? [['local-files', '添加电脑端文件'], ['files', '引用文件']] : []), ['commands', '扩展与命令']];
+  const rows = [['new', '新建会话'], ['plan', `Plan：${c.plan ? '开' : '关'}`], ['goal', c.goal ? `Goal · ${CODEX_GOAL_STATUS[c.goal] || c.goal}` : 'Goal · 目标'], ['skills', 'Skill · 技能'], ...(supportsCapability('fileReferences') ? [['local-files', '添加电脑端文件'], ['files', '引用文件']] : []), ['commands', '扩展与命令']];
   if (c.ide) rows.push(['ide', `IDE 上下文：${c.ide.on ? '开' : '关'}`]);
   if (c.run) rows.push(['run', `执行位置：${c.run}`]);
   if (c.actions) rows.push(['chat', '会话操作']);
@@ -2105,6 +2151,7 @@ function openComposerAdd(input = text) {
     const key = b.dataset.add;
     if (key === 'new') return $('newChat').click();
     if (key === 'plan') return send({ t: 'codexPlan' });
+    if (key === 'goal') return openCodexGoal();
     if (key === 'ide') return send({ t: 'codexIde' });
     if (key === 'run') return send({ t: 'codexRun' });
     if (key === 'chat') return send({ t: 'codexChat' });

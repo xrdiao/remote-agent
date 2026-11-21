@@ -76,14 +76,14 @@ function readAllPlans(session, windows) {
     try {
       const wins = windows || await listWindows();
       const codex = wins.find(w => w.app === 'codex');
-      if (codex && !appPlans.codex) {
+      if (codex) {
         const page = (await codexWindows(CODEX_CDP_URL)).find(p => p.chatWs);
         if (page) {
           const cdp = new Cdp(page.chatWs);
           try {
             await cdp.connect();
             const u = await cdp.evaluate(helpersCall('refreshCodexUsage(false)'), { timeout: 30000 }).catch(() => null);
-            if (u?.plan) appPlans.codex = u.plan;
+            if (u) appPlans.codex = u.account?.planType || '';
           } finally { cdp.close(); }
         }
       }
@@ -502,6 +502,7 @@ export const ROUTES = {
     fail: (s, m, error) => s.emit({ t: 'opencodeQuestionDone', requestId: m.requestId, sel: s.selectionKey(), id: m.id, ok: false, error: error.message }),
   },
   codexPick: { run: (s, m) => s.codexPick(m) },
+  codexGoal: { readOnly: (s, m) => m.action === 'read', run: (s, m) => s.app === 'codex' && s.codexGoal(m) },
   codexSkills: { switchRead: true,  run: s => s.codexSkillList() },
   codexPlan: { run: s => s.codexTogglePlan() },
   codexIde: { run: s => s.codexToggleIde() },

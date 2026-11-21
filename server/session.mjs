@@ -274,11 +274,20 @@ export class Session extends AgentContext {
       const saved = lastSelection(this.deviceId, app);
       if (saved) req = { ...req, ...saved };
     }
-    if (['cursor', 'devin'].includes(app) && req.threadId && !req.project && !req.projectSwitch && !this.fusionBinding) {
+    const fusionMain = req.threadId && !req.projectSwitch && !this.fusionBinding && allFusionRuns().flatMap(run => run.bindings
+      .filter(binding => binding.id === run.main.bindingId)).find(binding => binding.reuseWindow && binding.app === app && binding.threadId === req.threadId);
+    if (fusionMain) {
+      if (req.project && !this.projectMatches([{ root: fusionMain.project.root, host: fusionMain.host }], req.project.root, req.project.host))
+        throw new Error('Fusion 主会话不属于所选项目');
+      const window = app === 'codex' || fusionMain.windowId.startsWith(app + ':') ? fusionMain.windowId : `${app}:${fusionMain.windowId}`;
+      req = { ...req, id: app === 'codex' ? app : window, windowId: window, project: null,
+        ...(app === 'codex' ? { nativeOwner: { cwd: fusionMain.project.root } } : {}) };
+    }
+    if (!fusionMain && ['cursor', 'devin'].includes(app) && req.threadId && !req.project && !req.projectSwitch && !this.fusionBinding) {
       const row = nativeSessionCatalog(app)?.rows.find(row => row.id === req.threadId);
       if (row?.workspace) req = { ...req, project: { root: row.workspace, host: row.host || '' } };
     }
-    if (app === 'cursor' && req.threadId && !req.projectSwitch && !this.fusionBinding) {
+    if (!fusionMain && app === 'cursor' && req.threadId && !req.projectSwitch && !this.fusionBinding) {
       const source = cursorSource(req.threadId, req.project);
       if (source) {
         const context = await source.cdp.evaluate(helpersCall(`nativeSessionInfo('cursor', ${JSON.stringify(req.threadId)}, 'context')`));
@@ -300,7 +309,7 @@ export class Session extends AgentContext {
         return this.setMode(this.mode, true);
       }
     }
-    if (req.initial && !req.nativeOwner && hasLaunched(app)) req = { ...req, id: app, windowId: '', threadId: '', project: null };
+    if (req.initial && !req.nativeOwner && !fusionMain && hasLaunched(app)) req = { ...req, id: app, windowId: '', threadId: '', project: null };
     if (req.project && !req.projectSwitch && app === 'codex') {
       const matches = nativeTargets().filter(win => win.app === app && this.projectMatches(nativeWindowAt(win.ws)?.roots || [], req.project.root, req.project.host));
       const picked = matches.find(win => (win.pageId || win.id) === req.windowId) || orderedProjectWindows(app, matches)[0];
@@ -385,7 +394,8 @@ export class Session extends AgentContext {
     }
     const chosen = win || wins[0];
     if (!chosen) throw new Error('没有找到 Cursor、Devin 或 Codex 窗口。Cursor 用调试端口 9222，Devin 用 ./scripts/start-devin.sh，Codex 用 ./scripts/start-codex.sh');
-    await this.openBound(chosen, chosen.ws, null, { windowId: chosen.id, threadId, deferred: req.projectSwitch === true, initial: req.initial === true });
+    await this.openBound(chosen, chosen.ws, null, { windowId: chosen.id, threadId, deferred: req.projectSwitch === true,
+      initial: req.initial === true, fusionMain: fusionMain || null });
   }
 
   async openBound(win, editorWs, chatWs, selection) {
@@ -393,7 +403,7 @@ export class Session extends AgentContext {
     const cdp = chatWs ? new NativeCdp(chatWs, win.app) : editorCdp;
     // A phone-launched app keeps its native home/new-chat view, not a remembered thread.
     // Keep the marker until startup and the first chat read complete successfully.
-    const launchDefault = this.launchDefault = !selection.nativeOwner && selection.initial === true && hasLaunched(win.app);
+    const launchDefault = this.launchDefault = !selection.nativeOwner && !selection.fusionMain && selection.initial === true && hasLaunched(win.app);
     let thread = '';
     let trust;
     try {
@@ -449,9 +459,16 @@ export class Session extends AgentContext {
     this.selectedThread = this.threadId;
     const attached = async () => {
       if (this.bindingReady) await this.currentRoots();
+      if (win.app === 'codex') {
+        this.codexAccountWindowId = selection.windowId;
+        this.codexAccount = !trust.required && this.cdp !== this.editorCdp
+          ? await this.adapter.accountForDesktop(this.cdp).catch(() => ({ account: '', plan: '' }))
+          : { account: '', plan: '' };
+      }
       this.emit({
         t: 'attached', id: win.id, title: this.app === 'codex' ? 'Codex' : win.title, app: win.app,
         appName: this.appMessage('{app}'), project: this.projectName(), windowId: this.windowId || '', threadId: this.threadId || '', sel: this.selectionKey(), plans: appPlans, initial: selection.initial === true, ready: this.bindingReady === true,
+        ...(win.app === 'codex' ? { codexAccount: this.codexAccount } : {}),
       });
     };
     if (trust.required) {
@@ -476,7 +493,8 @@ export class Session extends AgentContext {
         if (selection.nativeOwner) {
           if (!await this.selectCodexThread(selection.threadId)) throw new Error('没有找到所选会话');
           await this.adoptCodexThread(selection.threadId);
-        } else await this.openAgent(id);
+        } else if (selection.fusionMain) await this.adapter.openAgent.call(this, id, '', { reuseWindow: true });
+        else await this.openAgent(id);
       });
       if (this.cdp !== cdp) return;
       if (this.bindingReady && this.chatUpdatesStop && this.lastChat) {
@@ -667,7 +685,8 @@ export class Session extends AgentContext {
   }
 
   async handle(msg) {
-    const command = this.app === 'codex' && ['send', 'pickMenu', 'queue', 'codexRequest', 'codexPlan', 'codexPick'].includes(msg.t)
+    const command = this.app === 'codex' && (['send', 'pickMenu', 'queue', 'codexRequest', 'codexPlan', 'codexPick'].includes(msg.t)
+      || msg.t === 'codexGoal' && msg.action !== 'read')
       && !(msg.t === 'send' && msg.submit === false) && !(msg.t === 'queue' && msg.action === 'read');
     if (!command) return this.handleSelected(msg);
     const thread = this.threadId;

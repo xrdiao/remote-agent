@@ -50,9 +50,9 @@ export const adapter = {
     if (!st) throw new Error('Cursor 项目与会话尚未就绪，请重试');
   },
 
-  async openAgent(id, title = '') {
+  async openAgent(id, title = '', { reuseWindow = false } = {}) {
     if (!id || id.length > 200) throw new Error('这条 Agent 已经不在列表里');
-    const source = !this.fusionBinding && cursorSource(id);
+    const source = !reuseWindow && !this.fusionBinding && cursorSource(id);
     if (source && source.cdp.wsUrl !== this.cdp.wsUrl) {
       const context = await source.cdp.evaluate(helpersCall(`nativeSessionInfo('cursor', ${JSON.stringify(id)}, 'context')`));
       const roots = await editorRoots(source.cdp, 'cursor');
