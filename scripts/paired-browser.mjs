@@ -51,6 +51,8 @@ async function launch(executable, args, env, name) {
 
 async function verifyPage(config, version) {
   const endpoint = `http://127.0.0.1:${config.browser.port}`;
+  const expected = /const APP_VERSION = '(v\d+)'/.exec(fs.readFileSync(local('app/js/core.js'), 'utf8'))?.[1];
+  if (!expected) throw new Error('当前工作区未声明网页版本');
   const pages = await probe(endpoint + '/json/list');
   let target = pages.find(page => page.type === 'page' && page.url.startsWith(config.appUrl) && !page.url.includes('/approve.html'));
   let navigate = false;
@@ -69,12 +71,17 @@ async function verifyPage(config, version) {
     await page.send('Page.enable');
     await page.send('Page.bringToFront');
     if (navigate || !await page.evaluate(`typeof APP_VERSION === 'string'`)) await page.send('Page.navigate', { url: config.appUrl });
+    else if (await page.evaluate('APP_VERSION') !== expected) {
+      await page.send('Network.enable');
+      await page.send('Network.setBypassServiceWorker', { bypass: true });
+      await page.send('Page.reload', { ignoreCache: true });
+    }
     else await page.evaluate(`if (typeof resumeComputerConnections === 'function') resumeComputerConnections(); true;`);
     const state = await until(async () => {
       const result = await page.evaluate(`({authenticated: typeof authed !== 'undefined' && authed && typeof ws !== 'undefined' && ws?.readyState === 1,
         version: typeof APP_VERSION === 'string' ? APP_VERSION : null, computerCount: typeof ovList === 'undefined' ? 0 : ovList.length})`);
-      return result.authenticated ? result : null;
-    }, '原配对认证');
+      return result.authenticated && result.version === expected ? result : null;
+    }, `网页 ${expected} 的原配对认证`);
     return { ...state, targetId: target.id };
   } finally { page.close(); }
 }

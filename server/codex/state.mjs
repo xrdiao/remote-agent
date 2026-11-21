@@ -680,7 +680,7 @@ export class CodexState extends EventEmitter {
       const turn = busyTurn(thread);
       if (turn && when === 'idle') throw new Error('Codex 后台会话仍有未结束的轮次');
       this.retryAttempts.delete(id);
-      const title = textInput(input).trim().split('\n')[0].slice(0, 100);
+      const title = Array.from(textInput(input).trim().split('\n')[0]).slice(0, 100).join('').trim();
       if (this.records.get(id)?.untitled && title) await this.renameInsideCommand(id, title);
       if (turn && when !== 'now') {
         const result = await this.client.request('thread/queue/add', { threadId: id, input, clientUserMessageId: requestId });
@@ -846,6 +846,7 @@ export class CodexState extends EventEmitter {
     });
   }
   async renameInsideCommand(id, name) {
+    name = name.trim();
     await this.commands.get('account');
     await this.client.connect();
     await this.client.request('thread/name/set', { threadId: id, name });

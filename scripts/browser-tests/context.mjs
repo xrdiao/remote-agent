@@ -38,6 +38,7 @@ export class Context {
     this.initial = await this.b.snapshot();
   }
   async rows(app) {
+    await this.b.wait(`!!ovSt.get(${attr(this.computer)})?.data`, '已配对电脑的会话目录');
     return this.b.read(`ovRecs().filter(r=>r.comp===${attr(this.computer)}${app ? `&&r.app===${attr(app)}` : ''}&&!r.fusion&&!r.off)
       .map(r=>({key:r.key,project:r.project,app:r.app,comp:r.comp,thread:r.threadId,window:r.windowId,win:r.win,
         root:r.workspace||'',state:r.state,title:r.title,missing:r.workspaceMissing}))`);
@@ -46,8 +47,8 @@ export class Context {
     if (owned) {
       if (['fold', 'models', 'commands', 'terminal'].includes(slot)) slot = 'A';
       const previous = this.owned.find(row => row.app === app && row.slot === slot);
-      if (previous && !previous.thread && !previous.projectRead) throw new Unavailable(`${app} 的 ${slot} 测试会话创建结果待核对`);
-      const target = await this.prerequisite(`create:${app}:${slot}`, async () => previous || this.create(app, slot));
+      if (previous && !previous.thread && previous.creationRequested) throw new Unavailable(`${app} 的 ${slot} 测试会话创建结果待核对`);
+      const target = await this.prerequisite(`create:${app}:${slot}`, () => previous?.thread ? previous : this.create(app, slot, previous));
       return target;
     }
     const rows = await this.rows(app), selected = this.options.targets?.[app]?.[slot];
@@ -99,11 +100,11 @@ export class Context {
     await this.b.wait(`!!document.querySelector(${attr(card + ' [data-ov-input]')})&&!document.querySelector(${attr(card + ' [data-ov-input]')}).disabled`, '卡片输入就绪');
     return card;
   }
-  async create(app, slot) {
+  async create(app, slot, previous) {
     const b = this.b, seed = await this.target(app), root = path.resolve(this.directory, 'projects', app, slot);
     await fs.mkdir(root, { recursive: true }); await this.open(seed);
-    const target = { app, comp: this.computer, thread: '', root, slot, owned: true };
-    this.owned.push(target); await this.persistResources();
+    const target = previous || { app, comp: this.computer, thread: '', root, slot, owned: true };
+    if (!previous) { this.owned.push(target); await this.persistResources(); }
     await this.openProject(target);
     if (target.thread) await this.refreshTarget(target);
     target.projectRead = await this.verifyProject(target);
@@ -118,10 +119,15 @@ export class Context {
   async openProject(target) {
     const b = this.b, { app, root } = target;
     await b.click('#pickAgents'); await b.click('#sheet [data-act="projects"]');
+    await b.wait("sheetKind==='computer-files'&&computerFiles?.message!=='正在读取目录…'", '项目目录入口就绪');
     await b.fill('#computerFilePath', root);
     await b.click('#computerFilePathForm button[type="submit"]');
-    await b.wait(`computerFiles?.directory?.path===${attr(root.replaceAll(path.sep, '/'))}&&!computerFiles?.message`, '测试项目目录');
+    const folder = await b.wait(`computerFiles?.error ? {error:computerFiles.message} :
+      computerFiles?.directory?.path===${attr(root.replaceAll(path.sep, '/'))}&&!computerFiles?.message ? {ready:true} : null`, '测试项目目录');
+    if (folder.error) throw new Error(`测试项目目录读取失败：${folder.error}`);
     const previous = await b.read('lastChat?.thread');
+    target.creationRequested = true;
+    await this.persistResources();
     await b.click('[data-computer-project="chat"]');
     const ready = `windowReady&&!navigationPending&&lastChat?.thread&&lastChat.thread!==${attr(previous)}&&currentApp===${attr(app)}`;
     await b.wait(`(${ready})||!!document.querySelector('[data-project-trust="yes"]')`, '项目创建或信任确认');

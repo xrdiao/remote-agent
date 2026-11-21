@@ -44,8 +44,10 @@ export class Browser {
     });
     cdp.on('Network.webSocketFrameSent', event => {
       if (event.response.opcode !== 1) return;
+      const frame = event.response.payloadData;
+      const signature = frame.indexOf('\n');
       let message;
-      try { message = JSON.parse(event.response.payloadData); } catch { return; }
+      try { message = JSON.parse(signature < 0 ? frame : frame.slice(signature + 1)); } catch { return; }
       if (message.t === 'send' && message.submit !== false)
         browser.events.push({ type: 'send', at: Date.now(), sel: message.sel, requestId: message.requestId });
     });
