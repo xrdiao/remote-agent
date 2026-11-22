@@ -2109,14 +2109,9 @@ body.split.fusion #titleProject { font-size: 12px; font-weight: 400; color: var(
 
 body.wide #sheet[data-kind="phone-control"] { width: min(760px, 92vw); }
 .phone-picker, .phone-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
-.phone-target { display: flex; gap: 8px; align-items: center; }
-.phone-target .opt { flex: 1; }
-.phone-tools:not([hidden]) { display: grid; gap: 8px; margin-bottom: 12px; }
-.phone-tools label { display: flex; gap: 8px; align-items: center; }
-.phone-tools input { min-width: 0; flex: 1; }
 .phone-picker label, .phone-text label { display: flex; flex: 1; align-items: center; gap: 8px; }
 .phone-picker select, .phone-text input { min-width: 0; flex: 1; }
-.phone-picker button, .phone-target [data-phone-agent-request], .phone-commands button, .phone-picker select, .phone-text input, .phone-tools input {
+.phone-picker button, .phone-commands button, .phone-picker select, .phone-text input {
   color: var(--fg); background: var(--s2); border: 1px solid var(--line-2); border-radius: 8px; padding: 7px 10px;
   font: inherit;
 }

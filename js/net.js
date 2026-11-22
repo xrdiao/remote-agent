@@ -1452,6 +1452,7 @@ async function connect(resumeLink = null) {
       finishPending(['正在切换窗口…', '正在切换 Agent…']);
       store.set('window', m.id);
       applySelection(m, false);
+      rememberPhoneChat(m);
       if (resumed) liveChatSelection = viewSel;
       selectionReady = m.ready !== false;
       setWindowReady(selectionReady && mode !== 'chat');

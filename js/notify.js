@@ -176,7 +176,7 @@ async function disableNotify() {
 
 function noticeTarget(raw) {
   if (!raw) return null;
-  let win = String(raw), computer = '', windowId = '', threadId = '', project, background = false;
+  let win = String(raw), computer = '', windowId = '', threadId = '', project, background = false, phoneConversation = false;
   if (win.startsWith('{')) {
     try {
       const o = JSON.parse(win);
@@ -186,9 +186,11 @@ function noticeTarget(raw) {
       threadId = o.threadId || '';
       project = o.project;
       background = o.background === true;
+      phoneConversation = o.phoneConversation === true;
     } catch { return null; }
   }
-  return win ? { computer, win, windowId, threadId, ...(project ? { project } : {}), ...(background ? { background } : {}) } : null;
+  return win ? { computer, win, windowId, threadId, ...(project ? { project } : {}), ...(background ? { background } : {}),
+    ...(phoneConversation ? { phoneConversation } : {}) } : null;
 }
 function rememberNotice(raw) {
   const n = noticeTarget(raw);
@@ -212,6 +214,10 @@ function winTargetPending(target) {
 function openWin(id) {
   const parsed = noticeTarget(id);
   const target = parsed && { ...parsed, computer: parsed.computer || currentComputer()?.id || '' };
+  if (target?.phoneConversation) {
+    closeSheet();
+    if (mode !== 'chat') setMode('chat', false);
+  }
   const reuse = mode === 'chat' && currentApp === 'codex' && target && !target.project
     && winTargetReady({ ...target, threadId: undefined });
   const before = currentComputer()?.id;

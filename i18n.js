@@ -6,6 +6,12 @@ const I18N = (() => {
 
   const EN = {
     "互控": "Links",
+    "设备控制": "Device control",
+    "选择被控设备": "Select a target device",
+    "手机": "Phone",
+    "手机控制": "Phone control",
+    "请更新 Android App": "Update the Android app",
+    "手机画面与手动操作": "Phone screen and manual controls",
     "电脑互控": "Computer links",
     "请先从同一个网页入口配对两台电脑。": "Pair two computers from the same web entry first.",
     "由目标电脑运行自己登记的任务，无需安装 Agent。": "The target runs tasks configured on that computer. No agent is required.",
