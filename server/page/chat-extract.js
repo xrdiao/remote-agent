@@ -258,7 +258,7 @@
   const codexHistoryState = (conversation = null, watchItems = true, scopes = codexHistoryScopes(), thread = codexThread()) => {
     const hostId = remoteContext?.app === 'codex' ? remoteContext.host || 'local' : codexChatRows(true).find(row => row.id === thread)?.host || 'local';
     const key = JSON.stringify({ hostId, threadId: thread });
-    let index = null, hasLoadedOldest, nativeReader;
+    let index = null, hasLoadedOldest, nativeReader, nativeTurns;
     const atoms = new Map(), turns = new Map(), queued = new Map();
     for (const scope of scopes) for (const bindings of scope.familyBindings.values()) {
       const source = codexHistoryBinding(scope, bindings.get(key));
@@ -276,17 +276,20 @@
       }
     }
     if (conversation) {
-      nativeReader = (remoteContext?.app === 'codex' ? codexNativeManager() : codexConversationManager(thread, scopes)).threadStore.stateReaders;
+      nativeReader = (remoteContext?.app === 'codex' ? codexNativeManager() : codexConversationManager(thread, scopes))?.threadStore.stateReaders;
       if (conversation.turnHistory?.kind === 'canonical') {
         const history = conversation.turnHistory.history;
+        nativeTurns = history.entitiesByKey;
         index = history.islands.flatMap(island => island.entries).flatMap(({ key }) => {
           const turn = history.entitiesByKey[key];
           return turn?.turnId ? [{ entityKey: key, turnId: turn.turnId }] : [];
         });
         hasLoadedOldest = history.isComplete;
       } else {
-        const { entityKeys } = nativeReader.getLegacyTurnIdentity(conversation);
-        index = conversation.turns.flatMap((turn, n) => turn.turnId ? [{ entityKey: entityKeys[n], turnId: turn.turnId }] : []);
+        const identity = nativeReader?.getLegacyTurnIdentity(conversation);
+        const keys = new Map((index || []).map(turn => [turn.turnId, turn.entityKey]));
+        index = conversation.turns.flatMap((turn, n) => turn.turnId ? [{ entityKey: identity?.entityKeys[n] || keys.get(turn.turnId) || turn.turnId, turnId: turn.turnId }] : []);
+        for (const turn of conversation.turns) if (turn.turnId) turns.set(turn.turnId, turn);
         hasLoadedOldest = conversation.turnsPagination.hasLoadedOldest;
       }
     }
@@ -301,7 +304,7 @@
       return { conversationId: thread, historyEntityKey: turn.entityKey,
         turnId: turn.turnId, turnKey: 'history-content:turn:' + turn.turnId, turnNumber,
         isLatestTurn: n === index.length - 1, turnItemIds: [], metadata: turn,
-        nativeTurn: conversation ? nativeReader.getSubscribedTurn(conversation, turn.entityKey) : turns.get(turn.turnId) };
+        nativeTurn: nativeReader?.getSubscribedTurn(conversation, turn.entityKey) || nativeTurns?.[turn.entityKey] || turns.get(turn.turnId) };
     });
     for (const entry of entries.slice(-2)) for (const scope of scopes) for (const bindings of scope.familyBindings.values()) {
       const source = codexHistoryBinding(scope, bindings.get(entry.historyEntityKey));
@@ -335,7 +338,7 @@
     if (remoteContext?.app === 'devin')
       return { stop: fusionDevinWatch(remoteContext.threadId, changed), refresh() {} };
     if (!remoteContext && devinSurface()) return devinWatch(changed);
-    if (remoteContext?.app === 'codex') {
+    if (remoteContext?.app === 'codex' && codexNativeManager()) {
       const { threadId } = remoteContext, subscribed = new Map();
       let manager, stop;
       const refresh = () => {
@@ -371,11 +374,10 @@
       const state = codexHistoryState(), wanted = new Map();
       if (state.thread) {
         const manager = codexNativeManager();
-        if (manager) {
-          wanted.set('requests:' + manager.hostId + ':' + state.thread, () => manager.addConversationCallback(state.thread, update));
-          for (const [key, source] of codexAsyncQuestionState(state.thread, manager.hostId).sources)
-            wanted.set(key, () => source.subscribe(update));
-        }
+        const host = manager?.hostId || codexRequestHost();
+        if (manager) wanted.set('requests:' + host + ':' + state.thread, () => manager.addConversationCallback(state.thread, update));
+        if (manager || codexConnectedRpc(host, state.scopes)) for (const [key, source] of codexAsyncQuestionState(state.thread, host).sources)
+          wanted.set(key, () => source.subscribe(update));
       }
       for (const [key, source] of state.atoms) wanted.set(key, () => source.subscribe(update));
       for (const scope of state.scopes) if (scope.contextVersionAtom && typeof scope.store?.sub === 'function')
@@ -760,24 +762,29 @@
   const codexHistoryPage = async (before, known = [], details = false) => {
     const scopes = codexHistoryScopes(), thread = codexThread();
     const manager = codexConversationManager(thread, scopes);
-    if (!manager) throw new Error('没有找到 Codex 历史加载入口');
+    const rpc = !manager && codexConnectedRpc(codexRequestHost(), scopes);
+    if (!manager && !rpc) throw new Error('没有找到 Codex 历史加载入口');
     let state;
-    const pagination = manager.pagination, loaded = new Set();
+    const pagination = manager?.pagination, loaded = new Set();
     const read = async () => {
       for (;;) {
-        state = codexHistoryState(manager.getConversation(thread), false, scopes, thread);
+        const conversation = manager ? manager.getConversation(thread) : await codexRpcCall(rpc, 'getConversation', thread);
+        state = codexHistoryState(conversation, false, scopes, thread);
         const page = codexReadPage(state, before, known, details, 160);
         if (!page.missingTurn) return page;
         const entry = page.missingTurn;
         if (loaded.has(entry.turnId)) throw new Error('这段历史尚未载入完整，请稍后重试');
         loaded.add(entry.turnId);
-        await pagination.itemPagination.loadTurnItems(thread, entry.turnId, true);
+        if (pagination) await pagination.itemPagination.loadTurnItems(thread, entry.turnId, true);
+        else await codexRpcCall(rpc, 'loadOlderConversationTurnsPage', thread, { turnId: entry.turnId });
       }
     };
     let page = await read();
     if (!page.items.length && state.hasLoadedOldest === false) {
-      await pagination.conversationTurnsLoads.get(thread)?.promise;
-      await pagination.loadConversationTurns(thread, false, pagination.client.isCloudHost || manager.getConversation(thread).boundedCloudHistory === true ? 'summary' : undefined);
+      if (pagination) {
+        await pagination.conversationTurnsLoads.get(thread)?.promise;
+        await pagination.loadConversationTurns(thread, false, pagination.client.isCloudHost || manager.getConversation(thread).boundedCloudHistory === true ? 'summary' : undefined);
+      } else await codexRpcCall(rpc, 'loadOlderConversationTurnsPage', thread);
       page = await read();
     }
     return page;
@@ -969,6 +976,17 @@
     });
     const thread = devinNodeSessionId(log) || activeThread();
     const messages = devinMessages(thread);
+    const insertAtEvent = (index, item) => {
+      const next = items.findIndex(row => Number(/^acp(\d+)/.exec(row.i)?.[1]) > index);
+      items.splice(next < 0 ? items.length : next, 0, item);
+    };
+    messages.forEach((message, index) => {
+      if (message.kind !== 'plan' && message.kind !== 'subagent') return;
+      const [item] = devinMessageItems([message], 'acp', index);
+      const mounted = items.findIndex(row => row.i === item.i && row.k === item.k);
+      if (mounted < 0) insertAtEvent(index, item);
+      else items[mounted] = { ...items[mounted], ...item };
+    });
     for (const item of items) if (item.k === 'human' && !item.images?.length) {
       const index = /^acp(\d+)$/.exec(item.i)?.[1];
       const message = messages[index];
@@ -981,10 +999,7 @@
     const latest = messages[latestUser], latestId = `acp${latestUser}`;
     if (latest && !devinMessageText(latest.content) && !items.some(item => item.i === latestId)) {
       const [photo] = devinMessageItems([latest], 'acp', latestUser);
-      if (photo?.images?.length) {
-        const next = items.findIndex(item => Number(/^acp(\d+)/.exec(item.i)?.[1]) > latestUser);
-        items.splice(next < 0 ? items.length : next, 0, photo);
-      }
+      if (photo?.images?.length) insertAtEvent(latestUser, photo);
     }
     if (devinSessionRecord(thread)?.status === 'unknown_error') {
       const banner = [...doc.querySelectorAll('[data-slot="banner-icon"]')].map(icon => icon.parentElement)
@@ -1064,9 +1079,7 @@
   const codexReceiptState = (thread = codexThread()) => {
     const scopes = codexHistoryScopes();
     const conversation = codexConversationManager(thread, scopes)?.getConversation(thread);
-    const state = codexHistoryState(conversation, false, scopes, thread);
-    if (!conversation) state.entries = [];
-    return state;
+    return codexHistoryState(conversation, false, scopes, thread);
   };
   const codexReceiptRows = (state = codexReceiptState(), from = -2) => {
     return state.entries.slice(from).flatMap(entry => {
@@ -1179,27 +1192,102 @@
       unit: 'tokens', durationMs,
       rate: app !== 'codex' && !busy && counter != null && durationMs > 0 ? counter / (durationMs / 1000) : null };
   };
-  // Keep native text independent of the desktop's virtualized transcript; DOM rows still own UI actions.
+  const cursorNativeDiff = async result => {
+    const chunks = result?.diff?.chunks;
+    if (chunks?.length) return {
+      add: chunks.reduce((sum, chunk) => sum + chunk.linesAdded, 0),
+      del: chunks.reduce((sum, chunk) => sum + chunk.linesRemoved, 0),
+      diff: chunks.flatMap(chunk => chunk.diffString.split(/\r?\n/).filter(line => /^[+ -]/.test(line))
+        .map(line => [line[0], line.slice(1)])).slice(0, 200),
+    };
+    if (!result?.afterContentId || (!result.beforeContentId && !result.fileWasCreated)) return null;
+    const cache = doc.defaultView.__remoteAgentCursorDiffs ||= new WeakMap();
+    if (cache.has(result)) return cache.get(result);
+    const pending = (async () => {
+      const { data, codeBlocks } = cursorSessionServices();
+      const storage = data._storageService;
+      const [before, after] = await Promise.all([
+        result.beforeContentId ? storage.cursorDiskKVGet(result.beforeContentId) : '', storage.cursorDiskKVGet(result.afterContentId),
+      ]);
+      if (typeof before !== 'string' || typeof after !== 'string') return null;
+      const lines = text => text ? text.replace(/\r\n/g, '\n').replace(/\n$/, '').split('\n') : [];
+      const first = lines(before), second = lines(after);
+      const diff = await codeBlocks.computeLinesDiffWithSemaphore({ first, second,
+        options: { ignoreTrimWhitespace: false, computeMoves: false, maxComputationTimeMs: 2000 } });
+      if (diff.hitTimeout) return null;
+      let add = 0, del = 0;
+      const rows = [];
+      for (const { original, modified } of diff.changes) {
+        const from = original.startLineNumber - 1, to = modified.startLineNumber - 1;
+        const removed = original.endLineNumberExclusive - 1 - from, added = modified.endLineNumberExclusive - 1 - to;
+        del += removed; add += added;
+        if (rows.length >= 200) continue;
+        rows.push(['…', `@@ -${from + 1},${removed} +${to + 1},${added} @@`]);
+        for (const [kind, source, start, count] of [['-', first, from, removed], ['+', second, to, added]])
+          for (let n = start; n < start + count && rows.length < 200; n++) rows.push([kind, source[n]]);
+      }
+      return { add, del, diff: rows };
+    })();
+    cache.set(result, pending);
+    return pending;
+  };
+  const cursorNativeBubble = async message => {
+    const i = message.bubbleId, tool = message.toolFormerData;
+    if (!tool) {
+      const images = cursorMessageImages(message);
+      const at = Number(message.startedAtMs) || Date.parse(message.createdAt || '') || 0;
+      if (message.text?.trim() || images.length) return nativeMarkdownItem(i, message.type === 1 ? 'human' : 'assistant', message.text || '', at, images);
+      return null;
+    }
+    const file = tool.params?.relativeWorkspacePath || tool.params?.targetFile;
+    const kind = /terminal|shell|command/.test(tool.name) ? 'command' : /^edit_file(?:_v\d+)?$/.test(tool.name) ? 'edit' : 'other';
+    let details = {};
+    if (kind === 'command') {
+      if (typeof tool.params?.command === 'string') details.cmd = tool.params.command;
+      if (typeof tool.result?.output === 'string') details.output = tool.result.output.slice(0, 4000);
+    }
+    if (kind === 'edit') details = await cursorNativeDiff(tool.result) || {};
+    return { i, k: 'tool', src: 'cursor', t: tool.params?.commandDescription || tool.params?.command || tool.toolCall?.tool?.value?.description || tool.name || '',
+      kind, execution: tool.name !== 'ask_question' && (kind !== 'edit' || !!details.diff?.length), ...details,
+      ...(file ? { f: file } : {}), done: tool.status === 'completed' || tool.status === 'cancelled',
+      ...(tool.error || tool.status === 'error' ? { keep: true } : {}) };
+  };
+  const cursorStructuredItems = async (thread, data) => {
+    const rows = [], todos = data.todos || [];
+    if (todos.length) rows.push({ i: thread + ':tasks', k: 'tasks', total: todos.length,
+      done: todos.filter(todo => todo.status === 'completed').length,
+      items: todos.map(todo => ({ t: todo.content, status: todo.status === 'completed' ? 'done' : todo.status })) });
+    if (data.subagentComposerIds?.length) {
+      const entries = await Promise.all(data.subagentComposerIds.map(async id => {
+        const peek = await cursorSessionServices().data.composerDataHandleManager.peekComposerData(id);
+        const child = peek?.source === 'memory' ? peek.handle.data : peek?.data;
+        return child && !child.isArchived ? { id, title: child.name || id } : null;
+      }));
+      const agents = entries.filter(Boolean);
+      if (agents.length) rows.push({ i: thread + ':subagents', k: 'tool', t: '子 Agent', agents });
+    }
+    return rows;
+  };
+  // The native transcript survives virtualization; mounted DOM rows retain their UI actions.
   const cursorCurrentChat = async (chat, limit) => {
     if (!chat?.thread) return chat;
     const data = cursorSessionServices().data.getComposerDataIfLoaded(chat.thread);
     const headers = data.fullConversationHeadersOnly;
     const positions = new Map(headers.map((header, index) => [header.bubbleId, index]));
     const messages = await cursorMessages(chat.thread, data, headers.slice(-limit));
-    const text = new Map(messages.filter(message => !message.toolFormerData && (message.text?.trim() || cursorMessageImages(message).length)).map(message => {
-      const at = Number(message.startedAtMs) || Date.parse(message.createdAt || '') || 0;
-      return [message.bubbleId, nativeMarkdownItem(message.bubbleId, message.type === 1 ? 'human' : 'assistant', message.text || '', at, cursorMessageImages(message))];
-    }));
+    const rows = await Promise.all(messages.map(cursorNativeBubble));
+    const native = new Map(rows.filter(item => item && (item.k !== 'tool' || item.kind === 'command' || item.kind === 'edit')).map(item => [item.i, item]));
     const existing = new Set(chat.items.map(item => item.i));
-    const missing = [...text.values()].filter(item => !existing.has(item.i));
+    const missing = [...native.values()].filter(item => !existing.has(item.i));
     const items = [];
     let next = 0;
     for (const item of chat.items) {
       const position = positions.get(item.i.split(':think')[0]);
       while (next < missing.length && positions.get(missing[next].i) < position) items.push(missing[next++]);
-      items.push(text.has(item.i) ? { ...item, ...text.get(item.i) } : item);
+      items.push(native.has(item.i) ? { ...item, ...native.get(item.i) } : item);
     }
     items.push(...missing.slice(next));
+    items.push(...await cursorStructuredItems(chat.thread, data));
     return { ...chat, items, performance: nativePerformance('cursor', chat.thread, agentRun('cursor', chat.thread), chat.model, data) };
   };
   const extract = (history = false, knownTurns = [], pageSize = 0, nativeCursor = false) => {
@@ -1409,39 +1497,20 @@
       const headers = data.fullConversationHeadersOnly.slice(Math.max(0, end - limit), end);
       const messages = await cursorMessages(thread, data, headers);
       const pending = new Map(decisions.map(decision => [decision.toolCallId, decision]));
-      for (const message of messages) {
+      const rows = await Promise.all(messages.map(cursorNativeBubble));
+      for (const [index, message] of messages.entries()) {
         const id = message.bubbleId, tool = message.toolFormerData;
-        const at = Number(message.startedAtMs) || Date.parse(message.createdAt || '') || 0;
         if (message.thinking?.text) items.push({ i: id + ':think', k: 'thinking', t: `Thoughts\n${message.thinking.text}`,
           live: !Number.isFinite(message.completedAtMs) && data.status === 'generating' });
-        const images = cursorMessageImages(message);
-        if (!tool && (message.text?.trim() || images.length)) items.push(nativeMarkdownItem(id, message.type === 1 ? 'human' : 'assistant', message.text || '', at, images));
-        if (tool) {
-          const file = tool.params?.relativeWorkspacePath || tool.params?.targetFile;
-          const row = { i: id, k: 'tool', t: tool.params?.commandDescription || tool.params?.command || tool.toolCall?.tool?.value?.description || tool.name || '',
-            kind: /terminal|shell|command/.test(tool.name) ? 'command' : /edit|write|patch/.test(tool.name) ? 'edit' : 'other',
-            execution: tool.name !== 'ask_question' && !/edit|write|patch/.test(tool.name),
-            ...(file ? { f: file } : {}), done: tool.status === 'completed' || tool.status === 'cancelled',
-            ...(tool.error || tool.status === 'error' ? { keep: true } : {}) };
-          if (pending.has(tool.toolCallId) && tool.name !== 'ask_question') {
-            row.approvalId = tool.toolCallId;
-            row.b = ['Run', 'Skip']; row.actions = [tool.toolCallId + ':accept', tool.toolCallId + ':reject'];
-          }
-          items.push(row);
+        const row = rows[index];
+        if (!row) continue;
+        if (tool && pending.has(tool.toolCallId) && tool.name !== 'ask_question') {
+          row.approvalId = tool.toolCallId;
+          row.b = ['Run', 'Skip']; row.actions = [tool.toolCallId + ':accept', tool.toolCallId + ':reject'];
         }
+        items.push(row);
       }
-      const todos = data.todos || [];
-      if (todos.length) items.push({ i: thread + ':tasks', k: 'tasks', total: todos.length,
-        done: todos.filter(todo => todo.status === 'completed').length,
-        items: todos.map(todo => ({ t: todo.content, status: todo.status === 'completed' ? 'done' : todo.status })) });
-      if (data.subagentComposerIds.length) {
-        const agents = await Promise.all(data.subagentComposerIds.map(async id => {
-          const peek = await cursorSessionServices().data.composerDataHandleManager.peekComposerData(id);
-          const child = peek?.source === 'memory' ? peek.handle.data : peek?.data;
-          return child && !child.isArchived ? { id, title: child.name || id } : null;
-        }));
-        items.push({ i: thread + ':subagents', k: 'tool', t: '子 Agent', agents: agents.filter(Boolean) });
-      }
+      items.push(...await cursorStructuredItems(thread, data));
       title = data.name || ''; draft = data.text;
       earlier = end > headers.length;
       before = data.fullConversationHeadersOnly.indexOf(headers[0]);

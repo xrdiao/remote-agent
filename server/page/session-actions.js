@@ -1,4 +1,12 @@
   const nativeValue = value => doc.defaultView.JSON.parse(JSON.stringify(value));
+  const codexConnectedRpc = (host, scopes = codexHistoryScopes()) => {
+    for (const scope of scopes) for (const bindings of scope.familyBindings.values()) {
+      const connection = codexHistoryBinding(scope, bindings.get(host))?.get();
+      if (connection?.status === 'ready' && connection.client?.hostId === host) return connection.client.rpc;
+    }
+    return null;
+  };
+  const codexRpcCall = (client, method, ...args) => doc.defaultView.Reflect.apply(client[method], client, nativeValue(args));
   const cursorSessionInstantiation = () => {
     const props = [...doc.querySelectorAll('.ui-agent-status-dot, .vscode-model-picker__trigger')].flatMap(el => codexFiberProps(el, Infinity))
       .find(p => p.services?.workspace?.instantiationService);
@@ -18,6 +26,7 @@
       data: accessor.get(ids.get('composerDataService')),
       background: accessor.get(ids.get('backgroundComposerService')),
       nativeHost: accessor.get(ids.get('nativeHostService')),
+      get codeBlocks() { return inst.invokeFunction(scope => scope.get(ids.get('composerCodeBlockService'))); },
     }));
   };
   const cursorSessionWorkspaceUris = (current, header, workspace) => {
@@ -31,12 +40,14 @@
   const nativeSessionContext = async (app, id) => {
     if (app === 'codex') {
       const host = remoteContext?.app === 'codex' ? remoteContext.host || 'local' : codexChatRows(true).find(row => row.id === id)?.host || 'local';
-      const manager = codexConversationManager(id, codexHistoryScopes(), host);
-      if (!manager) throw new Error('Codex 原生会话管理器尚未就绪');
-      const conversation = manager.getConversation(id);
-      const thread = conversation || (await manager.readThread(id, { includeTurns: false })).thread;
-      const workspace = manager.getThreadWorkspaceState(id);
-      const roots = workspace?.project?.projectSources || workspace?.applied?.projectSources || conversation?.currentPermissions?.runtimeWorkspaceRoots || [thread.cwd];
+      const scopes = codexHistoryScopes(), manager = codexConversationManager(id, scopes, host);
+      const client = manager || codexConnectedRpc(host, scopes);
+      if (!client) throw new Error('Codex 原生会话连接尚未就绪');
+      const conversation = manager?.getConversation(id);
+      const thread = conversation || (await codexRpcCall(client, 'readThread', id, { includeTurns: false })).thread;
+      const workspace = manager?.getThreadWorkspaceState(id);
+      const permissions = conversation?.currentPermissions || (!manager && codexThreadProjection(id, host, scopes)?.currentPermissions);
+      const roots = workspace?.project?.projectSources || workspace?.applied?.projectSources || permissions?.runtimeWorkspaceRoots || [thread.cwd];
       return { app, threadId: id, host: host === 'local' ? '' : host, cwd: host === 'local' ? localFilePath(thread.cwd) : thread.cwd,
         roots: roots.filter(Boolean).map(root => ({ root: host === 'local' ? localFilePath(root) : root, host: host === 'local' ? '' : host })) };
     }
@@ -248,9 +259,11 @@
     };
     const inspect = async () => {
       if (app === 'codex') {
-        const host = remoteContext?.host || 'local', manager = codexConversationManager(id, codexHistoryScopes(), host);
+        const host = remoteContext?.host || 'local', scopes = codexHistoryScopes();
+        const client = codexConversationManager(id, scopes, host) || codexConnectedRpc(host, scopes);
+        if (!client) throw new Error('Codex 原生会话连接尚未就绪');
         let thread;
-        try { ({ thread } = await manager.readThread(id, { includeTurns: false })); }
+        try { ({ thread } = await codexRpcCall(client, 'readThread', id, { includeTurns: false })); }
         catch (error) {
           if (/thread.*not found|no rollout found|thread.*does not exist/i.test(String(error))) return { exists: false };
           throw error;
@@ -274,8 +287,10 @@
     }
     if (before.running) throw new Error('原生会话仍在运行，请先停止并核对');
     if (app === 'codex') {
-      const manager = codexConversationManager(id, codexHistoryScopes(), remoteContext.host || 'local');
-      await manager.archiveConversation(id, { useAppServerPins: false });
+      const host = remoteContext.host || 'local', scopes = codexHistoryScopes();
+      const client = codexConversationManager(id, scopes, host) || codexConnectedRpc(host, scopes);
+      if (!client) throw new Error('Codex 原生会话连接尚未就绪');
+      await codexRpcCall(client, 'archiveConversation', id, { useAppServerPins: false });
     } else if (app === 'cursor') {
       if (cursorSessionServices().data.allComposersData.allComposers.length <= 1) throw new Error('Cursor 当前只有一个原生会话，清空不能代替删除或归档');
       await nativeSessionAction(app, id, 'delete');
@@ -332,7 +347,7 @@
     });
     if (app === 'codex' && catalog === 'toolDetails') {
       const scopes = codexHistoryScopes(), manager = codexConversationManager(id, scopes);
-      const state = codexHistoryState(manager.getConversation(id), false, scopes, id), tools = new Set(previous);
+      const state = codexHistoryState(manager?.getConversation(id) || null, false, scopes, id), tools = new Set(previous);
       return state.entries.flatMap(entry => {
         const turn = codexStoredTurn(entry, scopes);
         return codexTurnItems(null, { ...entry, turn }, 0, tools, id).filter(item => tools.has(item.i));
@@ -364,15 +379,15 @@
       return true;
     })();
     if (app === 'codex' && catalog === 'connection') return (async () => {
-      const manager = codexConversationManager(id, codexHistoryScopes(), 'local');
-      if (!manager) return null;
-      const role = manager.getStreamRole(id)?.role;
-      const loaded = await manager.sendRequest('thread/loaded/list', nativeValue({}));
+      const scopes = codexHistoryScopes(), manager = codexConversationManager(id, scopes, 'local');
+      const client = manager || codexConnectedRpc('local', scopes);
+      if (!client) return null;
+      const role = manager?.getStreamRole(id)?.role;
+      const loaded = await codexRpcCall(client, 'sendRequest', 'thread/loaded/list', {});
       const local = loaded.data.includes(id);
       if (!local && role !== 'owner' && role !== 'follower') return null;
-      const conversation = manager.getConversation(id)
-        || (await manager.sendRequest('thread/read', nativeValue({ threadId: id, includeTurns: false }))).thread;
-      return { cwd: localFilePath(conversation.cwd), role, loaded: local };
+      const conversation = manager?.getConversation(id) || (await codexRpcCall(client, 'readThread', id, { includeTurns: false })).thread;
+      return { cwd: localFilePath(conversation.cwd), role, loaded: local, visible: codexVisibleThread() === id };
     })();
     if (app === 'codex' && catalog === 'owner') {
       const manager = codexConversationManager(id, codexHistoryScopes(), 'local');
@@ -380,14 +395,16 @@
     }
     if (app === 'codex' && (catalog === 'modelSettings' || catalog === 'modelPage')) return (async () => {
       const context = await nativeSessionContext(app, id);
-      const manager = codexConversationManager(id, codexHistoryScopes(), context.host || 'local');
-      const conversation = manager.getConversation(id);
+      const host = context.host || 'local', scopes = codexHistoryScopes(), manager = codexConversationManager(id, scopes, host);
+      const client = manager || codexConnectedRpc(host, scopes);
+      if (!client) throw new Error('Codex 原生会话连接尚未就绪');
+      if (catalog === 'modelPage') return codexRpcCall(client, 'sendRequest', 'model/list', previous);
+      const conversation = await codexRpcCall(client, 'getConversation', id);
       if (!conversation) throw new Error('Codex 会话尚未加载');
-      if (catalog === 'modelPage') return manager.sendRequest('model/list', nativeValue(previous));
       const settings = conversation.latestThreadSettings || {};
       return { model: settings.model || conversation.latestModel, effort: settings.effort ?? conversation.latestReasoningEffort,
         serviceTier: settings.serviceTier ?? null, modelProvider: settings.modelProvider || conversation.modelProvider,
-        ...(previous === true ? { account: await manager.requestClient.sendRequest('account/read', { refreshToken: false }) } : {}) };
+        ...(previous === true ? { account: await codexRpcCall(manager?.requestClient || client, 'sendRequest', 'account/read', { refreshToken: false }) } : {}) };
     })();
     if (catalog === 'cleanup' || catalog === 'name') return nativeSessionCleanup(app, id);
     if (catalog === 'settings') {
@@ -467,10 +484,13 @@
         const key = JSON.stringify([id, previous]);
         if (!handles.has(key)) handles.set(key, await cursorSessionServices().data.getComposerHandleById(id));
       } else if (app === 'codex') {
-        const manager = codexConversationManager(id, codexHistoryScopes(), context.host || 'local');
-        if (!manager.getConversation(id) || manager.needsResume(id)) {
-          const state = await manager.resumeConversation(nativeValue({ conversationId: id, model: null, reasoningEffort: null,
-            workspaceRoots: context.roots.map(row => row.root), collaborationMode: manager.getConversation(id)?.latestCollaborationMode || null }));
+        const host = context.host || 'local', scopes = codexHistoryScopes(), manager = codexConversationManager(id, scopes, host);
+        const client = manager || codexConnectedRpc(host, scopes);
+        if (!client) throw new Error('Codex 原生会话连接尚未就绪');
+        const conversation = await codexRpcCall(client, 'getConversation', id);
+        if (!conversation || (manager ? manager.needsResume(id) : conversation.resumeState !== 'resumed')) {
+          const state = await codexRpcCall(client, 'resumeConversation', { conversationId: id, model: null, reasoningEffort: null,
+            workspaceRoots: context.roots.map(row => row.root), collaborationMode: conversation?.latestCollaborationMode || null });
           if (state.status === 'not-ready') throw new Error('Codex 原生会话尚未就绪');
         }
       }
@@ -529,8 +549,10 @@
   const nativeSessionAction = async (app, id, action, name) => {
     if (app === 'codex' && action === 'modelSettings') {
       const context = await nativeSessionContext(app, id);
-      const manager = codexConversationManager(id, codexHistoryScopes(), context.host || 'local');
-      await manager.updateThreadSettingsForNextTurn(id, nativeValue(name));
+      const host = context.host || 'local', scopes = codexHistoryScopes();
+      const client = codexConversationManager(id, scopes, host) || codexConnectedRpc(host, scopes);
+      if (!client) throw new Error('Codex 原生会话连接尚未就绪');
+      await codexRpcCall(client, 'updateThreadSettingsForNextTurn', id, name);
       return nativeSessionInfo(app, id, 'modelSettings');
     }
     if (action === 'project' && app === 'cursor') {
@@ -581,10 +603,11 @@
     }
     if (action === 'rename' && remoteContext && app === 'codex') {
       if (remoteContext.app !== app || remoteContext.threadId !== id) throw new Error('请求不属于这个任务 Binding');
-      if (app === 'codex') {
-        const manager = codexNativeManager(), confirmed = await manager.setThreadTitle(id, name, { requireAcknowledgement: true });
-        return { action: 'rename', confirmed, title: manager.getConversation(id)?.title };
-      }
+      const client = codexNativeManager() || codexConnectedRpc(remoteContext.host || 'local');
+      if (!client) throw new Error('Codex 原生会话连接尚未就绪');
+      await codexRpcCall(client, 'setThreadTitle', id, name, { requireAcknowledgement: true });
+      const { thread } = await codexRpcCall(client, 'readThread', id, { includeTurns: false });
+      return { action: 'rename', confirmed: thread.name === name, title: thread.name };
     }
     if (action === 'create') {
       const creations = window.__remoteAgentNativeCreations ||= new Map();

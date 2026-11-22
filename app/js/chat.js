@@ -357,7 +357,11 @@ function renderItem(it, readOnly = false) {
   }
   else if (it.k === 'tool') {
     el.copyText = it.t || '';
-    if (it.kind && (it.src === 'devin' || it.src === 'codex' || it.src === 'opencode')) { renderTool(el, it); el.classList.add('toolrow'); if (it.lazy ? openCodeTools.has(it.i) : it.kind !== 'command' || it.keep) el.classList.add('open'); }
+    if (it.kind && (it.src === 'devin' || it.src === 'codex' || it.src === 'opencode'
+      || it.src === 'cursor' && (it.kind === 'command' || it.kind === 'edit' && it.diff?.length))) {
+      renderTool(el, it); el.classList.add('toolrow');
+      if (it.lazy ? openCodeTools.has(it.i) : it.kind !== 'command' || it.keep) el.classList.add('open');
+    }
     else {
       el.innerHTML = `<div class="txt">${esc(it.t || '')}</div>`;
       if (it.f) el.dataset.file = it.f;

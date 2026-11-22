@@ -379,6 +379,15 @@
   };
   const codexRequestThread = () => remoteContext?.threadId || codexThread();
   const codexNativeManager = () => codexConversationManager(codexRequestThread(), codexHistoryScopes(), remoteContext ? remoteContext.host || 'local' : null);
+  const codexRequestHost = () => remoteContext?.host || codexChatRows(true).find(row => row.id === codexRequestThread())?.host || 'local';
+  const codexThreadProjection = (thread, host, scopes = codexHistoryScopes()) => {
+    const key = JSON.stringify({ hostId: host, threadId: thread });
+    for (const scope of scopes) for (const bindings of scope.familyBindings.values()) {
+      const value = codexHistoryBinding(scope, bindings.get(key))?.get();
+      if (value?.summary && Array.isArray(value.requests) && value.turnsPagination) return value;
+    }
+    return null;
+  };
   const codexAsyncQuestionState = (thread, host = 'local', scopes = codexHistoryScopes()) => {
     const sources = new Map();
     let group;
@@ -403,24 +412,25 @@
     return { sources, questions: [...questions.values()] };
   };
   const codexAsyncQuestionRows = () => {
-    const manager = codexNativeManager();
-    if (!manager) return [];
-    const { questions } = codexAsyncQuestionState(codexRequestThread(), manager.hostId);
+    const thread = codexRequestThread();
+    if (!thread) return [];
+    const { questions } = codexAsyncQuestionState(thread, codexRequestHost());
     return questions.map(state => ({ id: 'async:' + state.question.id, text: state.question.title,
       buttons: [...state.question.options.map(option => ({ label: typeof option === 'string' ? option : option.label, disabled: state.isSubmitting })),
         { label: 'Skip', disabled: state.isSubmitting }, { label: 'Send', disabled: state.isSubmitting || !state.draft?.trim() }],
       fields: [{ label: '回答', value: state.draft || '', type: 'text', options: null }] }));
   };
   const codexOpenQuestion = async id => {
-    const thread = codexRequestThread(), host = codexNativeManager()?.hostId;
+    const thread = codexRequestThread(), host = codexRequestHost();
+    const currentOwner = () => codexNativeManager() || codexConnectedRpc(host);
+    const owner = currentOwner();
     const find = questions => questions.find(state => 'async:' + state.question.id === id);
-    if (!host || !find(codexAsyncQuestionState(thread, host).questions))
+    if (!owner || !find(codexAsyncQuestionState(thread, host).questions))
       throw new Error('这条问题已不在所选会话的待回答列表中');
     if (codexVisibleThread() !== thread && (!await openCodexThread(thread) || !await codexWaitThread(thread, undefined, codexVisibleThread)))
       throw new Error('未能打开问题所属的会话');
     const [native, { scope }] = await Promise.all([codexNativeModule('questions'), codexComposerScope(thread)]);
-    const owner = codexNativeManager();
-    if (codexVisibleThread() !== thread || owner?.hostId !== host) throw new Error('会话已切换，请重新打开问题');
+    if (codexVisibleThread() !== thread || currentOwner() !== owner) throw new Error('会话已切换，请重新打开问题');
     const { questions } = codexAsyncQuestionState(thread, host), question = find(questions);
     if (!question) throw new Error('这条问题已不在所选会话的待回答列表中');
     scope.set(native.groups, host, current => {
@@ -431,7 +441,7 @@
     });
     const started = Date.now();
     do {
-      const visible = codexVisibleThread(), current = codexNativeManager();
+      const visible = codexVisibleThread(), current = currentOwner();
       if (visible && visible !== thread || current && current !== owner) throw new Error('会话已切换，请重新打开问题');
       if (codexRequests().find(row => row.id === id)?.buttons.some(button => button.action)) return;
       await new Promise(resolve => setTimeout(resolve, 16));
@@ -439,28 +449,31 @@
     throw new Error('问题控件尚未就绪，请重试');
   };
   const codexNativeRequests = () => {
-    const thread = codexRequestThread(), conversation = codexNativeManager()?.getConversation(thread);
+    const thread = codexRequestThread();
+    const conversation = codexNativeManager()?.getConversation(thread) || (thread && codexThreadProjection(thread, codexRequestHost()));
     return (conversation?.requests || []).filter(request => request.params?.threadId === thread);
   };
   const codexNativeRequestId = request => (request.method === 'item/tool/requestUserInput' ? 'async:' : 'approval:')
     + JSON.stringify([codexRequestThread(), request.params.turnId, request.id]);
   const codexNativeApproval = (manager, request) => {
+    if (!manager) return null;
     const p = request.params, thread = p.threadId, id = request.id;
+    const reply = (method, value) => codexRpcCall(manager, method, thread, id, value);
     const decisions = p.availableDecisions || ['accept', 'acceptForSession', 'decline', 'cancel'];
     switch (request.method) {
       case 'item/commandExecution/requestApproval':
-        return { decisions, reply: decision => manager.replyWithCommandExecutionApprovalDecision(thread, id, nativeValue(decision)) };
+        return { decisions, reply: decision => reply('replyWithCommandExecutionApprovalDecision', decision) };
       case 'item/fileChange/requestApproval':
-        return { decisions, reply: decision => manager.replyWithFileChangeApprovalDecision(thread, id, nativeValue(decision)) };
+        return { decisions, reply: decision => reply('replyWithFileChangeApprovalDecision', decision) };
       case 'item/permissions/requestApproval':
         if (typeof manager.replyWithPermissionsRequestApprovalResponse !== 'function') return null;
-        return { decisions: ['accept', 'decline'], reply: decision => manager.replyWithPermissionsRequestApprovalResponse(thread, id,
-          nativeValue({ permissions: decision === 'accept' ? p.permissions : {}, scope: 'turn' })) };
+        return { decisions: ['accept', 'decline'], reply: decision => reply('replyWithPermissionsRequestApprovalResponse',
+          { permissions: decision === 'accept' ? p.permissions : {}, scope: 'turn' }) };
       case 'mcpServer/elicitation/request':
         if (p.mode === 'url' || typeof manager.replyWithMcpServerElicitationResponse !== 'function') return null;
         return { decisions: ['accept', 'decline', 'cancel'], schema: p.requestedSchema,
-          reply: (action, fields) => manager.replyWithMcpServerElicitationResponse(thread, id,
-            nativeValue({ action, content: action === 'accept' ? RemoteAgentRules.elicitationFields(p.requestedSchema, fields) : null })) };
+          reply: (action, fields) => reply('replyWithMcpServerElicitationResponse',
+            { action, content: action === 'accept' ? RemoteAgentRules.elicitationFields(p.requestedSchema, fields) : null }) };
       default: return null;
     }
   };
@@ -475,7 +488,7 @@
         fields: questions.map(q => ({ label: questions.length > 1 ? q.question : '回答', value: '', type: q.isSecret ? 'password' : 'text',
           options: !q.isOther && q.options?.length ? q.options.map(o => ({ value: o.label, label: o.label })) : null })) };
     }
-    const approval = codexNativeApproval(codexNativeManager(), request);
+    const approval = codexNativeApproval(codexNativeManager() || codexConnectedRpc(codexRequestHost()), request);
     const title = p.command || p.reason || p.grantReason || p.message || request.method;
     const text = [approval ? title : '请在电脑端处理 · ' + title, p.cwd, p.permissions && JSON.stringify(p.permissions)].filter(Boolean).join('\n');
     if (!approval) return { id, text, buttons: [], fields: [] };
@@ -486,7 +499,8 @@
   const codexNativeRequestAction = async (id, n, fields) => {
     const request = codexNativeRequests().find(request => codexNativeRequestId(request) === id);
     if (!request) throw new Error('这条请求已不在所选会话的待处理列表中');
-    const manager = codexNativeManager(), thread = codexRequestThread(), p = request.params;
+    const manager = codexNativeManager() || codexConnectedRpc(codexRequestHost()), thread = codexRequestThread(), p = request.params;
+    if (!manager) throw new Error('Codex 原生会话连接尚未就绪');
     if (request.method === 'item/tool/requestUserInput') {
       const options = p.questions.length === 1 ? p.questions[0].options || [] : [], skip = n === options.length;
       const answers = Object.fromEntries(p.questions.map((question, index) => {
@@ -494,7 +508,7 @@
         if (!skip && !value.trim()) throw new Error('请完成所有问题后再发送');
         return [question.id, { answers: skip ? [] : [value] }];
       }));
-      await manager.replyWithUserInputResponse(thread, request.id, nativeValue({ answers }));
+      await codexRpcCall(manager, 'replyWithUserInputResponse', thread, request.id, { answers });
     } else {
       const approval = codexNativeApproval(manager, request);
       if (!approval) throw new Error('这个原生请求需要在电脑端处理');
@@ -504,24 +518,34 @@
     }
     return true;
   };
-  const codexConversationChat = (history, pageSize) => {
+  const codexConversationChat = async (history, pageSize) => {
     const thread = remoteContext.threadId, scopes = codexHistoryScopes();
-    const manager = codexConversationManager(thread, scopes, remoteContext.host || 'local'), conversation = manager?.getConversation(thread);
+    const host = remoteContext.host || 'local', manager = codexConversationManager(thread, scopes, host);
+    const client = manager || codexConnectedRpc(host, scopes);
+    if (!client) return null;
+    const conversation = await codexRpcCall(client, 'getConversation', thread);
     if (!conversation) return null;
     const state = codexHistoryState(conversation, false, scopes, thread), page = codexReadPage(state, Infinity, [], history, pageSize);
     if (page.missingTurn && !page.items.length && state.entries.length) return null;
-    const run = agentRun('codex', thread, scopes, manager), settings = conversation.latestThreadSettings || {};
+    const latest = state.entries.at(-1)?.nativeTurn;
+    const run = manager ? agentRun('codex', thread, scopes, manager) : latest?.turnId ? {
+      id: latest.turnId, status: latest.error ? 'error' : ({ inProgress: 'running', complete: 'completed', completed: 'completed',
+        failed: 'error', error: 'error', interrupted: 'stopped', aborted: 'stopped' })[latest.status] || 'unknown',
+      startedAt: Number(latest.turnStartedAtMs) || 0,
+      completedAt: Number.isFinite(latest.durationMs) ? (Number(latest.turnStartedAtMs) || 0) + latest.durationMs : 0,
+    } : null;
+    const settings = conversation.latestThreadSettings || {};
     mergeCodexCapacity(page.items, state, codexVisibleThread() === thread ? codexCapacityItem() : null);
     const model = settings.model || conversation.latestModel || '', effort = settings.effort ?? conversation.latestReasoningEffort;
     const permissions = conversation.currentPermissions;
-    const permission = permissions?.approvalsReviewer === 'auto_review' ? 'Approve for me'
+    const permission = ['auto_review', 'guardian_subagent'].includes(permissions?.approvalsReviewer) ? 'Approve for me'
       : permissions?.sandboxPolicy?.type === 'dangerFullAccess' ? 'Full access' : permissions ? 'Ask for approval' : null;
     const view = codexVisibleThread() === thread ? codexFacts()?.view : null;
     return { thread, title: conversation.title || '', rect: [0, 0, 0, 0], items: page.items, global: [],
       _nativeState: { thread, run, busy: run?.status === 'running', host: remoteContext.host, ...nativeWaiting('codex', thread, manager) },
       busy: run?.status === 'running', readonly: false, queued: codexQueued(false, state), subagents: [],
       changed: codexChanges().count, questions: { codex: true, requests: codexRequestData() },
-      model: agentModelName() || model, effort, permission, mode: conversation.latestCollaborationMode?.mode || null,
+      model: (manager && agentModelName()) || model, effort, permission, mode: conversation.latestCollaborationMode?.mode || null,
       context: null, capacityPresent: page.items.some(item => item.capacity),
       performance: nativePerformance('codex', thread, run, model, conversation),
       _historyEarlier: page.earlier || !!page.missingTurn, historyBefore: page.before, _historyStart: state.entries[0]?.turnNumber,

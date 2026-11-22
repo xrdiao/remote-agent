@@ -856,6 +856,7 @@ export const adapter = {
     }));
     const matches = results.flatMap(row => row.status === 'fulfilled' && row.value ? [row.value] : []);
     return matches.find(row => row.pageId === preferred && row.role === 'owner') || matches.find(row => row.role === 'owner')
+      || matches.find(row => row.pageId === preferred && row.visible) || matches.find(row => row.visible)
       || matches.find(row => row.pageId === preferred) || matches[0] || null;
   },
   async manageBackendThread(id, action, name) {

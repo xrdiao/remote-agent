@@ -6,11 +6,14 @@ import path from 'node:path';
 async function withTools(c, app, inspect) {
   const target = await c.target(app, 'long');
   await c.open(target);
+  const ready = `windowReady&&!navigationPending&&!chatStale&&lastChat?.thread===${attr(target.thread)}`;
+  await c.b.wait(ready, '指定会话的执行记录就绪');
   const shown = await c.b.read('executionRecordsShown()');
   try {
     if (!shown) { await c.b.menu('executionToggle'); await c.b.dismiss(); }
-    await c.b.wait(`windowReady&&!navigationPending&&!chatStale&&lastChat?.thread===${attr(target.thread)}`, '指定会话的执行记录就绪');
-    return await inspect();
+    await c.b.wait(ready, '指定会话的执行记录就绪');
+    await c.b.settled();
+    return await inspect(target);
   } finally {
     if (!shown) { await c.b.menu('executionToggle'); await c.b.dismiss(); }
   }
@@ -37,11 +40,13 @@ export default [
   } },
   { id: 'conversation.tasks', title: '原生任务清单、完成进度及折叠状态', refs: ['F07', 'F18'], mode: 'read', apps: true, async run(c, app) {
     const target = await c.target(app); await c.open(target);
-    const task = await c.b.read("lastChat.items.findLast(item=>item.k==='tasks')||null");
+    const task = await c.b.read(`lastChat?.thread===${attr(target.thread)}&&lastChat.items.findLast(item=>item.k==='tasks')||null`);
     if (!task) throw new Unavailable('当前样本没有原生任务清单，需登记含任务的 A 样本');
     c.equal(task.done, task.items.filter(item => item.status === 'done').length, '进度与任务状态一致');
     c.equal(task.total, task.items.length, '任务总数与清单一致');
-    const selector = '#items details' + by('data-task', task.i), original = await c.b.read(`document.querySelector(${attr(selector)}).open`);
+    const selector = '#items details' + by('data-task', task.i);
+    await c.b.wait(`!!document.querySelector(${attr(selector)})`, '原生任务清单已渲染');
+    const original = await c.b.read(`document.querySelector(${attr(selector)}).open`);
     try {
       if (!original) await c.b.click(selector + '>summary');
       c.equal(await c.b.read(`document.querySelector(${attr(selector)}).querySelectorAll('.tlist>li').length`), task.total, '展开显示全部任务项');
@@ -51,21 +56,23 @@ export default [
     return { done: task.done, total: task.total };
   } },
   { id: 'conversation.subtasks', title: '子 Agent 执行内容与父会话归属', refs: ['F07', 'F18'], mode: 'read', apps: true, async run(c, app) {
-    return withTools(c, app, async () => {
-      const parent = await c.b.read('lastChat.thread');
-      let tool = await c.b.read("lastChat.items.find(item=>item.children?.length||item.agents?.length||item.childId)||null");
+    return withTools(c, app, async target => {
+      const parent = target.thread;
+      const child = `lastChat?.thread===${attr(parent)}&&lastChat.items.find(item=>item.children?.length||item.agents?.length||item.childId)||null`;
+      let tool = await c.b.read(child);
       while (!tool && await c.b.has('#older')) {
-        await c.b.click('#older'); await c.b.wait('!historyRequest&&!historyRendering', '查找原生子任务历史页');
-        tool = await c.b.read("lastChat.items.find(item=>item.children?.length||item.agents?.length||item.childId)||null");
+        await c.b.click('#older');
+        await c.b.wait(`lastChat?.thread===${attr(parent)}&&!historyRequest&&!historyRendering`, '查找原生子任务历史页');
+        tool = await c.b.read(child);
       }
       if (!tool) throw new Unavailable('当前样本没有子 Agent，需登记包含子任务的 long 样本');
       const row = '#items ' + by('data-i', tool.i);
       if (tool.agents?.length && !tool.children?.length) {
         try {
           await c.b.click(row + ' [data-codex-agent]');
-          await c.b.wait(`lastChat.thread===${attr(tool.agents[0].id)}&&!chatStale`, '原生子会话正文');
-          c.check(await c.b.read('lastChat.items.length>0'), '子会话确有执行内容');
-        } finally { await c.open(await c.target(app, 'long')); }
+          await c.b.wait(`windowReady&&lastChat?.thread===${attr(tool.agents[0].id)}&&!chatStale`, '原生子会话正文');
+          c.check(await c.b.read(`lastChat?.thread===${attr(tool.agents[0].id)}&&lastChat.items.length>0`), '子会话确有执行内容');
+        } finally { await c.open(target); }
       } else {
         if (tool.lazy && !tool.details) await c.b.click(row + ' [data-ttoggle]');
         await c.b.wait(`document.querySelector(${attr(row)})?.querySelector('.taskChildren details .msg')`, '原生子 Agent 执行内容');
@@ -145,22 +152,35 @@ export default [
   } },
   { id: 'conversation.details', title: '工具与文件差异实际展开和收起', refs: ['F07', 'F18', 'R08'], mode: 'read', apps: true, async run(c, app) {
     return withTools(c, app, async () => {
-    const selector = '#items [data-ttoggle]';
-    if (!await c.b.has(selector)) throw new Unavailable('当前首屏没有可展开的工具，需要含工具的 long 会话');
-    const before = await c.b.read("(()=>{const e=document.querySelector('#items [data-ttoggle]').closest('[data-i]');return{id:e.dataset.i,open:e.classList.contains('open')}})()");
-    const row = '#items ' + by('data-i', before.id), toggle = row + ' [data-ttoggle] .chev';
-    try {
-      if (before.open) await c.b.click(toggle);
-      c.check(await c.b.read(`!document.querySelector(${attr(row)}).classList.contains('open')`), '指定工具确实处于收起状态');
-      await c.b.click(toggle);
-      await c.b.wait(`document.querySelector(${attr(row)}).classList.contains('open')&&document.querySelector(${attr(row + ' .tcmd, ' + row + ' .tdiff')})?.textContent.trim().length>0`, '指定工具详情实际加载');
-      c.check(await c.b.has(row + ' .tcmd, ' + row + ' .tdiff'), '指定工具展开后的正文可见');
-      await c.b.click(toggle);
-      c.check(await c.b.read(`!document.querySelector(${attr(row)}).classList.contains('open')`), '指定工具可再次收起');
-    } finally {
-      if (await c.b.read(`document.querySelector(${attr(row)}).classList.contains('open')`) !== before.open) await c.b.click(toggle);
-    }
-    return { item: before.id };
+      const tools = await c.b.read(`(() => {
+        const found = new Map();
+        for (const item of lastChat?.items || []) {
+          const selector = '#items [data-i="'+CSS.escape(item.i)+'"]';
+          const expandable = item.kind==='command'&&(item.lazy||item.cmd||item.output)
+            || item.kind==='edit'&&(item.lazy||item.diff?.length||item.output);
+          if (expandable && !found.has(item.kind) && document.querySelector(selector+' [data-ttoggle] .chev'))
+            found.set(item.kind, {id:item.i,kind:item.kind,row:selector});
+        }
+        return [...found.values()];
+      })()`);
+      if (!tools.length) throw new Unavailable('当前首屏没有可展开的命令或差异，需要含对应工具的 long 会话');
+      for (const { row } of tools) {
+        const toggle = row + ' [data-ttoggle] .chev';
+        const details = row + ' .tcmd, ' + row + ' .tdiff', open = `document.querySelector(${attr(row)})?.classList.contains('open')`;
+        const initial = await c.b.wait(`(() => {const row=document.querySelector(${attr(row)});return row&&{open:row.classList.contains('open')};})()`, '指定工具行已渲染');
+        try {
+          if (initial.open) await c.b.click(toggle);
+          c.check(await c.b.wait(`${open}===false`, '指定工具收起'), '指定工具确实处于收起状态');
+          await c.b.click(toggle);
+          await c.b.wait(`${open}&&[...document.querySelectorAll(${attr(details)})].some(el=>el.textContent.trim())`, '指定工具详情实际加载');
+          c.check(await c.b.has(details), '指定工具展开后的正文可见');
+          await c.b.click(toggle);
+          c.check(await c.b.wait(`${open}===false`, '指定工具再次收起'), '指定工具可再次收起');
+        } finally {
+          if (await c.b.has(toggle) && await c.b.read(open) !== initial.open) await c.b.click(toggle);
+        }
+      }
+      return { items: tools.map(({ id, kind }) => ({ id, kind })) };
     });
   } },
   { id: 'conversation.layout', title: '横竖屏工具与输入区域不越界', refs: ['F07', 'F15', 'R03', 'R08'], mode: 'read', apps: true, async run(c, app) {

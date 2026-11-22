@@ -5,7 +5,7 @@ import { Unavailable } from '../browser.mjs';
 import { Cdp } from '../../../server/cdp.mjs';
 import { codexWindows } from '../../../server/windows.mjs';
 import { CODEX_CDP_URL } from '../../../server/config.mjs';
-import { PAGE_SRC, helpersCall } from '../../../server/page/build.mjs';
+import { helpersCall } from '../../../server/page/build.mjs';
 import { CodexClient } from '../../../server/codex/client.mjs';
 
 export default [
@@ -18,14 +18,16 @@ export default [
     const original = await native.evaluate(helpersCall('codexThread()'));
     try {
       await c.b.home();
-      const prefix = PAGE_SRC.slice(0, PAGE_SRC.lastIndexOf('  return { historyAtStart'));
-      const owner = await native.evaluate(prefix + `return (async()=>{
-        const manager=codexConversationManager(${attr(target.thread)},codexHistoryScopes(),'local');
-        await manager.resumeConversation(nativeValue({conversationId:${attr(target.thread)},model:null,reasoningEffort:null,workspaceRoots:[${attr(target.root)}],collaborationMode:null}));
-        return nativeSessionInfo('codex',${attr(target.thread)},'connection');
-      })();})()`);
+      c.check(await native.evaluate(helpersCall(`openCodexThread(${attr(target.thread)})`)), '在原生桌面打开本轮测试会话');
+      c.check(await native.evaluate(helpersCall(`codexWaitThread(${attr(target.thread)}, 10000)`)), '桌面已切换到本轮测试会话');
+      const connection = helpersCall(`nativeSessionInfo('codex',${attr(target.thread)},'connection')`);
+      const owner = await c.b.wait(async () => {
+        const result = await native.evaluate(connection);
+        return result?.loaded && result;
+      }, '原生 app-server 加载测试会话');
       c.check(owner?.loaded, '原生 app-server 确实已加载该测试会话');
       await c.open(target);
+      c.check(await c.b.read(`viewSel.split('|')[1]===${attr(page.pageId)}`), '配对页绑定到实际桌面写入窗口');
       const marker = c.marker + '-WRITER', receipt = await c.send(target, `只回复 ${marker}，不要读写文件或运行工具。`);
       c.equal(receipt.pending, 0, '桌面持有时手机收到确定发送回执');
       c.equal(receipt.draftLength, 0, '发送成功清空手机草稿');
@@ -51,7 +53,8 @@ export default [
       await c.b.dialog(title, () => c.b.click('#sheet [data-agent-action="rename"]'));
       await c.b.wait(`ovRecs().some(row=>row.app==='codex'&&row.threadId===${attr(target.thread)}&&row.title===${attr(title)})`, '桌面写入者重命名回执');
       c.check((await c.overview()).sessions.some(row => row.threadId === target.thread && row.title === title), '重命名到达实际桌面写入者');
-      return { thread: target.thread, nativeLoaded: owner.loaded, role: owner.role };
+      c.check((await native.evaluate(connection))?.loaded, '原生桌面在发送和重命名后仍持有会话');
+      return { thread: target.thread, window: page.pageId, nativeLoaded: owner.loaded, role: owner.role };
     } finally {
       if (original && await native.evaluate(helpersCall('codexThread()')) !== original) await native.evaluate(helpersCall(`openCodexThread(${attr(original)})`));
       native.close();
