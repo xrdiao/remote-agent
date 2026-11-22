@@ -24,6 +24,7 @@ import { uploadDocument, imageTypes } from '../../lib/shared-rules.mjs';
 import { localFilePath } from '../../lib/platform.mjs';
 import { relayAutostart } from '../autostart.mjs';
 import { managePeerTasks, receivePeerTask, receivePeerWorkspace } from '../peer/api.mjs';
+import { phoneTargets, phoneTicket } from '../phone/control.mjs';
 
 // A device is usable once paired and, when 2FA asks for it, re-verified.
 function deviceFor(req) {
@@ -169,6 +170,12 @@ export async function handleApi(req, res, route) {
     return json(req, res, 200, { ok: true });
   }
   if (needsTotp(device)) return json(req, res, 401, { needTotp: true, error: '需要二次验证' });
+  if (route === '/api/phone' && req.method === 'GET') return json(req, res, 200, { phones: phoneTargets(device.id) });
+  if (route === '/api/phone' && req.method === 'POST') {
+    const token = phoneTicket(device, await readJson(req));
+    return token ? json(req, res, 200, { ticket: token })
+      : json(req, res, 409, { error: '目标手机尚未就绪或正在接受控制' });
+  }
   if (route === '/api/peers' || route.startsWith('/api/peers/')) return managePeerTasks(req, res, route, () => {
     const paired = findDevice(bearer(req));
     return paired?.id === device.id && !needsTotp(paired);

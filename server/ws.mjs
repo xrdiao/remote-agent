@@ -14,6 +14,7 @@ import { lastSelection } from '../lib/auth.mjs';
 import { cdpRead } from './cdp.mjs';
 import { beginOperation, withOperation, subscribeOperations } from './operations.mjs';
 import { configureNativeRetry } from './native-windows.mjs';
+import { phoneWss } from './phone/control.mjs';
 
 const sameWindow = (session, msg) => !msg.sel || msg.sel.split('|', 2).join('|') === session.selectionKey().split('|', 2).join('|');
 const navigationMessage = msg => ROUTES[msg.t]?.navigation === true;
@@ -26,6 +27,7 @@ const resumableBinding = session => session.mode === 'terminal'
 
 export function attachWss(server) {
 const voice = voiceWss();
+const phone = phoneWss();
 const wss = new WebSocketServer({
   noServer: true,
   maxPayload: 4 << 20,
@@ -34,11 +36,11 @@ const wss = new WebSocketServer({
 
 server.on('upgrade', (req, socket, head) => {
   const url = new URL(req.url, 'http://x');
-  if (!['/ws', '/voice'].includes(url.pathname) || !originAllowed(req)) {
+  if (!['/ws', '/voice', '/phone'].includes(url.pathname) || !originAllowed(req)) {
     socket.write('HTTP/1.1 403 Forbidden\r\n\r\n');
     return socket.destroy();
   }
-  const target = url.pathname === '/voice' ? voice : wss;
+  const target = url.pathname === '/phone' ? phone : url.pathname === '/voice' ? voice : wss;
   target.handleUpgrade(req, socket, head, ws => target.emit('connection', ws, req));
 });
 

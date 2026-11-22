@@ -39,6 +39,7 @@ import com.google.zxing.integration.android.IntentIntegrator;
 import com.google.zxing.integration.android.IntentResult;
 import com.google.zxing.client.android.Intents;
 
+import org.json.JSONException;
 import org.json.JSONObject;
 
 import java.io.File;
@@ -399,6 +400,18 @@ public class MainActivity extends Activity {
     }
 
     private class Bridge {
+        @JavascriptInterface public void openPhoneControl(String config) {
+            if (config == null || config.length() > 4096) return;
+            runOnUiThread(() -> {
+                if (web == null || web.getUrl() == null || !sameOrigin(Uri.parse(web.getUrl()), appUrl())) return;
+                try {
+                    JSONObject value = new JSONObject(config);
+                    value.put("app", appUrl());
+                    startActivity(new Intent(MainActivity.this, PhoneControlActivity.class)
+                            .putExtra(PhoneControlActivity.CONFIG, value.toString()));
+                } catch (JSONException ignored) {}
+            });
+        }
         // ---- the phone's own copy of every session (app-private SQLite, not WebView storage) ----
         @JavascriptInterface
         public String histGet(String k) { return hist().get(k); }

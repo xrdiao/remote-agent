@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="phone_accessibility_name">Remote Agent phone control</string>
+    <string name="phone_accessibility_description">Shares available controls and executes input only during a remote session you accept on this phone.</string>
+</resources>
