@@ -8,7 +8,7 @@ function finishModelPick(m) {
   modelSwitchRequest = null;
   if (m.sel !== viewSel) return;
   if (m.kind === 'fast') {
-    $('sheet').querySelectorAll('[data-fast]').forEach(button => { button.disabled = false; button.removeAttribute('aria-busy'); button.querySelector('[data-fast-pending]')?.remove(); });
+    $('sheet').querySelectorAll('[data-fast], [data-speed-id]').forEach(button => { button.disabled = false; button.removeAttribute('aria-busy'); button.querySelector('[data-fast-pending]')?.remove(); });
     return;
   }
   if (m.kind === 'permission' && currentApp === 'opencode') {
@@ -716,7 +716,7 @@ $('title').onclick = () => {
   send({ t: 'windows' }); showWindows();
 };
 
-const MENU_TITLE = { effort: '选择思考强度', mode: '选择模式', model: '选择模型', history: '历史对话', permission: '权限', 'codex-run': '执行位置', 'codex-chat': '会话操作', 'fusion-lead': 'Fusion Lead', 'fusion-effort': 'Fusion Effort', 'fusion-sidekick': 'Fusion Sidekick' };
+const MENU_TITLE = { effort: '选择思考强度', fast: '选择速度', mode: '选择模式', model: '选择模型', history: '历史对话', permission: '权限', 'codex-run': '执行位置', 'codex-chat': '会话操作', 'fusion-lead': 'Fusion Lead', 'fusion-effort': 'Fusion Effort', 'fusion-sidekick': 'Fusion Sidekick' };
 const PERM_LABEL = {
   'Ask for approval': ['每次询问', '改外部文件和上网前都会询问'],
   'Approve for me': ['代为批准', '只在可能不安全时询问'],
@@ -760,7 +760,7 @@ function requestMenu(kind, loadingMsg) {
     const state = capabilityState(kind);
     if (!state.available) return showMenuError(kind, state.reason);
   }
-  const cached = menuCache.get(menuCacheKey(kind));
+  const cached = currentApp === 'codex' && ['permission', 'fast'].includes(kind) ? null : menuCache.get(menuCacheKey(kind));
   if (cached) {
     const localNavigation = currentApp === 'codex' && sheetKind === 'menu'
       && ['model', 'effort'].includes(menuSheetKind) && ['model', 'effort'].includes(kind) && menuSheetKind !== kind;
@@ -782,7 +782,7 @@ function showMenuError(kind, message) {
   status(message, false);
 }
 function showMenu(kind, items, max, fusion, fast, model, refreshing, pricing) {
-  finishPending(['读取思考强度…', '读取权限…', '读取模式列表…', '读取模型列表…', '读取历史对话…', '设置中…']);
+  finishPending(['读取思考强度…', '读取权限…', '读取模式列表…', '读取模型列表…', '读取历史对话…', '读取速度…', '设置中…']);
   menuSheetKind = kind;
   const picking = /^fusion-(lead|effort|sidekick)$/.test(String(kind || ''));
   if (kind === 'effort' || kind === 'fusion-effort') items = sortedEfforts(items || []);
@@ -793,18 +793,27 @@ function showMenu(kind, items, max, fusion, fast, model, refreshing, pricing) {
   const part = picking ? kind.slice(7) : '';
   const rows = (items || []).map(it => {
     const perm = kind === 'permission' ? PERM_LABEL[it.label] : null;
+    const speedOption = currentApp === 'codex' && kind === 'fast';
+    const detail = speedOption ? it.description : it.desc && modeDesc(it);
     const effort = kind === 'effort' ? { low: '低', medium: '中', high: '高', xhigh: '很高', ultra: '最高', max: '最大', 'extra high': '很高' }[it.label.toLowerCase()] : '';
     const shown = perm ? `${esc(perm[0])}<span class="sub">${esc(perm[1])}</span>` : effort ? `${esc(effort)} · ${esc(it.label)}` : esc(it.label);
     const pick = picking
       ? `<button class="opt ${it.checked ? 'cur' : ''}" data-fusion-pick="${esc(part)}" data-label="${esc(it.label)}"><span class="lbl">${esc(it.label)}${modelPricingHtml(it.pricing, it.checked)}</span></button>`
-      : `<button class="opt ${it.checked ? 'cur' : ''}" data-kind="${kind}" data-label="${esc(it.label)}"${currentApp === 'codex' && kind === 'model' ? ` data-model-id="${esc(it.id)}"` : ''}><span class="lbl">${shown}${it.desc ? `<span class="sub">${esc(modeDesc(it))}</span>` : ''}${modelPricingHtml(it.pricing, it.checked)}</span>${it.label === 'Bypass Permissions' ? '<span class="tag" style="color:var(--warn)">⚠</span>' : ''}</button>`;
+      : `<button class="opt ${it.checked ? 'cur' : ''}" data-kind="${kind}" data-label="${esc(it.label)}"${it.disabled ? ' disabled' : ''}${speedOption ? ` data-speed-id="${esc(it.id ?? '')}"` : ''}${currentApp === 'codex' && kind === 'model' ? ` data-model-id="${esc(it.id)}"` : ''}><span class="lbl">${shown}${detail ? `<span class="sub">${esc(detail)}</span>` : ''}${modelPricingHtml(it.pricing, it.checked)}</span>${it.label === 'Bypass Permissions' ? '<span class="tag" style="color:var(--warn)">⚠</span>' : ''}</button>`;
     return it.params ? `<div class="optRow">${pick}<button class="paramBtn" data-params="${esc(it.id)}" data-plabel="${esc(it.label)}">参数</button></div>` : pick;
   }).join('');
   const agentRow = '';
-  const fastRow = supportsCapability('fast') && fast && !fusion ? `<button class="opt" data-fast="${fast.on ? 'off' : 'on'}" data-fast-menu="${kind}"><span class="lbl">Fast 模式${fast.description ? `<span class="sub">${esc(fast.description)}</span>` : ''}</span><span class="switch ${fast.on ? 'on' : ''}"></span></button>` : '';
+  const speed = currentApp === 'codex' ? fast?.items : null;
+  const selectedSpeed = speed?.find(row => row.checked)?.label;
+  const fastRow = supportsCapability('fast') && fast && !fusion && kind !== 'fast'
+    ? speed ? `<button class="opt" data-speed-open><span class="lbl">速度${selectedSpeed ? `<span class="sub">${esc(selectedSpeed)}</span>` : ''}</span></button>`
+      : `<button class="opt" data-fast="${fast.on ? 'off' : 'on'}" data-fast-menu="${kind}"><span class="lbl">Fast 模式${fast.description ? `<span class="sub">${esc(fast.description)}</span>` : ''}</span><span class="switch ${fast.on ? 'on' : ''}"></span></button>`
+    : '';
   const effortState = capabilityState('effort');
   const effortEntry = kind === 'model' && !fusion && supportsCapability('effort') ? `<button class="opt" data-effort-open ${effortState.available ? '' : 'disabled'}><span class="lbl">思考强度<span class="sub">${esc(effortState.reason || lastChat?.effort || '')}</span></span></button>` : '';
-  const navigation = picking ? '<button class="opt" data-model-back>← 返回模型配置</button>' : kind === 'effort' ? `<button class="opt" data-model-back>← 返回模型列表</button><p>${esc(model || lastChat?.model || '')}</p>${!items?.length ? '<p class="hint">这个模型没有可选的思考强度。</p>' : ''}` : '';
+  const navigation = picking ? '<button class="opt" data-model-back>← 返回模型配置</button>'
+    : kind === 'fast' ? '<button class="opt" data-model-back>← 返回模型列表</button>'
+    : kind === 'effort' ? `<button class="opt" data-model-back>← 返回模型列表</button><p>${esc(model || lastChat?.model || '')}</p>${!items?.length ? '<p class="hint">这个模型没有可选的思考强度。</p>' : ''}` : '';
   const done = kind === 'effort' && currentApp !== 'cursor' ? '<button class="opt" data-model-done>完成</button>' : '';
   const priceSummary = kind === 'effort' && pricing && !items?.length ? `<div class="hint">${modelPricingHtml(pricing, true)}</div>` : '';
   openSheet('menu', `<h3>${MENU_TITLE[kind] || ''}${refreshing ? ' <span class="hint">更新中…</span>' : ''}</h3>` + navigation + agentRow + (picking ? '' : fusionBlock(fusion)) + effortEntry + fastRow + maxRow + rows + priceSummary + done);
@@ -1108,12 +1117,14 @@ function fmtTok(n) {
 function buildPerfPanel(panel, info) {
   const row = (label, val) => '<div class="perf-row"><span class="perf-key">' + label + '</span><span class="perf-val">' + esc(val) + '</span></div>';
   const tokens = info.tokens;
+  const cacheRate = info.source === 'codex' && Number.isFinite(tokens?.input) && tokens.input > 0
+    && Number.isFinite(tokens.cacheRead) ? Math.round(tokens.cacheRead / tokens.input * 1000) / 10 : info.cacheRate;
   const token = value => value == null ? info.busy ? '待返回' : '—' : fmtTok(value);
   panel.innerHTML = row(info.label, info.speed) + (info.interval ? row('统计区间', fmtDuration(info.intervalMs)) : '')
     + row('耗时', fmtDuration(info.durationMs))
     + row('输入 token', token(tokens?.input)) + row('输出 token', token(tokens?.output))
     + row('推理 token', token(tokens?.reasoning)) + row('缓存读取 token', token(tokens?.cacheRead)) + row('缓存写入 token', token(tokens?.cacheWrite))
-    + row('缓存命中率', info.cacheRate == null ? info.busy ? '待返回' : '—' : info.cacheRate + '%')
+    + row('缓存命中率', cacheRate == null ? info.busy ? '待返回' : '—' : cacheRate + '%')
     + row('模型', info.model || '—');
 }
 function renderPerfChip(info) {
@@ -1400,9 +1411,10 @@ function showMainMenu() {
     ? `<button class="opt" data-act="appUpdate"><span class="lbl">更新安卓 App（v${esc(appVersion)} → v${esc(apkUpdate())}）</span><span class="tag">新</span></button>`
     : `<button class="opt" data-act="appUpdate"><span class="lbl">检查 App 更新（当前 v${esc(appVersion)}）</span></button>`;
   const appName = currentAppName;
+  const permission = lastChat?.permission || (currentApp === 'devin' ? lastChat?.mode : null);
   const modelItems = `
     ${currentApp === 'cursor' && lastChat?.mode ? `<button class="opt" data-act="mode"><span class="lbl">${I18N.tr('模式')}<span class="sub">${esc(lastChat.mode === 'Bypass Permissions' ? '⚠ 绕过权限' : lastChat.mode)}</span></span></button>` : ''}
-    ${lastChat?.permission || (currentApp === 'devin' && lastChat?.mode) ? `<button class="opt" data-act="permission"><span class="lbl">权限模式<span class="sub">${esc(lastChat.permission || lastChat.mode)}</span></span></button>` : ''}
+    ${permission || currentApp === 'codex' && windowReady ? `<button class="opt" data-act="permission"><span class="lbl">权限模式${permission ? `<span class="sub">${esc(permission)}</span>` : ''}</span></button>` : ''}
     <button class="opt" data-act="screen"><span class="lbl">画面<span class="sub">查看绘图与仿真窗口</span></span></button>
     ${currentApp === 'codex' ? '<button class="opt" data-act="codexRetryMenu"><span class="lbl">Codex 自动重试<span class="sub">' + (codexAutoRetryEnabled() ? `已开启 · 最多 ${codexAutoRetryCount()} 次` : '已关闭') + '</span></span><span class="tag">›</span></button>' : ''}
     ${supportsCapability('settings') ? '<button class="opt" data-act="settings"><span class="lbl">设置</span></button>' : ''}
