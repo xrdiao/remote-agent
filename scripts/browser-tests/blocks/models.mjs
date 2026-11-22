@@ -52,20 +52,30 @@ export default [
     }
     return evidence;
   } },
-  { id: 'models.codex-menu', title: 'Codex 模型菜单和 Fast 往返', refs: ['F08', 'W04'], mode: 'write', apps: ['codex'], async run(c, app) {
+  { id: 'models.codex-menu', title: 'Codex 模型菜单和原生速度档位往返', refs: ['F08', 'W04'], mode: 'write', apps: ['codex'], async run(c, app) {
     const b = c.b;
     await c.open(await c.target(app, 'models', true));
     const choices = await c.menu('model');
     c.check(choices.some(row => row.checked), '模型菜单显示当前模型');
-    if (!await b.has('#sheet [data-fast]')) throw new Unavailable('当前模型没有 Fast 档位，需要提供支持 Fast 的会话');
-    const original = await b.read("document.querySelector('#sheet [data-fast]').dataset.fast === 'off'");
     let menuRequests = 0;
     const previous = b.cdp.handlers.get('Network.webSocketFrameSent');
     b.cdp.on('Network.webSocketFrameSent', event => {
       previous?.(event);
       if (event.response.opcode !== 1) return;
-      try { const message = JSON.parse(event.response.payloadData); if (message.t === 'openMenu') menuRequests++; } catch {}
+      const frame = event.response.payloadData;
+      try { const message = JSON.parse(frame.slice(frame.indexOf('\n') + 1)); if (message.t === 'openMenu') menuRequests++; } catch {}
     });
+    const currentSpeed = () => b.read("document.querySelector('#sheet [data-speed-id].cur')?.dataset.speedId ?? null");
+    const openSpeeds = async () => {
+      await b.click('#sheet [data-speed-open]');
+      await b.wait("menuSheetKind==='fast'&&!menuPending&&!!document.querySelector('#sheet [data-speed-id]')", '原生速度菜单');
+      return b.read("[...document.querySelectorAll('#sheet [data-speed-id]:not(:disabled)')].map(row=>({id:row.dataset.speedId,label:row.dataset.label}))");
+    };
+    const pickSpeed = async id => {
+      await b.click('#sheet ' + by('data-speed-id', id));
+      await b.wait(`!modelSwitchRequest&&document.querySelector('#sheet [data-speed-id].cur')?.dataset.speedId===${attr(id)}`, '速度设置和原生回读');
+    };
+    let original = null, speeds;
     try {
       await b.click('#sheet [data-effort-open]');
       await b.wait("menuSheetKind==='effort'&&!menuPending", '思考强度菜单');
@@ -73,22 +83,24 @@ export default [
       await b.click('#sheet [data-model-back]');
       await b.wait("menuSheetKind==='model'&&!menuPending", '返回模型菜单');
       c.equal(menuRequests, 0, '模型与强度之间切换不重复请求');
-      for (const on of [!original, original]) {
-        await b.click('#sheet [data-fast]');
-        await b.wait('!modelSwitchRequest', 'Fast 设置回执');
-        c.equal(await b.read("document.querySelector('#sheet [data-fast]').dataset.fast === 'off'"), on, 'Fast 状态更新');
+      if (!await b.has('#sheet [data-speed-open]')) throw new Unavailable('当前模型没有额外可用的速度档位');
+      speeds = await openSpeeds();
+      original = await currentSpeed();
+      c.check(original !== null && speeds.some(row => row.id === original), '原生选中档位在候选内');
+      for (const row of speeds.filter(row => row.id !== original)) {
+        await pickSpeed(row.id);
+        c.equal(await currentSpeed(), row.id, '速度更新到 ' + row.label);
       }
+      await pickSpeed(original);
       await c.menu('model');
-      c.equal(await b.read("document.querySelector('#sheet [data-fast]').dataset.fast === 'off'"), original, '重新读取后 Fast 状态已恢复');
+      await openSpeeds();
+      c.equal(await currentSpeed(), original, '重新读取后速度档位已恢复');
     } finally {
       if (previous) b.cdp.on('Network.webSocketFrameSent', previous); else b.cdp.handlers.delete('Network.webSocketFrameSent');
-      if (await b.has('#sheet [data-fast]') && await b.read("document.querySelector('#sheet [data-fast]').dataset.fast === 'off'") !== original) {
-        await b.click('#sheet [data-fast]');
-        await b.wait('!modelSwitchRequest', '恢复 Fast');
-      }
+      if (original !== null && await b.has('#sheet [data-speed-id]') && await currentSpeed() !== original) await pickSpeed(original);
       await b.dismiss();
     }
-    return { fastRestored: original };
+    return { speeds, restored: original };
   } },
   { id: 'models.change', title: '切换模型并读回、恢复', refs: ['F08', 'S02'], mode: 'write', apps: true, async run(c, app) {
     const target = await c.target(app, 'models', true); await c.open(target);

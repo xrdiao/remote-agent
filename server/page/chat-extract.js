@@ -926,7 +926,7 @@
   };
   // Iterate the Devin transcript's direct children in order: messages, thought groups,
   // tool event rows, commands and file edits all become items. Unknown rows are skipped.
-  const devinItems = log => {
+  const devinItems = (log, page) => {
     const rows = devinTranscriptRows(log).filter(vis);
     const last = [...rows].reverse().find(r => (r.innerText || '').trim());
     const items = [];
@@ -975,6 +975,25 @@
       if (edit) { items.push(edit); return; }
     });
     const thread = devinNodeSessionId(log) || activeThread();
+    if (devinSessionRecord(thread)?.status === 'unknown_error') {
+      const banner = [...doc.querySelectorAll('[data-slot="banner-icon"]')].map(icon => icon.parentElement)
+        .find(el => vis(el) && devinNodeSessionId(el) === thread);
+      const error = banner && codexFiberProps(banner, 12).find(p => p.variant === 'warning' && typeof p.children === 'string');
+      if (error) items.push({ i: `acp${rows.length ? devinTranscriptIndex(rows.at(-1)) ?? 0 : 0}:error`, k: 'tool', kind: 'error', t: error.children, keep: true });
+    }
+    if (page) {
+      // ACP defines page membership. A mounted row can add desktop-only details for the same item.
+      const mounted = new Map(items.map(item => [item.i, item]));
+      const records = page.items.map(item => {
+        const row = mounted.get(item.i);
+        if (row?.k !== item.k) return item;
+        if (item.k === 'tool') return { ...row, ...item, cmd: item.cmd || row.cmd, output: item.output || row.output };
+        if (item.k === 'thinking') return { ...row, ...item };
+        if (item.k === 'human' || item.k === 'assistant') return { ...item, ...row, t: item.t, images: item.images || row.images };
+        return item;
+      });
+      return [...records, ...items.filter(item => item.kind === 'error').map(item => ({ ...item, src: 'devin' }))];
+    }
     const messages = devinMessages(thread);
     const insertAtEvent = (index, item) => {
       const next = items.findIndex(row => Number(/^acp(\d+)/.exec(row.i)?.[1]) > index);
@@ -1000,12 +1019,6 @@
     if (latest && !devinMessageText(latest.content) && !items.some(item => item.i === latestId)) {
       const [photo] = devinMessageItems([latest], 'acp', latestUser);
       if (photo?.images?.length) insertAtEvent(latestUser, photo);
-    }
-    if (devinSessionRecord(thread)?.status === 'unknown_error') {
-      const banner = [...doc.querySelectorAll('[data-slot="banner-icon"]')].map(icon => icon.parentElement)
-        .find(el => vis(el) && devinNodeSessionId(el) === thread);
-      const error = banner && codexFiberProps(banner, 12).find(p => p.variant === 'warning' && typeof p.children === 'string');
-      if (error) items.push({ i: `acp${rows.length ? devinTranscriptIndex(rows.at(-1)) ?? 0 : 0}:error`, k: 'tool', kind: 'error', t: error.children, keep: true });
     }
     return items.filter(Boolean).map(it => ({ ...it, src: 'devin' }));
   };
@@ -1296,6 +1309,9 @@
     if (remoteContext) return nativeConversationChat(history, pageSize || 120);
     const imagePreview = codexImagePreview();
     const log = devinLog();
+    const devinThread = log && (devinNodeSessionId(log) || activeThread());
+    const devinData = devinThread && devinSessionData(devinThread);
+    const devinPage = devinData?.messages.length ? devinHistoryPage(devinMessages(devinThread, devinData), 120) : null;
     const panel = log || (devinSurface() ? null : findPanel());
     const scopes = pageSize && !log && !devinSurface() ? codexHistoryScopes() : null;
     const manager = scopes ? codexConversationManager(codexThread(), scopes) : null;
@@ -1367,7 +1383,7 @@
     const codexId = log ? '' : codexThread();
     const pendingCodexRequests = !log && !devinSurface() && !codexId ? codexRequestData() : null;
     const bubbleTimes = (!log && !codexId) ? cursorBubbleTimes() : null;
-    const items = page ? page.items : log ? devinItems(log) : (panel ? topItems(panel) : []).flatMap(el => {
+    const items = page ? page.items : log ? devinItems(log, devinPage) : (panel ? topItems(panel) : []).flatMap(el => {
       if (el.hasAttribute?.('data-turn-key')) {
         const key = el.getAttribute('data-turn-key');
         const entry = state?.entries.find(entry => entry.turnKey === key);
@@ -1427,6 +1443,7 @@
       ...(codexId ? { _partialTurns: [...partialTurns], _completeTurns: [...completeTurns].filter(number => !partialTurns.has(number)), _completeTurnIds: [...completedIds],
         _historyEarlier: page ? page.earlier || !!page.missingTurn : state?.hasLoadedOldest === false,
         ...(page ? { historyBefore: page.before } : {}), _historyStart: state?.entries[0]?.turnNumber } : {}),
+      ...(devinPage ? { historyBefore: devinPage.before, earlier: devinPage.earlier } : {}),
       ...(imagePreview ? { imagePreview: true } : {}),
       ...(generation ? { generation } : {}),
       capacityPresent: !!capacity,
@@ -1479,6 +1496,11 @@
     ...(kind === 'assistant' ? { bodyFormat: 'markdown', h: esc(text).replace(/\n/g, '<br>') } : {}),
     ...(images.length ? { images } : {}) });
   const cursorMessageImages = message => (message.context?.selectedImages || []).map(image => image.path);
+  const devinHistoryPage = (messages, limit, end = messages.length) => {
+    if (!Number.isFinite(end)) throw new Error('历史起点已变化，请重新读取会话');
+    const before = Math.max(0, end - limit);
+    return { before, earlier: before > 0, items: devinMessageItems(messages.slice(before, end), 'acp', before) };
+  };
   const nativeConversationChat = async (history, limit, beforeItem = null, context = remoteContext) => {
     if (context.app === 'devin') return devinReadSession(context.threadId,
       () => nativeConversationData(history, limit, beforeItem, context));
@@ -1522,16 +1544,12 @@
       const failed = failure?.[1].status === 'failed';
       const messages = devinMessages(thread, data), end = history && typeof beforeItem === 'string'
         ? Number(/^acp(\d+)/.exec(beforeItem)?.[1]) : history && Number.isFinite(context.before) ? context.before : messages.length;
-      if (!Number.isFinite(end)) throw new Error('历史起点已变化，请重新读取会话');
-      const selected = messages.slice(Math.max(0, end - limit), end);
-      items.push(...devinMessageItems(selected, 'acp', Math.max(0, end - limit)));
+      ({ items, before, earlier } = devinHistoryPage(messages, limit, end));
       const session = devinSessionRecord(thread);
-      if (failed)
-        items.push({ i: 'acp' + messages.length + ':error', k: 'tool', kind: 'error', t: failure[1].errorMessage, keep: true });
+      if (failed && !history)
+        items.push({ i: 'acp' + messages.length + ':error', k: 'tool', src: 'devin', kind: 'error', t: failure[1].errorMessage, keep: true });
       title = session.title || '';
-      before = Math.max(0, end - limit); earlier = before > 0;
       questions = devinQuestions(thread);
-      items = items.map(item => ({ ...item, src: 'devin' }));
     }
     if (history) {
       for (const item of items) { delete item.b; delete item.actions; delete item.btnItem; delete item.approvalId; }

@@ -128,7 +128,8 @@ export const adapter = {
       this.syncSession(chat);
       this.mergeDevinHistory(chat);
       const files = new Map();
-      for (const it of chat?.items || []) if (it.kind === 'edit' && it.f) {
+      const items = Number.isFinite(chat?.historyBefore) ? this.devinHist.values() : chat?.items || [];
+      for (const it of items) if (it.kind === 'edit' && it.f) {
         const prev = files.get(it.f);
         const add = (prev?.add || 0) + (it.add || 0), del = (prev?.del || 0) + (it.del || 0);
         files.set(it.f, { name: it.f, add, del });
@@ -322,9 +323,12 @@ mergeDevinHistory(chat) {
     if (!n) continue;
     if (count < 12 && used + n <= 80000) { used += n; count++; sent.add(it.i); }
   }
-  chat.items = full.map(it => it.k === 'thinking' && this.thinkingBody(it) && !sent.has(it.i)
+  const paged = Number.isFinite(chat.historyBefore);
+  const visible = paged ? chat.items.map(it => hist.get(it.i) || it) : full;
+  chat.items = visible.map(it => it.k === 'thinking' && this.thinkingBody(it) && !sent.has(it.i)
     ? { ...it, t: this.thinkingTitle(it), more: true }
     : it);
+  if (paged) return;
   const known = [...hist.keys()].map(num).filter(n => n >= 0);
   const floor = known.length ? Math.min(...known) : minM;
   chat.earlier = floor > 0;

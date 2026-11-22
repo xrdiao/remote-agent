@@ -393,17 +393,30 @@
       const manager = codexConversationManager(id, codexHistoryScopes(), 'local');
       return manager?.getStreamRole(id)?.role === 'owner' ? { cwd: localFilePath(manager.getConversation(id).cwd) } : null;
     }
-    if (app === 'codex' && (catalog === 'modelSettings' || catalog === 'modelPage')) return (async () => {
+    if (app === 'codex' && ['modelSettings', 'modelPage', 'speedRequirements'].includes(catalog)) return (async () => {
       const context = await nativeSessionContext(app, id);
       const host = context.host || 'local', scopes = codexHistoryScopes(), manager = codexConversationManager(id, scopes, host);
       const client = manager || codexConnectedRpc(host, scopes);
       if (!client) throw new Error('Codex 原生会话连接尚未就绪');
       if (catalog === 'modelPage') return codexRpcCall(client, 'sendRequest', 'model/list', previous);
+      if (catalog === 'speedRequirements') return codexRpcCall(client, 'sendRequest', 'configRequirements/read', {});
       const conversation = await codexRpcCall(client, 'getConversation', id);
       if (!conversation) throw new Error('Codex 会话尚未加载');
       const settings = conversation.latestThreadSettings || {};
-      return { model: settings.model || conversation.latestModel, effort: settings.effort ?? conversation.latestReasoningEffort,
+      const model = settings.model || conversation.latestModel;
+      const picker = codexVisibleThread() === id ? codexSpeedPicker() : null;
+      const pickerModel = picker?.model || (picker && codexPickerProps()?.model);
+      const speed = picker && !picker.serviceTierOptionsLoading && (!pickerModel || pickerModel === model)
+        ? { selected: picker.selectedServiceTier, options: picker.serviceTierOptions.filter(option => !option.disabled).map(option => ({
+          id: option.value,
+          label: (typeof option.label === 'string' ? option.label : option.label?.defaultMessage)
+            || option.tier?.name || option.value || 'Standard',
+          description: (typeof option.description === 'string' ? option.description : option.description?.defaultMessage) || '',
+          icon: option.iconKind,
+        })) } : null;
+      return { model, effort: settings.effort ?? conversation.latestReasoningEffort,
         serviceTier: settings.serviceTier ?? null, modelProvider: settings.modelProvider || conversation.modelProvider,
+        speed,
         ...(previous === true ? { account: await codexRpcCall(manager?.requestClient || client, 'sendRequest', 'account/read', { refreshToken: false }) } : {}) };
     })();
     if (catalog === 'cleanup' || catalog === 'name') return nativeSessionCleanup(app, id);

@@ -912,13 +912,6 @@
     return target(cancel);
   };
 
-  const permissionButton = () => [...doc.querySelectorAll('[data-composer-navigation-target="permissions"], button[aria-label="Change permissions"]')].find(vis);
-  const permissionLabel = () => {
-    const b = permissionButton();
-    if (!b) return null;
-    return (b.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 40) || null;
-  };
-
   // Native callbacks own rich-content conversion, attachment cleanup and queue semantics.
   const devinEditorContexts = function* () {
     for (const el of doc.querySelectorAll('[data-slate-editor="true"][role="textbox"]')) {

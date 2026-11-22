@@ -113,6 +113,9 @@
   };
 
   const isPermissionButton = b => b.getAttribute('data-composer-navigation-target') === 'permissions' || nativeLabel(b.getAttribute('aria-label'), 'Change permissions');
+  const permissionButton = () => [...doc.querySelectorAll('[data-composer-navigation-target="permissions"], button[aria-label]')]
+    .find(button => isPermissionButton(button) && vis(button));
+  const permissionLabel = () => permissionButton()?.textContent.replace(/\s+/g, ' ').trim().slice(0, 40) || null;
   const buttonsIn = (root, strict) => [...root.querySelectorAll('button, [role=button], .anysphere-button, .anysphere-secondary-button, .composer-run-button, .composer-skip-button')]
     .filter(b => vis(b) && !isPermissionButton(b) && !b.closest('.human-message-action-slot') && !SKIP.test(b.className) && !b.parentElement.closest('button, [role=button]'))
     .map(b => ({ el: b, label: ((b.innerText || '').trim() || b.getAttribute('aria-label') || b.title || '').split('\n')[0].slice(0, 30) }))

@@ -97,13 +97,14 @@
       }).filter(x => DEVIN_MODEL.test(x.label));
     },
     permission: () => {
-      const btn = permissionButton();
-      if (!btn) return [];
-      return [...doc.querySelectorAll('[role=menuitem]')].filter(vis).map(e => {
-        const label = (e.innerText || '').trim().split('\n')[0].trim().slice(0, 40);
+      return [...doc.querySelectorAll('[role=menuitem]')].filter(vis).flatMap(e => {
+        const text = (e.innerText || '').trim().split('\n')[0].trim();
+        const label = ['Ask for approval', 'Approve for me', 'Full access'].find(name => nativeLabel(text, name));
+        if (!label) return [];
         const native = codexFiberProps(e, 16).find(p => 'RightIcon' in p || 'rightIconAsset' in p);
-        return { el: e, label, checked: !!(native?.RightIcon || native?.rightIconAsset) || e.getAttribute('aria-checked') === 'true' };
-      }).filter(x => ['Ask for approval', 'Approve for me', 'Full access'].some(label => nativeLabel(x.label, label)));
+        return [{ el: e, label, checked: !!(native?.RightIcon || native?.rightIconAsset) || e.getAttribute('aria-checked') === 'true',
+          disabled: !!e.disabled || e.getAttribute('aria-disabled') === 'true' }];
+      });
     },
     history: () => {
       const rows = [...doc.querySelectorAll('.composer-history-hover-menu .ui-menu__row')];
@@ -164,8 +165,9 @@
     return row ? center(row.el) : null;
   };
 
-  const menuItem = (kind, label) => {
-    const hit = (MENU_ITEMS[kind]?.() || []).find(x => vis(x.el) && normLabel(x.label) === normLabel(label));
+  const menuItem = (kind, label, thread) => {
+    if (thread !== undefined && codexVisibleThread() !== thread) return null;
+    const hit = (MENU_ITEMS[kind]?.() || []).find(x => !x.disabled && vis(x.el) && normLabel(x.label) === normLabel(label));
     if (!hit) return null;
     if (!codexThread()) hit.el.scrollIntoView({ block: 'nearest' });
     return codexThread() ? codexPoint(hit.el) : center(hit.el);

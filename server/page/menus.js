@@ -316,8 +316,12 @@
     el.click();
     return true;
   };
+  const codexSpeedPicker = () => {
+    const button = codexModelButton();
+    return button ? codexFiberProps(button, 96).find(p => Array.isArray(p.serviceTierOptions) && typeof p.onSelectServiceTier === 'function') : null;
+  };
   const fastProps = () => {
-    const props = codexModelButton() ? codexFiberProps(modelButton(), 40).find(p => p.serviceTierOptions && p.onSelectServiceTier) : null;
+    const props = codexSpeedPicker();
     if (remoteContext?.app !== 'codex') return props;
     const manager = codexNativeManager(), conversation = manager.getConversation(remoteContext.threadId);
     const model = codexPickerProps().modelOptions.find(option => option.model.id === conversation.latestModel)?.model;

@@ -93,6 +93,16 @@ export const methods = {
     }
   },
   async pressControl(name) {
+    if (this.app === 'codex' && name === 'permission') {
+      const thread = this.threadId || '';
+      if (thread && await this.cdp.evaluate(helpersCall('codexThread()')) !== thread && !await this.selectCodexThread(thread))
+        throw new Error('当前窗口尚未打开所选 Codex 会话');
+      const target = `codexButtonPoint('permission', ${JSON.stringify(thread)})`;
+      const pos = await this.cdp.evaluate(helpersCall(target)) || await this.waitFor(target, 50);
+      if (!pos) throw new Error('Codex 原生权限菜单尚未就绪，请重试');
+      if (!pos.open) await this.tapCss(pos.x, pos.y);
+      return;
+    }
     const clicked = await this.cdp.evaluate(helpersCall(`clickControl(${JSON.stringify(name)})`));
     if (clicked) return;
     const pos = await this.cdp.evaluate(helpersCall(`control(${JSON.stringify(name)})`));
@@ -297,10 +307,11 @@ export const methods = {
         await new Promise(r => setTimeout(r, 120));
       }
     }
-    let pos = await this.cdp.evaluate(helpersCall(`menuItem(${JSON.stringify(kind)}, ${JSON.stringify(String(label))})`));
+    const target = `menuItem(${JSON.stringify(kind)}, ${JSON.stringify(String(label))}${this.app === 'codex' && kind === 'permission' ? ', ' + JSON.stringify(this.threadId || '') : ''})`;
+    let pos = await this.cdp.evaluate(helpersCall(target));
     for (let i = 0; i < 10 && !pos; i++) {
       await new Promise(r => setTimeout(r, 100));
-      pos = await this.cdp.evaluate(helpersCall(`menuItem(${JSON.stringify(kind)}, ${JSON.stringify(String(label))})`));
+      pos = await this.cdp.evaluate(helpersCall(target));
     }
     if (!pos) {
       await this.closeMenus();

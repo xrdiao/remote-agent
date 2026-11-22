@@ -1545,6 +1545,10 @@ async function connect(resumeLink = null) {
         cached.fast = m.fast;
         if (m.fusion) cached.fusion = m.fusion;
       }
+      if (currentApp === 'codex' && m.fast?.items && sheetKind === 'menu' && menuSheetKind === 'fast') {
+        showMenu('fast', m.fast.items);
+        return;
+      }
       if (m.fusion && lastChat?.fusion) lastChat.fusion = m.fusion;
       const cost = $('sheet').querySelector('[data-fusion-cost]');
       if (cost && m.fusion) cost.innerHTML = modelPricingHtml(m.fusion.pricing, true);

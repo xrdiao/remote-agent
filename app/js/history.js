@@ -693,7 +693,7 @@ function visibleChatItems(items, busy, retained = new Set()) {
   return items.filter((it, n) => {
     if (it.k === 'tool' && (it.childId || it.children?.length || it.agents?.length)) return true;
     if (it.k === 'tool' && retained.has(String(it.i))) return true;
-    if (it.k === 'tool' && it.src === 'codex' && it.kind === 'edit') return true;
+    if (it.k === 'tool' && it.kind === 'edit' && (it.src === 'codex' || it.src === 'devin')) return true;
     if (!executionRecord(it)) return !(it.k === 'tool' && it.done);
     const attention = it.keep || it.b?.some(b => /^(?:run(?! in background)|allow|approve|reject|deny|retry|confirm|continue|accept)\b|^(?:运行|允许|批准|拒绝|重试|确认|继续|接受)/i.test(b))
       || /(?:^|\n)\s*(?:error\b|failed\b|permission denied\b|(?:(?:process|command) )?exit(?:ed)?(?: with)? code[: ]+[1-9]\d*|错误|失败|拒绝)/i.test([it.t, it.output].filter(Boolean).join('\n'));
@@ -825,7 +825,8 @@ function renderChat(chat, stale, loading = false, keepReading = true, historyIns
     noteSwitch(chat);
     return;
   }
-  if (SC.key && V.all.length) $('older').hidden = Math.min(...V.all.map(it => acpNum(it.i)).filter(n => n >= 0), Infinity) <= 0;
+  if (SC.key && V.all.length && !(currentApp === 'devin' && Number.isFinite(chat.historyBefore)))
+    $('older').hidden = Math.min(...V.all.map(it => acpNum(it.i)).filter(n => n >= 0), Infinity) <= 0;
   $('older').hidden ||= historyAtEnd;
   $('cachedMore').hidden = !V.older;
   $('cachedMore').textContent = `↑ 显示更早的本地记录（${V.older} 条）`;
@@ -1593,7 +1594,8 @@ function requestOlderRemote() {
     const orders = lastChat.items.map(it => it.order).filter(Number.isFinite);
     Object.assign(paging, { before: historyCursor ?? (orders.length ? Math.min(...orders) : null),
       known: SC.key ? [...SC.items.keys()] : lastChat.items.map(it => it.i), details: executionRecordsShown() });
-  } else if (currentApp === 'cursor' || currentApp === 'devin') paging.before = lastChat.items[0]?.i || null;
+  } else if (currentApp === 'devin' && historyCursor !== null) paging.before = `acp${historyCursor}`;
+  else if (currentApp === 'cursor' || currentApp === 'devin') paging.before = lastChat.items[0]?.i || null;
   if (send({ t: 'scrollChat', dy: -900, automatic: true, history: true, requestId: historyRequest.id, ...paging }) === false) {
     historyExpanded = historyRequest.expanded;
     clearHistoryRequest();

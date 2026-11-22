@@ -232,7 +232,13 @@
     return true;
   };
   const codexIdeButton = () => [...doc.querySelectorAll('button')].find(e => vis(e) && codexFiberProps(e, 8).some(p => 'ideContext' in p));
-  const codexButtonPoint = which => {
+  const codexButtonPoint = (which, thread) => {
+    if (which === 'permission') {
+      if (codexVisibleThread() !== thread) return null;
+      const button = permissionButton();
+      if (!button || button.disabled || button.getAttribute('aria-disabled') === 'true' || button.getAttribute('aria-busy') === 'true') return null;
+      return { ...codexPoint(button), open: button.getAttribute('aria-expanded') === 'true' };
+    }
     const buttons = [...doc.querySelectorAll('button')].filter(vis);
     const el = which === 'ide' ? codexIdeButton()
       : which === 'run' ? [...doc.querySelectorAll('[data-composer-navigation-target="run-location"]')].find(vis)
@@ -537,10 +543,11 @@
     const settings = conversation.latestThreadSettings || {};
     mergeCodexCapacity(page.items, state, codexVisibleThread() === thread ? codexCapacityItem() : null);
     const model = settings.model || conversation.latestModel || '', effort = settings.effort ?? conversation.latestReasoningEffort;
-    const permissions = conversation.currentPermissions;
-    const permission = ['auto_review', 'guardian_subagent'].includes(permissions?.approvalsReviewer) ? 'Approve for me'
-      : permissions?.sandboxPolicy?.type === 'dangerFullAccess' ? 'Full access' : permissions ? 'Ask for approval' : null;
-    const view = codexVisibleThread() === thread ? codexFacts()?.view : null;
+    const permissions = conversation.currentPermissions, visible = codexVisibleThread() === thread;
+    const visiblePermission = visible ? permissionLabel() : null;
+    const permission = visiblePermission || (['auto_review', 'guardian_subagent'].includes(permissions?.approvalsReviewer) ? 'Approve for me'
+      : permissions?.sandboxPolicy?.type === 'dangerFullAccess' ? 'Full access' : permissions ? 'Ask for approval' : null);
+    const view = visible ? codexFacts()?.view : null;
     return { thread, title: conversation.title || '', rect: [0, 0, 0, 0], items: page.items, global: [],
       _nativeState: { thread, run, busy: run?.status === 'running', host: remoteContext.host, ...nativeWaiting('codex', thread, manager) },
       busy: run?.status === 'running', readonly: false, queued: codexQueued(false, state), subagents: [],

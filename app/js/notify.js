@@ -413,6 +413,15 @@ $('sheet').addEventListener('click', async e => {
   if ('modelBack' in b.dataset) return requestMenu('model', '读取模型列表…');
   if ('effortOpen' in b.dataset) return requestMenu('effort', '读取思考强度…');
   if ('modelDone' in b.dataset) { closeSheet(); return; }
+  if ('speedOpen' in b.dataset) return requestMenu('fast', '读取速度…');
+  if ('speedId' in b.dataset) {
+    if (b.classList.contains('cur')) return;
+    if (send({ t: 'pickMenu', kind: 'fast', label: b.dataset.label, name: b.dataset.speedId })) {
+      $('sheet').querySelectorAll('[data-speed-id]').forEach(row => { row.disabled = true; });
+      b.setAttribute('aria-busy', 'true');
+    }
+    return;
+  }
   if (b.dataset.fast) {
     if (send({ t: 'pickMenu', kind: 'fast', label: b.dataset.fast, name: b.dataset.fastMenu })) {
       b.disabled = true; b.setAttribute('aria-busy', 'true');
@@ -613,7 +622,7 @@ $('sheet').addEventListener('click', async e => {
   else if (act === 'transfer') return openTransfer();
   else if (act === 'model') return requestMenu('model', '读取模型列表…');
   else if (act === 'mode') return requestMenu('mode', '读取模式列表…');
-  else if (act === 'permission') return requestMenu(lastChat?.permission ? 'permission' : 'mode', '读取权限…');
+  else if (act === 'permission') return requestMenu(currentApp === 'devin' && !lastChat?.permission ? 'mode' : 'permission', '读取权限…');
   else if (act === 'agentsRefresh') return openAgentList(true);
   else if (act === 'projects') return openProjectPicker();
   else if (act === 'projectNewChat') { if (projectEntry?.source === 'computer') ovShowConversation(); closeSheet(); status('正在新建对话…'); return send({ t: 'newProjectChat' }); }

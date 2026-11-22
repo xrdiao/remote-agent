@@ -414,12 +414,35 @@ async function codexMenuModels(owner, settings, account) {
 }
 
 const codexModelId = model => model.model || model.id;
-const codexFastTier = model => model?.serviceTiers?.find(tier =>
-  ['priority', 'fast'].includes(tier.id) || ['fast', 'priority'].includes(String(tier.name || '').trim().toLowerCase()));
-function codexFastState(model, settings) {
-  const tier = codexFastTier(model);
-  if (!tier) return null;
-  return { on: settings.serviceTier === tier.id, description: tier.description || '' };
+const codexTierId = value => value === 'default' ? null : value ?? null;
+const isFastTier = value => value === 'fast' || value === 'priority';
+const sameCodexTier = (a, b) => codexTierId(a) === codexTierId(b) || isFastTier(a) && isFastTier(b);
+async function codexSpeedOptions(owner, model, settings) {
+  if (settings.speed) {
+    const { options, selected } = settings.speed;
+    const effective = settings.serviceTier != null && options.some(option => sameCodexTier(option.id, settings.serviceTier));
+    return { options, selected: effective ? settings.serviceTier : selected };
+  }
+  if (!model?.serviceTiers?.length) return { options: [], selected: null };
+  const data = owner.thread ? await codexBackend.client.request('configRequirements/read', {})
+    : await owner.cdp.evaluate(helpersCall(`nativeSessionInfo('codex', ${JSON.stringify(owner.id)}, 'speedRequirements')`, owner.context));
+  const requirements = data?.requirements?.featureRequirements;
+  const fast = requirements?.fast_mode !== false;
+  const ultrafast = (fast || data?.supportsIndependentSpeedModes === true) && requirements?.ultrafast_mode !== false;
+  const options = [{ id: null, label: 'Standard', description: '', icon: null }];
+  for (const tier of model.serviceTiers) {
+    if (codexTierId(tier.id) == null) continue;
+    const icon = isFastTier(tier.id) || /^fast$/i.test(tier.name) ? 'fast'
+      : tier.id === 'ultrafast' || /^ultrafast$/i.test(tier.name) ? 'ultrafast' : null;
+    if (!(tier.id === 'flex' || (icon === 'ultrafast' ? ultrafast : fast))) continue;
+    options.push({ id: tier.id, label: tier.name || tier.id, description: tier.description || '', icon });
+  }
+  return { options, selected: settings.serviceTier ?? model.defaultServiceTier ?? null };
+}
+function codexSpeedState({ options, selected }) {
+  const items = options.map(row => ({ ...row, checked: sameCodexTier(row.id, selected) }));
+  const fast = items.find(row => row.icon === 'fast');
+  return { items, on: !!fast?.checked, description: fast?.description || '' };
 }
 
 async function readCodexModelMenu(kind, requestId) {
@@ -432,7 +455,8 @@ async function readCodexModelMenu(kind, requestId) {
   const load = async owner => {
     const { account, ...settings } = await codexModelSettings(owner, true);
     const models = await codexMenuModels(owner, settings, account);
-    return { settings, models, account: accountStamp(account) };
+    const current = models.find(row => codexModelId(row) === settings.model);
+    return { settings, models, current, speed: await codexSpeedOptions(owner, current, settings), account: accountStamp(account) };
   };
   // A prefetch may use the current backend account, but must not switch it.
   const query = () => withCodexModelOwner(this, load, true);
@@ -446,23 +470,23 @@ async function readCodexModelMenu(kind, requestId) {
     ? pending.then(result => result || query(), query) : query();
   const result = await read.pending.finally(() => { read.pending = null; });
   if (!result || this.codexModelRead !== read || this.selectionKey() !== sel || this.threadId !== id || this.sel !== generation) return;
-  const { settings, models, account } = result;
+  const { settings, models, current, speed, account } = result;
   this.codexModelCatalog = { id, account, provider: settings.modelProvider || null, models };
-  const current = models.find(row => codexModelId(row) === settings.model);
   const modelItems = models.filter(row => !row.hidden).map(row => ({ label: row.displayName || codexModelId(row),
     id: codexModelId(row), checked: codexModelId(row) === settings.model }));
   if (models.some(row => row.isDefault)) modelItems.unshift({ id: '__codex_default__', label: 'Default Recommended set of models', checked: false });
   const effortItems = (current?.supportedReasoningEfforts || []).map(row => ({ label: row.reasoningEffort,
     checked: row.reasoningEffort === (settings.effort ?? settings.reasoningEffort ?? current.defaultReasoningEffort) }));
-  const fast = codexFastState(current, settings), model = current?.displayName || settings.model;
-  const items = kind === 'effort' ? effortItems : kind === 'fast'
-    ? ['Standard', 'Fast'].map(label => ({ label, checked: !!fast?.on === (label === 'Fast') })) : modelItems;
-  this.emit({ t: 'menu', kind, requestId, sel, items, modelItems, effortItems, fast, model });
+  const speedState = codexSpeedState(speed), model = current?.displayName || settings.model;
+  const items = kind === 'effort' ? effortItems : kind === 'fast' ? speedState.items : modelItems;
+  this.emit({ t: 'menu', kind, requestId, sel, items, modelItems, effortItems,
+    fast: speedState.items.length > 1 ? speedState : null, model });
 }
 
 async function pickCodexModelMenu(kind, label, name) {
   const id = this.threadId, sel = this.selectionKey(), generation = this.sel, catalog = this.codexModelCatalog;
   if (!catalog || catalog.id !== id) throw new Error('请重新打开 Codex 模型菜单');
+  let speedOptions, chosenSpeed;
   const result = await withCodexModelOwner(this, async owner => {
     const { account, ...settings } = await codexModelSettings(owner, true);
     if (accountStamp(account) !== catalog.account) throw new Error('Codex 账号已切换，请重新打开菜单');
@@ -480,9 +504,11 @@ async function pickCodexModelMenu(kind, label, name) {
       if (!current?.supportedReasoningEfforts.some(row => row.reasoningEffort === label)) throw new Error('当前模型不支持这个思考强度');
       update = { effort: label };
     } else {
-      const tier = codexFastTier(current);
-      if (!tier) throw new Error('当前模型不支持 Fast');
-      update = { serviceTier: label === 'on' || label === 'Fast' ? tier.id : null };
+      ({ options: speedOptions } = await codexSpeedOptions(owner, current, settings));
+      chosenSpeed = speedOptions.find(row => label === 'on' ? row.icon === 'fast'
+        : label === 'off' ? row.id == null : (row.id ?? '') === name);
+      if (!chosenSpeed) throw new Error('当前模型不提供这个速度档位，请重新打开菜单');
+      update = { serviceTier: chosenSpeed.id ?? 'default' };
     }
     if (this.selectionKey() !== sel || this.threadId !== id || this.sel !== generation) throw new Error('会话已切换，请重新操作');
     if (owner.thread) {
@@ -495,8 +521,8 @@ async function pickCodexModelMenu(kind, label, name) {
   });
   if (this.selectionKey() !== sel || this.threadId !== id || this.sel !== generation) return;
   if (kind === 'fast') {
-    const current = catalog.models.find(row => codexModelId(row) === result.model);
-    this.emit({ t: 'fastState', sel, fast: codexFastState(current, result) });
+    if (!sameCodexTier(result.serviceTier, chosenSpeed.id)) throw new Error('Codex 尚未确认速度切换，请重新读取菜单');
+    this.emit({ t: 'fastState', sel, fast: codexSpeedState({ options: speedOptions, selected: result.serviceTier }) });
   }
   if (this.codexBackend) codexBackend.changed(id);
   else this.refreshModelChat().catch(() => {});
