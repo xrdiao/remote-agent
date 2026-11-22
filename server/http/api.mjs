@@ -24,7 +24,7 @@ import { uploadDocument, imageTypes } from '../../lib/shared-rules.mjs';
 import { localFilePath } from '../../lib/platform.mjs';
 import { relayAutostart } from '../autostart.mjs';
 import { managePeerTasks, receivePeerTask, receivePeerWorkspace } from '../peer/api.mjs';
-import { phoneTargets, phoneTicket } from '../phone/control.mjs';
+import { phoneTargets, phoneTicket, stopPhoneControl } from '../phone/control.mjs';
 
 // A device is usable once paired and, when 2FA asks for it, re-verified.
 function deviceFor(req) {
@@ -170,11 +170,15 @@ export async function handleApi(req, res, route) {
     return json(req, res, 200, { ok: true });
   }
   if (needsTotp(device)) return json(req, res, 401, { needTotp: true, error: '需要二次验证' });
-  if (route === '/api/phone' && req.method === 'GET') return json(req, res, 200, { phones: phoneTargets(device.id) });
+  if (route === '/api/phone' && req.method === 'GET') return json(req, res, 200, phoneTargets(device.id));
   if (route === '/api/phone' && req.method === 'POST') {
-    const token = phoneTicket(device, await readJson(req));
+    const body = await readJson(req);
+    if (body.role === 'stop') return stopPhoneControl(device.id, body.session) ? json(req, res, 200, { ok: true })
+      : json(req, res, 404, { error: '手机控制已结束' });
+    const token = phoneTicket(device, body);
     return token ? json(req, res, 200, { ticket: token })
-      : json(req, res, 409, { error: '目标手机尚未就绪或正在接受控制' });
+      : body.role === 'resume' ? json(req, res, 410, { error: '手机远控已结束，请重新发起' })
+        : json(req, res, 409, { error: '目标手机尚未就绪或正在接受控制' });
   }
   if (route === '/api/peers' || route.startsWith('/api/peers/')) return managePeerTasks(req, res, route, () => {
     const paired = findDevice(bearer(req));

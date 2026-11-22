@@ -82,7 +82,8 @@ export function overviewSnapshot(deviceId, selection) {
     for (const [key, row] of projectRows) {
       if (win.app === 'devin' && !rows.has(key) && catalog?.removed?.includes(key)) continue;
       const record = readLibrary()[win.app]?.[key];
-      if (!key || row.archived || record?.archived || record?.deleted || excluded.sessions.has(win.app + ':' + key)) continue;
+      if (!key || row.archived || record?.archived || record?.deleted || excluded.sessions.has(win.app + ':' + key)
+          || win.app === 'codex' && codexBackend.phoneControl(key)) continue;
       const s = { ...row, busy: row.busy ?? row.running };
       const saved = win.app === 'cursor' && !row.workspace && !row.projectless && storedProjectSession('cursor', key);
       const fallback = win.app === 'cursor' ? (saved?.workspaceConfirmed ? saved.workspace : '') : (roots.length === 1 ? roots[0].root : '');
@@ -121,7 +122,7 @@ export function overviewSnapshot(deviceId, selection) {
   const backendStates = new Map(codexBackend.states(selectedThread).map(row => [row.thread, row]));
   for (const row of records) {
     const record = readLibrary().codex?.[row.id];
-    if (record?.archived || record?.deleted || excluded.sessions.has('codex:' + row.id)) continue;
+    if (record?.archived || record?.deleted || excluded.sessions.has('codex:' + row.id) || !codexBackend.canAccess(row.id, deviceId)) continue;
     const workspace = localFilePath(row.cwd), key = projectId('codex', workspace, '', CODEX_BACKEND);
     const desktop = collected.get(JSON.stringify([key, row.id]))?.value;
     collected.delete(JSON.stringify([key, row.id]));

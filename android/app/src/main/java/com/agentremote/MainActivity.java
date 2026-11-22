@@ -288,6 +288,7 @@ public class MainActivity extends Activity {
             o.put("win", win);
             o.put("windowId", intent.getStringExtra("windowId") == null ? "" : intent.getStringExtra("windowId"));
             o.put("threadId", intent.getStringExtra("threadId") == null ? "" : intent.getStringExtra("threadId"));
+            if (intent.getBooleanExtra("phoneConversation", false)) o.put("phoneConversation", true);
             prefs.edit().putString("openWin", o.toString()).apply();
         } catch (Exception ignored) {}
     }

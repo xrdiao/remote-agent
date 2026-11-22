@@ -14,6 +14,7 @@ import android.view.View;
 import android.widget.Button;
 import android.widget.LinearLayout;
 import android.widget.TextView;
+import org.json.JSONObject;
 
 public final class PhoneControlActivity extends Activity {
     private static final int SHARE_SCREEN = 57;
@@ -21,7 +22,7 @@ public final class PhoneControlActivity extends Activity {
     private PhoneProjectionService service;
     private String choosingFor;
     private TextView status;
-    private Button setup, ready, accept, reject, stop;
+    private Button setup, ready, own, accept, reject, stop;
 
     @Override protected void onCreate(Bundle saved) {
         super.onCreate(saved);
@@ -31,7 +32,7 @@ public final class PhoneControlActivity extends Activity {
         int inset = Math.round(24 * getResources().getDisplayMetrics().density);
         column.setPadding(inset, inset, inset, inset);
         TextView heading = new TextView(this);
-        heading.setText("手机远控");
+        heading.setText("手机控制");
         heading.setTextSize(26);
         column.addView(heading);
         status = new TextView(this);
@@ -40,7 +41,10 @@ public final class PhoneControlActivity extends Activity {
         column.addView(status);
         setup = button(column, "前往无障碍设置", () -> startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)));
         ready = button(column, "设为可被控", () -> {
-            if (service != null) service.waitForController(getIntent().getStringExtra(CONFIG));
+            if (service != null) service.waitForController(getIntent().getStringExtra(CONFIG), false);
+        });
+        own = button(column, "在本机进入会话", () -> {
+            if (service != null) service.requestOwnConversation(getIntent().getStringExtra(CONFIG));
         });
         accept = button(column, "允许看屏和操作", this::share);
         reject = button(column, "拒绝", () -> { if (service != null) service.reject(service.request()); });
@@ -54,7 +58,7 @@ public final class PhoneControlActivity extends Activity {
         @Override public void onServiceConnected(ComponentName name, IBinder binder) {
             service = ((PhoneProjectionService.LocalBinder) binder).service();
             service.onChange(PhoneControlActivity.this::render);
-            render();
+            update();
         }
         @Override public void onServiceDisconnected(ComponentName name) { service = null; render(); }
     };
@@ -67,19 +71,39 @@ public final class PhoneControlActivity extends Activity {
         return button;
     }
 
-    @Override protected void onResume() { super.onResume(); render(); }
+    @Override protected void onResume() { super.onResume(); update(); }
+
+    private void update() {
+        if (service != null) service.resumeFromChat(getIntent().getStringExtra(CONFIG));
+        render();
+    }
 
     private void render() {
         if (status == null) return;
+        JSONObject target = service == null ? null : service.takeConversation();
+        if (target != null) {
+            startActivity(new Intent(this, MainActivity.class)
+                    .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP)
+                    .putExtra("phoneConversation", true)
+                    .putExtra("computer", target.optString("computer"))
+                    .putExtra("win", target.optString("win"))
+                    .putExtra("windowId", target.optString("windowId"))
+                    .putExtra("threadId", target.optString("threadId")));
+            finish();
+            return;
+        }
         boolean accessible = PhoneAccessibilityService.current() != null;
         boolean online = service != null && service.connected();
         boolean pending = service != null && service.request() != null && !service.accepted();
         status.setText(!accessible && !online ? "启用 Remote Agent 无障碍操作后，电脑才可以点击、滚动和输入文字。" :
                 service != null ? service.status() : "正在准备手机远控…");
-        setup.setVisibility(accessible || online ? View.GONE : View.VISIBLE);
+        setup.setVisibility(accessible || service != null && service.accepted() ? View.GONE : View.VISIBLE);
         ready.setVisibility(accessible && !online ? View.VISIBLE : View.GONE);
         ready.setEnabled(service != null);
+        own.setVisibility(accessible && !pending && (service == null || !service.accepted()) ? View.VISIBLE : View.GONE);
+        own.setEnabled(service != null);
         accept.setVisibility(pending ? View.VISIBLE : View.GONE);
+        accept.setText(service != null && service.resuming() ? "重新授权屏幕共享" : "允许看屏和操作");
         accept.setEnabled(choosingFor == null);
         reject.setVisibility(pending ? View.VISIBLE : View.GONE);
         stop.setVisibility(online ? View.VISIBLE : View.GONE);

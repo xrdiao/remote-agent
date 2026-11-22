@@ -279,6 +279,7 @@ export class Session extends AgentContext {
       const saved = lastSelection(this.deviceId, app);
       if (saved) req = { ...req, ...saved };
     }
+    if (req.threadId && !codexBackend.canAccess(req.threadId, this.deviceId)) throw new Error('当前设备未获准访问此手机会话');
     const fusionMain = req.threadId && !req.projectSwitch && !this.fusionBinding && allFusionRuns().flatMap(run => run.bindings
       .filter(binding => binding.id === run.main.bindingId)).find(binding => binding.reuseWindow && binding.app === app && binding.threadId === req.threadId);
     if (fusionMain) {

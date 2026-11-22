@@ -96,7 +96,7 @@ server.listen(PORT, HOST, async () => {
       if (ws === 'codex-backend') return { backend: true, close() {} };
       const c = new NativeCdp(ws); await c.connect(); return c;
     },
-    readStates: async cdp => cdp.backend ? codexBackend.states() : (await nativeWindow(cdp).read()).states,
+    readStates: async cdp => cdp.backend ? codexBackend.states().filter(row => !codexBackend.phoneControl(row.thread)) : (await nativeWindow(cdp).read()).states,
   });
   try {
     const wins = await listWindows();

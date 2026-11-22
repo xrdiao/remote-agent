@@ -29,6 +29,7 @@ import android.os.Looper;
 import android.os.PowerManager;
 import android.os.SystemClock;
 import android.util.DisplayMetrics;
+import android.util.Log;
 import android.view.Display;
 
 import org.json.JSONException;
@@ -55,6 +56,7 @@ import okio.ByteString;
 public final class PhoneProjectionService extends Service {
     private static final String START = "com.agentremote.PHONE_START", STOP = "com.agentremote.PHONE_STOP";
     private static final String CHANNEL = "phone-control";
+    private static final String TAG = "RA.PhoneControl";
     private static final int NOTIFICATION = 7302, MAX_FRAME = 512 * 1024;
     private static final MediaType JSON = MediaType.get("application/json");
     private static PhoneProjectionService sharing;
@@ -64,6 +66,7 @@ public final class PhoneProjectionService extends Service {
             .followRedirects(false).followSslRedirects(false).build();
     private final IBinder binder = new LocalBinder();
     private JSONObject config;
+    private JSONObject conversation;
     private URI relay;
     private Call ticketRequest;
     private WebSocket control;
@@ -71,6 +74,10 @@ public final class PhoneProjectionService extends Service {
     private String requested, controllerName, status = "将手机设为可被控后，从电脑浏览器发起连接。";
     private Runnable onChange;
     private boolean sharingAccepted, treeQueued, receiverRegistered, agent;
+    private boolean online, openOwnConversation, conversationFailed;
+    private boolean resumable;
+    private int reconnectDelay = 500;
+    private final Runnable reconnect = () -> requestLink(true);
     private volatile boolean live;
     private volatile boolean framesReady;
     private int treeRevision, screenRevision;
@@ -88,38 +95,79 @@ public final class PhoneProjectionService extends Service {
 
     @Override public IBinder onBind(Intent intent) { return binder; }
     String status() { return status; }
-    String request() { return requested; }
-    boolean connected() { return ticketRequest != null || control != null; }
+    String request() { return online ? requested : null; }
+    boolean connected() { return config != null; }
+    boolean resuming() { return resumable; }
     boolean accepted() { return sharingAccepted; }
     void onChange(Runnable listener) { onChange = listener; }
     void change(String value) { status = value; if (onChange != null) onChange.run(); }
 
-    void waitForController(String payload) {
+    JSONObject takeConversation() {
+        JSONObject target = conversation;
+        conversation = null;
+        return target;
+    }
+
+    void requestOwnConversation(String payload) {
+        if (connected()) {
+            if (online && requested == null) send(packet("type", "self"));
+        } else waitForController(payload, true);
+    }
+
+    void waitForController(String payload, boolean ownConversation) {
+        connect(payload, ownConversation, null);
+    }
+
+    void resumeFromChat(String payload) {
+        String session = payload == null ? "" : readSession(payload);
+        if (!session.isEmpty()) connect(payload, false, session);
+    }
+
+    private String readSession(String payload) {
+        try { return new JSONObject(payload).optString("session"); }
+        catch (JSONException error) { return ""; }
+    }
+
+    private void connect(String payload, boolean ownConversation, String session) {
         if (connected()) return;
         if (PhoneAccessibilityService.current() == null) { change("请先在系统设置中启用 Remote Agent 无障碍操作。"); return; }
+        openOwnConversation = ownConversation;
         try {
             config = new JSONObject(payload);
             relay = URI.create(config.getString("relay"));
             if (!"https".equalsIgnoreCase(relay.getScheme()) || relay.getHost() == null || relay.getUserInfo() != null ||
                     relay.getQuery() != null || relay.getFragment() != null ||
                     !(relay.getPath().isEmpty() || "/".equals(relay.getPath()))) throw new IOException("需要 HTTPS 中继地址");
+            requested = session;
+            resumable = session != null;
+            change("正在连接中继…");
+            requestLink(resumable);
+        } catch (Exception error) { finish("无法使用当前配对连接手机远控。"); }
+    }
+
+    private void requestLink(boolean resume) {
+        if (config == null || ticketRequest != null || control != null) return;
+        try {
             String path = "/api/phone";
-            byte[] body = packet("role", "host").getBytes(StandardCharsets.UTF_8);
+            byte[] body = (resume ? packet("role", "resume", "session", requested) : packet("role", "host"))
+                    .getBytes(StandardCharsets.UTF_8);
             Request request = new Request.Builder().url(relay.resolve(path).toString())
                     .header("Authorization", "Bearer " + config.getString("token"))
                     .header("x-ra-proof", EntryAuth.proof(config, "POST", path, body))
                     .post(RequestBody.create(body, JSON)).build();
-            change("正在连接中继…");
             ticketRequest = http.newCall(request);
             Call waiting = ticketRequest;
             waiting.enqueue(new Callback() {
                 @Override public void onFailure(Call call, IOException error) {
-                    main.post(() -> { if (ticketRequest == waiting) finish("无法连接中继。"); });
+                    main.post(() -> linkFailed(waiting, resume, 0));
                 }
                 @Override public void onResponse(Call call, Response response) {
                     try (response) {
+                        if (!response.isSuccessful()) {
+                            main.post(() -> linkFailed(waiting, resume, response.code()));
+                            return;
+                        }
                         JSONObject result = new JSONObject(response.body().string());
-                        if (!response.isSuccessful()) throw new IOException(result.optString("error", "此中继尚未支持手机远控。"));
                         String ticket = result.getString("ticket");
                         main.post(() -> {
                             if (ticketRequest != waiting) return;
@@ -127,20 +175,37 @@ public final class PhoneProjectionService extends Service {
                             control = openSocket(ticket, false);
                         });
                     } catch (Exception error) {
-                        main.post(() -> { if (ticketRequest == waiting) finish("中继拒绝注册手机。请核对版本和配对。"); });
+                        main.post(() -> linkFailed(waiting, resume, response.code()));
                     }
                 }
             });
         } catch (Exception error) { finish("无法使用当前配对连接手机远控。"); }
     }
 
+    private void linkFailed(Call waiting, boolean resume, int code) {
+        if (ticketRequest != waiting) return;
+        ticketRequest = null;
+        if (resume && (code == 0 || code == 429 || code >= 500)) {
+            Log.i(TAG, "Resume ticket request failed (" + code + ")");
+            retryLink();
+        } else finish(code == 410 ? "手机远控已结束，请重新发起。" : "无法连接中继。请检查配对和网络。");
+    }
+
+    private void retryLink() {
+        main.removeCallbacks(reconnect);
+        change("手机正在重连中继…");
+        main.postDelayed(reconnect, reconnectDelay);
+        reconnectDelay = Math.min(8000, reconnectDelay * 2);
+    }
+
     private WebSocket openSocket(String ticket, boolean video) {
         String destination = "wss://" + relay.getRawAuthority() + "/phone";
         Request request = new Request.Builder().url(destination).build();
+        String hello = video ? packet("type", "hello", "ticket", ticket)
+                : packet("type", "hello", "ticket", ticket, "agentVersion", 3, "capture", sharingAccepted);
         return http.newWebSocket(request, new WebSocketListener() {
             @Override public void onOpen(WebSocket socket, Response response) {
-                socket.send(video ? packet("type", "hello", "ticket", ticket)
-                        : packet("type", "hello", "ticket", ticket, "agentVersion", 1));
+                socket.send(hello);
             }
             @Override public void onMessage(WebSocket socket, String text) {
                 if (!video) main.post(() -> {
@@ -149,48 +214,94 @@ public final class PhoneProjectionService extends Service {
                     catch (JSONException error) { finish("中继返回了无效的远控消息。"); }
                 });
             }
-            @Override public void onClosing(WebSocket socket, int code, String reason) { socket.close(1000, null); }
-            @Override public void onClosed(WebSocket socket, int code, String reason) { disconnected(socket, video); }
-            @Override public void onFailure(WebSocket socket, Throwable error, Response response) { disconnected(socket, video); }
+            @Override public void onClosing(WebSocket socket, int code, String reason) {
+                socket.close(code, null);
+                disconnected(socket, video, code, "closed");
+            }
+            @Override public void onClosed(WebSocket socket, int code, String reason) { disconnected(socket, video, code, "closed"); }
+            @Override public void onFailure(WebSocket socket, Throwable error, Response response) {
+                disconnected(socket, video, response == null ? 0 : response.code(), error.getClass().getSimpleName());
+            }
         });
     }
 
-    private void disconnected(WebSocket socket, boolean video) {
+    private void disconnected(WebSocket socket, boolean video, int code, String reason) {
         main.post(() -> {
-            if (socket == (video ? media : control)) finish("连接已断开，手机远控已停止。");
+            if (socket != (video ? media : control)) return;
+            Log.i(TAG, (video ? "Screen" : "Control") + " connection ended (" + code + ", " + reason + ")");
+            if (code == 4004) {
+                finish("远控已结束。");
+                return;
+            }
+            if (!resumable || code == 4003 || code == 401 || code == 403) {
+                finish("连接已断开，手机远控已停止。");
+                return;
+            }
+            live = false;
+            online = false;
+            framesReady = false;
+            discardSockets();
+            retryLink();
         });
     }
 
     private void receive(JSONObject message) throws JSONException {
         switch (message.getString("type")) {
-            case "online" -> change("等待电脑浏览器请求控制。");
+            case "online" -> {
+                online = true;
+                if (openOwnConversation) {
+                    openOwnConversation = false;
+                    send(packet("type", "self"));
+                }
+                change("等待已配对设备请求控制。");
+            }
             case "request" -> {
+                online = true;
                 requested = message.getString("id");
                 controllerName = message.getString("name");
-                change(controllerName + " 请求控制手机。");
+                if (message.optBoolean("resume")) {
+                    reconnectDelay = 500;
+                    // The system may already have granted this capture just before the connection was lost.
+                    if (sharingAccepted) send(packet("type", "accept", "id", requested));
+                    else change("需要重新授权屏幕共享，确认后继续原会话。");
+                } else change(controllerName + " 请求控制手机。");
             }
             case "started" -> {
                 if (!sharingAccepted || projection == null) { finish("屏幕共享尚未授权。"); return; }
+                online = resumable = true;
                 media = openSocket(message.getString("ticket"), true);
                 agent = message.optBoolean("agent");
                 live = true;
+                refreshGeometry();
+                PhoneAccessibilityService access = PhoneAccessibilityService.current();
+                if (access != null) access.invalidate();
                 sendGeometry();
                 publishTree();
-                change(controllerName + " 正在控制手机。");
             }
             case "framesReady" -> {
+                if (!live || capture == null) return;
+                reconnectDelay = 500;
                 framesReady = true;
                 ImageReader reader = imageReader;
                 Geometry current = geometry;
                 capture.post(() -> frame(reader, current));
+                change("手机远控已连接。");
             }
             case "action" -> handleAction(message);
+            case "conversation" -> {
+                conversation = message.getJSONObject("target");
+                change("手机控制会话已就绪。");
+            }
+            case "conversationError" -> {
+                conversationFailed = true;
+                change("无法创建手机控制会话：" + message.optString("message"));
+            }
             case "ended" -> {
-                if (sharingAccepted) finish("远控已结束。");
+                if (sharingAccepted || resumable) finish(conversationFailed ? status : "远控已结束。");
                 else {
                     requested = null;
                     controllerName = null;
-                    change("等待电脑浏览器请求控制。");
+                    change("等待已配对设备请求控制。");
                 }
             }
         }
@@ -227,7 +338,7 @@ public final class PhoneProjectionService extends Service {
             if (projection == null) throw new IllegalStateException("projection missing");
             MediaProjection current = projection;
             projection.registerCallback(new MediaProjection.Callback() {
-                @Override public void onStop() { if (projection == current) finish("系统已停止共享屏幕。"); }
+                @Override public void onStop() { if (projection == current) pauseProjection("system", "系统已停止共享屏幕。请重新授权。"); }
             }, main);
             captureThread = new HandlerThread("Remote Agent phone frames");
             captureThread.start();
@@ -264,20 +375,29 @@ public final class PhoneProjectionService extends Service {
         @Override public void onDisplayRemoved(int id) {}
         @Override public void onDisplayChanged(int id) {
             if (id != Display.DEFAULT_DISPLAY || projection == null) return;
-            try { resize(); } catch (RuntimeException error) { finish("无法更新屏幕尺寸。"); }
+            try { resize(); } catch (RuntimeException error) { pauseProjection("display", "无法更新屏幕尺寸。请重新授权。"); }
         }
     };
     private final BroadcastReceiver screenLock = new BroadcastReceiver() {
-        @Override public void onReceive(Context context, Intent intent) { finish("手机已锁屏，远控停止。"); }
+        @Override public void onReceive(Context context, Intent intent) { pauseProjection("locked", "手机已锁屏。解锁后可重新授权。"); }
     };
 
     private final Runnable screenCheck = new Runnable() {
         @Override public void run() {
             if (!sharingAccepted) return;
-            if (locked()) finish("手机已锁屏，远控停止。");
+            if (locked()) pauseProjection("locked", "手机已锁屏。解锁后可重新授权。");
             else main.postDelayed(this, 500);
         }
     };
+
+    private void refreshGeometry() {
+        Geometry current = geometry;
+        ImageReader reader = imageReader;
+        if (current == null || reader == null) return;
+        Geometry next = new Geometry(++screenRevision, current.width, current.height, current.imageWidth, current.imageHeight, current.rotation);
+        geometry = next;
+        reader.setOnImageAvailableListener(source -> frame(source, next), capture);
+    }
 
     private void resize() {
         Display display = displays.getDisplay(Display.DEFAULT_DISPLAY);
@@ -340,7 +460,7 @@ public final class PhoneProjectionService extends Service {
     static void accessibilityChanged() {
         PhoneProjectionService service = sharing;
         if (service == null) return;
-        if (PhoneAccessibilityService.current() == null) service.finish("无障碍服务已关闭，远控停止。");
+        if (PhoneAccessibilityService.current() == null) service.pauseProjection("accessibility", "无障碍服务已关闭。启用后可重新授权。");
         else service.scheduleTree();
     }
 
@@ -353,12 +473,12 @@ public final class PhoneProjectionService extends Service {
     private void publishTree() {
         PhoneAccessibilityService access = PhoneAccessibilityService.current();
         if (!live || access == null) return;
-        if (locked()) { finish("手机已锁屏，远控停止。"); return; }
+        if (locked()) { pauseProjection("locked", "手机已锁屏。解锁后可重新授权。"); return; }
         try {
             JSONObject tree = access.snapshot(treeRevision + 1, agent);
             if (tree != null) { treeRevision++; send(tree.toString()); }
         }
-        catch (JSONException error) { finish("无法读取当前 Android 控件。"); }
+        catch (JSONException error) { pauseProjection("accessibility", "无法读取 Android 控件。请重新授权。"); }
     }
 
     private boolean locked() {
@@ -367,9 +487,9 @@ public final class PhoneProjectionService extends Service {
     private void handleAction(JSONObject message) throws JSONException {
         if (!live) return;
         int id = message.getInt("id");
-        if (locked()) { ack(id, false, "locked"); finish("手机已锁屏，远控停止。"); return; }
+        if (locked()) { ack(id, false, "locked"); pauseProjection("locked", "手机已锁屏。解锁后可重新授权。"); return; }
         PhoneAccessibilityService access = PhoneAccessibilityService.current();
-        if (access == null) { finish("无障碍服务已关闭，远控停止。"); return; }
+        if (access == null) { pauseProjection("accessibility", "无障碍服务已关闭。启用后可重新授权。"); return; }
         switch (message.getString("kind")) {
             case "inspect" -> { publishTree(); ack(id, true, ""); }
             case "apps" -> {
@@ -409,21 +529,15 @@ public final class PhoneProjectionService extends Service {
         return result.toString();
     }
 
-    void finish(String message) {
+    private void releaseProjection() {
         live = false;
         agent = false;
         framesReady = false;
+        sharingAccepted = false;
         main.removeCallbacks(screenCheck);
         if (sharing == this) sharing = null;
         PhoneAccessibilityService access = PhoneAccessibilityService.current();
         if (access != null) access.invalidate();
-        if (ticketRequest != null) { ticketRequest.cancel(); ticketRequest = null; }
-        if (control != null) {
-            control.send(packet("type", "stop"));
-            control.close(1000, null);
-            control = null;
-        }
-        if (media != null) { media.close(1000, null); media = null; }
         if (receiverRegistered) { unregisterReceiver(screenLock); receiverRegistered = false; }
         if (displays != null) { displays.unregisterDisplayListener(displayChanges); displays = null; }
         if (virtualDisplay != null) { virtualDisplay.release(); virtualDisplay = null; }
@@ -431,11 +545,46 @@ public final class PhoneProjectionService extends Service {
         if (captureThread != null) { captureThread.quitSafely(); captureThread = null; }
         if (projection != null) { MediaProjection previous = projection; projection = null; previous.stop(); }
         geometry = null;
+        stopForeground(STOP_FOREGROUND_REMOVE);
+    }
+
+    private void discardSockets() {
+        WebSocket host = control, video = media;
+        control = null;
+        media = null;
+        if (host != null) host.close(1000, null);
+        if (video != null) video.close(1000, null);
+    }
+
+    private void pauseProjection(String reason, String message) {
+        if (!sharingAccepted) return;
+        if (!resumable) { finish(message); return; }
+        Log.i(TAG, "Projection paused (" + reason + ")");
+        // Queue the pause on the control socket before releasing the screen upload.
+        send(packet("type", "projectionPaused", "reason", reason));
+        releaseProjection();
+        WebSocket video = media;
+        media = null;
+        if (video != null) video.close(1000, null);
+        change(message);
+    }
+
+    void finish(String message) {
+        if (config != null) Log.i(TAG, "Phone control ended: " + message);
+        main.removeCallbacks(reconnect);
+        if (ticketRequest != null) { ticketRequest.cancel(); ticketRequest = null; }
+        send(packet("type", "stop"));
+        discardSockets();
+        releaseProjection();
         requested = null;
         controllerName = null;
-        sharingAccepted = false;
+        online = false;
+        openOwnConversation = false;
+        conversationFailed = false;
+        conversation = null;
         config = null;
-        stopForeground(STOP_FOREGROUND_REMOVE);
+        resumable = false;
+        reconnectDelay = 500;
         stopSelf();
         change(message);
     }

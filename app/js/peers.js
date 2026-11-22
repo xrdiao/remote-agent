@@ -30,6 +30,16 @@ function peerOptions(rows, id, scope = rows) {
   }).join('');
 }
 
+function showDeviceControl() {
+  const tr = I18N.tr;
+  openSheet('device-control', `<h3>${tr('设备控制')}</h3>
+    <p class="hint">${tr('选择被控设备')}</p>
+    <button class="opt" type="button" data-device-computer>${tr('电脑')}</button>
+    <button class="opt" type="button" data-device-phone>${tr('手机')}</button>`);
+  $('sheet').querySelector('[data-device-computer]').onclick = showPeerTasks;
+  $('sheet').querySelector('[data-device-phone]').onclick = showPhoneControl;
+}
+
 function showPeerTasks() {
   const tr = I18N.tr;
   const computers = loadComputers().filter(row => row.id && (!row.discovery || new URL(row.discovery).origin === location.origin));

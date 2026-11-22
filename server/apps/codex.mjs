@@ -136,7 +136,7 @@ async function codexGoalRequest(session, id, action, message) {
 }
 
 function backendAgentRows(s) {
-  return [...codexBackend.records.values()].map(row => ({ id: `thread:${CODEX_BACKEND}:${row.id}`,
+  return [...codexBackend.records.values()].filter(row => codexBackend.canAccess(row.id, s.deviceId)).map(row => ({ id: `thread:${CODEX_BACKEND}:${row.id}`,
     title: row.title, workspace: row.cwd, window: path.basename(row.cwd), group: '', lastUsed: row.updatedAt * 1000,
     current: s.codexBackend && row.id === s.threadId, running: !codexBackend.threads.get(row.id)?.disconnected && (codexBackend.threads.get(row.id)?.turns.some(turn => turn.status === 'inProgress') || false) }));
 }
@@ -148,10 +148,12 @@ async function backendSkills(s) {
 }
 
 function backendAttached(s, initial = false) {
+  const phoneControl = codexBackend.phoneControl(s.threadId);
   s.emit({ t: 'attached', id: 'codex', app: 'codex', title: 'Codex', appName: 'Codex',
     windowId: CODEX_BACKEND, threadId: s.threadId, project: path.basename(s.codexDirectory),
     sel: s.selectionKey(), ready: true, initial,
-    codexAccount: s.codexAccount, capabilities: { ...capabilities, extraActions: false } });
+    codexAccount: s.codexAccount, capabilities: { ...capabilities, extraActions: false },
+    ...(phoneControl ? { phoneControl: { id: phoneControl.id, title: phoneControl.title } } : {}) });
 }
 
 function backendQuestionState(id) {
@@ -233,6 +235,7 @@ async function syncCodexCatalog(id = '') {
 
 let codexCatalogSync = Promise.resolve();
 codexBackend.on('catalogChanged', id => {
+  if (codexBackend.phoneControl(id)) return;
   codexCatalogSync = syncCodexCatalog(codexBackend.owns(id) ? id : '');
   codexCatalogSync.catch(error => console.error('Codex 桌面会话列表同步失败:', error.message));
 });
@@ -241,8 +244,9 @@ async function bindBackend(s, req) {
   const preferred = req.windowId && req.windowId !== CODEX_BACKEND ? req.windowId : s.codexAccountWindowId;
   let directory = req.project?.root ? safeHomePath(req.project.root).real
     : req.threadId ? null : safeHomePath(s.codexDirectory || os.homedir()).real;
-  const id = req.threadId || (!req.newSession && [...codexBackend.records.values()].filter(row => samePath(path.resolve(localFilePath(row.cwd)), directory))
+  const id = req.threadId || (!req.newSession && [...codexBackend.records.values()].filter(row => !row.phoneControl && samePath(path.resolve(localFilePath(row.cwd)), directory))
     .sort((a, b) => b.updatedAt - a.updatedAt || a.id.localeCompare(b.id))[0]?.id);
+  if (id && !codexBackend.canAccess(id, s.deviceId)) throw new Error('当前设备未获准访问此手机会话');
   if (id && !codexBackend.hasWriter(id)) {
     const owner = await adapter.backendOwner(id, true, preferred);
     if (owner) {
@@ -816,12 +820,14 @@ const backendRoutes = {
   },
   async codexRename(m) {
     const id = parseAgentRef(m.id).id;
+    if (!codexBackend.canAccess(id, this.deviceId)) throw new Error('当前设备未获准访问此手机会话');
     const title = await adapter.manageBackendThread(id, 'rename', m.name);
     publishSessionChange('codex', id, { action: 'rename', title });
     return backendRoutes.agents.call(this, {});
   },
   async codexArchive(m) {
     const id = parseAgentRef(m.id).id;
+    if (!codexBackend.canAccess(id, this.deviceId)) throw new Error('当前设备未获准访问此手机会话');
     await adapter.manageBackendThread(id, 'archive');
     publishSessionChange('codex', id, { action: 'archive' });
     this.emit({ t: 'codexArchived', id: m.id });
@@ -869,6 +875,7 @@ export const adapter = {
   pickModelSetting: pickCodexModelMenu,
   routes: { toolDetails: backendRoutes.toolDetails },
   async backendOwner(id, waitForRelease = true, preferred = '') {
+    if (codexBackend.phoneControl(id)) return null;
     if (waitForRelease) await codexBackend.releasing.get(id)?.promise;
     if (codexBackend.hasWriter(id)) return null;
     const pages = await codexWindows(CODEX_CDP_URL);

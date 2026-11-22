@@ -89,6 +89,7 @@ const observation = (ctx, signal) => waitFor(ctx, ctx.state, 6000, signal,
 
 async function action(ctx, content, signal) {
   const ack = await ctx.act(content, signal);
+  if (ack.reason === 'outcomeUnknown') throw Error('手机未确认操作结果。连接恢复后请先检查手机状态，再决定下一步。');
   if (!ack.ok) throw Error(`Phone action ${ack.reason || 'failed'}`);
   return ack;
 }

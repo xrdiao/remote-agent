@@ -54,6 +54,8 @@ export class CodexState extends EventEmitter {
     this.threads = new Map();
     this.childChats = new Map();
     this.requests = new Map();
+    this.phoneTools = new Map();
+    this.phoneCalls = new Map();
     this.queues = new Map();
     this.drafts = new Map();
     this.draftTimes = new Map();
@@ -75,6 +77,7 @@ export class CodexState extends EventEmitter {
     client.on('notification', packet => this.notification(packet));
     client.on('request', packet => this.request(packet));
     client.on('disconnected', error => {
+      for (const call of this.phoneCalls.values()) call.abort(error);
       this.writers.clear();
       this.childParents.clear();
       for (const release of this.releasing.values()) release.reject(error);
@@ -101,6 +104,14 @@ export class CodexState extends EventEmitter {
     } finally { fs.rmSync(temporary, { force: true }); }
   }
   owns(id) { return this.records.has(id); }
+  phoneControl(id) { return this.records.get(id)?.phoneControl; }
+  canAccess(id, deviceId) {
+    const phone = this.phoneControl(id);
+    return !phone || phone.devices.includes(deviceId);
+  }
+  detachPhoneTools(id) {
+    if (this.phoneTools.delete(id)) this.releaseIdle(id).catch(error => this.changed(id, error));
+  }
   hasWriter(id) { return this.writers.has(id); }
   async account() {
     await this.client.connect();
@@ -148,6 +159,7 @@ export class CodexState extends EventEmitter {
     const parent = this.childParents.get(id);
     const thread = this.threads.get(id);
     return this.writers.has(id) && !this.using.has(id) && !busyTurn(thread) && thread?.status?.type !== 'active'
+      && !this.phoneTools.has(id)
       && this.goals.get(id)?.status !== 'active'
       && !this.queueReads.has(id) && !this.queues.get(id)?.length
       && !this.manualCompactions.has(id) && !this.retrying.has(id) && ![...this.requests.values()].some(row => row.params.threadId === id)
@@ -304,17 +316,19 @@ export class CodexState extends EventEmitter {
     if (this.childParents.has(thread.id)) return;
     thread.cwd = localFilePath(thread.cwd);
     const previous = this.records.get(thread.id);
+    const phoneControl = thread.phoneControl || previous?.phoneControl;
     this.records.set(thread.id, { id: thread.id, cwd: thread.cwd, title: thread.name || thread.preview || previous?.title || '新会话',
-      updatedAt: thread.updatedAt, createdAt: thread.createdAt, settings: thread.settings, statistics: this.statisticsFor(thread.id), ...(previous?.untitled ? { untitled: true } : {}) });
+      updatedAt: thread.updatedAt, createdAt: thread.createdAt, settings: thread.settings, statistics: this.statisticsFor(thread.id),
+      ...(phoneControl ? { phoneControl } : {}), ...(previous?.untitled ? { untitled: true } : {}) });
     this.save();
     if (previous?.title !== this.records.get(thread.id).title)
       cdpRead.run(null, () => withOperation(null, () => this.emit('catalogChanged', thread.id)));
   }
 
-  async create(cwd, { title = '新会话', model, effort } = {}) {
+  async create(cwd, { title = '新会话', model, effort, phone } = {}) {
     cwd = localFilePath(cwd);
     await this.client.connect();
-    const thread = await this.acquireWriter('thread/start', { cwd, ...(model ? { model } : {}) }, async thread => {
+    const thread = await this.acquireWriter('thread/start', { cwd, ...(model ? { model } : {}), ...(phone?.start || {}) }, async thread => {
       if (!samePath(path.resolve(localFilePath(thread.cwd)), path.resolve(cwd))) throw new Error('Codex 返回的会话项目与所选目录不一致');
       // Native naming commits an empty thread before it can be restored after process exit.
       await this.client.request('thread/name/set', { threadId: thread.id, name: title });
@@ -325,6 +339,10 @@ export class CodexState extends EventEmitter {
       }
     });
     try {
+      if (phone) {
+        thread.phoneControl = phone.scope;
+        this.phoneTools.set(thread.id, phone.call);
+      }
       if (title === '新会话') this.records.set(thread.id, { untitled: true });
       this.remember(thread);
       this.changed(thread.id);
@@ -535,6 +553,8 @@ export class CodexState extends EventEmitter {
         statistics[p.turn.id] = { ...statistics[p.turn.id], model: thread.settings.model || thread.model };
       }
       if (method === 'turn/completed') {
+        for (const [packet, call] of this.phoneCalls)
+          if (packet.params.threadId === id && packet.params.turnId === p.turn.id) call.abort(new Error('手机操作轮次已结束'));
         if (p.turn.status !== 'failed') delete thread.error;
         for (const [key, request] of this.requests) if (request.params.threadId === id && request.params.turnId === p.turn.id) this.requests.delete(key);
         thread.updatedAt = Math.floor(Date.now() / 1000);
@@ -579,10 +599,26 @@ export class CodexState extends EventEmitter {
 
   request(packet) {
     if (packet.method === 'currentTime/read') return this.client.reply(packet.id, { currentTimeAt: Math.floor(Date.now() / 1000) });
+    if (packet.method === 'item/tool/call' && this.phoneControl(packet.params?.threadId)) return this.callPhoneTool(packet);
     if (!['item/commandExecution/requestApproval', 'item/fileChange/requestApproval', 'item/tool/requestUserInput', 'item/permissions/requestApproval', 'mcpServer/elicitation/request'].includes(packet.method))
       return this.client.reject(packet.id, `Remote Agent 没有注册 ${packet.method}`);
     this.requests.set(packet.id, packet);
     this.changed(packet.params.threadId);
+  }
+
+  async callPhoneTool(packet) {
+    const { threadId, tool, arguments: args } = packet.params;
+    const call = this.phoneTools.get(threadId), generation = this.client.generation;
+    const cancellation = new AbortController();
+    let result;
+    try {
+      if (!call) throw new Error('手机控制已结束，请在设备控制中重新连接手机。');
+      this.phoneCalls.set(packet, cancellation);
+      result = await call(tool, args, cancellation.signal);
+    } catch (error) {
+      result = { success: false, contentItems: [{ type: 'inputText', text: error.message }] };
+    } finally { this.phoneCalls.delete(packet); }
+    if (this.client.ready && this.client.generation === generation) this.client.reply(packet.id, result);
   }
 
   requestRows(id) {
@@ -640,6 +676,8 @@ export class CodexState extends EventEmitter {
     }
     return this.withWriter(id, async thread => {
       if (busyTurn(thread)?.id !== turn.id) return;
+      for (const [packet, call] of this.phoneCalls)
+        if (packet.params.threadId === id && packet.params.turnId === turn.id) call.abort(new Error('用户停止了手机操作'));
       try {
         await this.client.request('turn/interrupt', { threadId: id, turnId: turn.id });
       } catch (error) {
@@ -824,6 +862,7 @@ export class CodexState extends EventEmitter {
   }
 
   forget(id) {
+    this.phoneTools.delete(id);
     this.manualCompactions.delete(id);
     this.childChats.delete(id);
     for (const children of this.childChats.values()) children.delete(id);

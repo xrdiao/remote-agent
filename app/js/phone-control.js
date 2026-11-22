@@ -1,10 +1,19 @@
 let phoneView = null;
+let phoneConversationRequest = null;
+let phoneChat = null;
+const phoneConnectionLabels = {
+  ready: '已连接手机。',
+  reconnecting: '手机正在重连，中断期间暂停操作。',
+  permission: '需要在被控手机上重新授权屏幕共享。',
+};
 
 function closePhoneControl() {
+  const request = phoneConversationRequest;
+  phoneConversationRequest = null;
+  request?.socket?.close();
   if (!phoneView) return;
   const { control, video, pending, canvas } = phoneView;
   phoneView = null;
-  if (control?.readyState === WebSocket.OPEN) control.send(JSON.stringify({ type: 'stop' }));
   control?.close();
   video?.close();
   clearTimeout(pending?.timer);
@@ -31,12 +40,13 @@ function phoneSocket(relay, ticket) {
 }
 
 function showPhoneControl() {
+  const tr = I18N.tr;
   const computers = loadComputers().filter(computer => computer.token);
   const nativeHost = typeof window.AgentRemoteApp?.openPhoneControl === 'function';
-  openSheet('phone-control', `<h3>手机远控</h3>
+  openSheet('phone-control', `<h3>${tr('手机控制')}</h3>
     <div class="phone-picker">
       <label>中继<select data-phone-relay></select></label>
-      ${nativeHost ? '<button type="button" data-phone-host>设为被控手机</button>' : ''}
+      ${nativeHost ? '<button type="button" data-phone-host>使用这台手机</button>' : ''}
       <button type="button" data-phone-refresh>刷新手机</button>
     </div>
     <div data-phone-list></div>
@@ -53,28 +63,26 @@ function showPhoneControl() {
     if (!computers.length) { status.textContent = '请先在此浏览器配对一台中继电脑。'; return; }
     status.textContent = '正在查找手机…';
     try {
-      const relay = carrier(), { phones } = await phoneRequest(relay);
+      const relay = carrier(), { phones, conversations } = await phoneRequest(relay);
       if (!list.isConnected || generation !== request) return;
-      status.textContent = phones.length ? '选择要控制的手机。' : '暂无可被控手机。请在 Android App 里选择同一中继并设为可被控。';
-      for (const phone of phones) {
-        const row = document.createElement('div');
-        row.className = 'phone-target';
+      if (!Array.isArray(conversations)) throw new Error('请更新当前中继以使用手机控制会话。');
+      status.textContent = phones.length || conversations.length ? '' : '请在 Android App 里选择同一中继并设为可被控。';
+      for (const target of conversations) {
         const button = document.createElement('button');
         button.type = 'button';
         button.className = 'opt';
-        button.textContent = phone.name;
-        button.onclick = () => connectPhoneView(relay, phone);
-        row.append(button);
-        if (phone.agent) {
-          const agent = document.createElement('button');
-          agent.type = 'button';
-          agent.dataset.phoneAgentRequest = '';
-          agent.textContent = '交给 Agent';
-          agent.setAttribute('aria-label', `交给 Agent 控制 ${phone.name}`);
-          agent.onclick = () => connectPhoneView(relay, phone, true);
-          row.append(agent);
-        }
-        list.append(row);
+        button.textContent = `${target.name} · ${tr('打开会话')}`;
+        button.onclick = () => openPhoneConversation(target);
+        list.append(button);
+      }
+      for (const phone of phones) {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'opt';
+        button.textContent = phone.conversation ? phone.name : `${phone.name} · ${tr('请更新 Android App')}`;
+        button.disabled = !phone.conversation;
+        button.onclick = () => requestPhoneConversation(relay, phone);
+        list.append(button);
       }
     } catch (error) { if (status.isConnected && generation === request) status.textContent = error.message; }
   };
@@ -84,25 +92,81 @@ function showPhoneControl() {
   if (host) host.onclick = () => {
     if (!computers.length) return;
     try {
-      const { id, relay, token } = carrier();
-      window.AgentRemoteApp.openPhoneControl(JSON.stringify({ id, relay, token }));
+      openPhoneHost(carrier());
     } catch (error) { status.textContent = error.message; }
   };
   refresh();
 }
 
-async function connectPhoneView(relay, phone, agent = false) {
+function openPhoneHost({ id, relay, token }, session) {
+  window.AgentRemoteApp.openPhoneControl(JSON.stringify({ id, relay, token, session }));
+}
+
+function openPhoneConversation(target) {
+  openWin(JSON.stringify({ ...target, phoneConversation: true }));
+}
+
+async function requestPhoneConversation(relay, phone) {
+  openSheet('phone-control', `<h3>${esc(phone.name)}</h3><p class="hint" data-phone-status role="status">正在连接…</p>`);
+  const status = $('sheet').querySelector('[data-phone-status]');
+  const request = phoneConversationRequest = {};
+  const active = () => phoneConversationRequest === request;
+  const finish = reason => {
+    if (!active()) return;
+    closePhoneControl();
+    status.textContent = reason;
+  };
+  try {
+    const { ticket } = await phoneRequest(relay, { role: 'controller', phone: phone.id });
+    if (!active()) return;
+    const socket = request.socket = phoneSocket(relay, ticket);
+    socket.onclose = socket.onerror = () => finish('手机连接已关闭。');
+    socket.onmessage = ({ data }) => {
+      if (!active()) return;
+      const message = JSON.parse(data);
+      if (message.type === 'waiting') status.textContent = '等待手机用户接受并共享屏幕…';
+      if (message.type === 'started') status.textContent = '正在创建手机控制会话…';
+      if (message.type === 'conversation') openPhoneConversation(message.target);
+      if (message.type === 'conversationError') finish(message.message);
+      if (message.type === 'ended') finish(message.reason === 'rejected' ? '手机拒绝了本次请求。'
+        : message.reason === 'approvalExpired' ? '手机未在有效时间内确认。' : '手机远控已结束。');
+    };
+  } catch (error) { finish(error.message); }
+}
+
+function rememberPhoneChat(message) {
+  phoneChat = message.phoneControl ? { ...message.phoneControl, selection: viewSel, computer: currentComputer()?.id } : null;
+}
+
+function currentPhoneChat() {
+  return phoneChat?.selection === viewSel && phoneChat.computer === currentComputer()?.id ? phoneChat : null;
+}
+
+function bindPhoneChatMenu(button, phone) {
+  button.onclick = () => connectPhoneView(phone);
+  const status = button.querySelector('[data-phone-menu-status]');
+  const relay = peerRelay(currentComputer());
+  phoneRequest(relay).then(({ conversations }) => {
+    if (!button.isConnected) return;
+    const target = conversations?.find(row => row.id === phone.id);
+    const state = target?.state;
+    status.textContent = phoneConnectionLabels[state] || '手机远控已结束。';
+    if (state === 'permission' && target.canReshare && typeof window.AgentRemoteApp?.openPhoneControl === 'function') {
+      button.querySelector('.lbl').firstChild.textContent = '重新授权屏幕共享';
+      button.onclick = () => openPhoneHost(relay, phone.id);
+    }
+  }, error => { if (button.isConnected) status.textContent = error.message; });
+}
+
+async function connectPhoneView(phone) {
+  const relay = peerRelay(currentComputer());
   closePhoneControl();
-  openSheet('phone-control', `<h3>${esc(phone.name)}</h3>
+  openSheet('phone-control', `<h3>${esc(phone.title)}</h3>
     <div class="phone-view">
       <div class="phone-stage"><canvas aria-label="手机屏幕"></canvas></div>
       <div class="phone-commands">
         <p class="hint" data-phone-status role="status">正在连接…</p>
-        ${agent ? `<section class="phone-tools" data-phone-tools hidden>
-          <label>MCP 地址 <input type="text" readonly spellcheck="false" autocomplete="off" data-phone-tool-url></label>
-          <button type="button" data-phone-copy-tools>复制 Codex 启动命令</button>
-          <p class="hint">在中继电脑的终端执行命令，授权 Codex 操作本次连接的手机。停用远控后地址会失效。</p>
-        </section>` : ''}
+        <button type="button" data-phone-reauthorize hidden>重新授权屏幕共享</button>
         <fieldset disabled>
           <div class="phone-actions">
             <button type="button" data-phone-action="back">返回</button>
@@ -122,9 +186,10 @@ async function connectPhoneView(relay, phone, agent = false) {
     </div>`);
   const sheet = $('sheet'), canvas = sheet.querySelector('canvas'), commands = sheet.querySelector('fieldset');
   const status = sheet.querySelector('[data-phone-status]'), text = sheet.querySelector('[data-phone-text]');
-  const tools = sheet.querySelector('[data-phone-tools]'), toolUrl = tools?.querySelector('[data-phone-tool-url]');
+  const reauthorize = sheet.querySelector('[data-phone-reauthorize]');
   const view = phoneView = { canvas, status, commands, text, id: 0 };
   const active = () => phoneView === view;
+  reauthorize.onclick = () => openPhoneHost(relay, phone.id);
   const end = reason => {
     if (!active()) return;
     commands.disabled = true;
@@ -132,27 +197,30 @@ async function connectPhoneView(relay, phone, agent = false) {
     sheet.querySelector('[data-phone-app]').textContent = '';
     text.reset();
     text.hidden = true;
-    if (tools) { tools.hidden = true; toolUrl.value = ''; }
     closePhoneControl();
     status.textContent = reason;
   };
-  if (tools) tools.querySelector('[data-phone-copy-tools]').onclick = async () => {
-    if (!toolUrl.value) return;
+  sheet.querySelector('[data-phone-stop]').onclick = async event => {
+    const button = event.currentTarget;
+    button.disabled = true;
     try {
-      await navigator.clipboard.writeText(`codex -c mcp_servers.ra_phone.url=${toolUrl.value} -c mcp_servers.ra_phone.default_tools_approval_mode=approve`);
-      if (active()) status.textContent = '已复制 Codex 启动命令。';
-    } catch { toolUrl.select(); }
+      await phoneRequest(relay, { role: 'stop', session: phone.id });
+      end('已停止远控');
+    } catch (error) {
+      if (!active()) return;
+      button.disabled = false;
+      status.textContent = error.message;
+    }
   };
-  sheet.querySelector('[data-phone-stop]').onclick = () => end('已停止远控');
   const sendAction = content => {
-    if (!active() || !view.started || view.pending || view.agentBusy || view.control?.readyState !== WebSocket.OPEN) return;
+    if (!active() || view.state !== 'ready' || view.pending || view.agentBusy || view.control?.readyState !== WebSocket.OPEN) return;
     const id = ++view.id;
     commands.disabled = true;
     status.textContent = '手机正在处理操作…';
     view.pending = { id, timer: setTimeout(() => {
       if (!active()) return;
       view.pending = null;
-      commands.disabled = !!view.agentBusy;
+      commands.disabled = view.state !== 'ready' || !!view.agentBusy;
       status.textContent = '手机未确认操作，请先核对当前画面。';
     }, 6500) };
     view.control.send(JSON.stringify({ type: 'action', id, ...content }));
@@ -168,6 +236,20 @@ async function connectPhoneView(relay, phone, agent = false) {
   };
 
   let pointer;
+  const updateState = state => {
+    view.state = state;
+    commands.disabled = state !== 'ready' || !!view.agentBusy || !!view.pending;
+    reauthorize.hidden = state !== 'permission' || !view.canReshare || typeof window.AgentRemoteApp?.openPhoneControl !== 'function';
+    status.textContent = phoneConnectionLabels[state] || '正在连接…';
+    if (state !== 'ready') {
+      view.screen = view.tree = view.frame = view.next = pointer = null;
+      sheet.querySelector('[data-phone-nodes]').replaceChildren();
+      sheet.querySelector('[data-phone-app]').textContent = '';
+      text.reset();
+      text.hidden = true;
+      canvas.getContext('2d').clearRect(0, 0, canvas.width, canvas.height);
+    }
+  };
   const point = event => {
     const rect = canvas.getBoundingClientRect(), clamp = n => Math.max(0, Math.min(1, n));
     return { x: clamp((event.clientX - rect.left) / rect.width), y: clamp((event.clientY - rect.top) / rect.height) };
@@ -249,7 +331,7 @@ async function connectPhoneView(relay, phone, agent = false) {
 
   const failed = () => end('手机远控连接已关闭');
   try {
-    const { ticket } = await phoneRequest(relay, { role: 'controller', phone: phone.id, ...(agent ? { agent } : {}) });
+    const { ticket } = await phoneRequest(relay, { role: 'viewer', session: phone.id });
     if (!active()) return;
     const control = view.control = phoneSocket(relay, ticket);
     control.onclose = failed;
@@ -257,23 +339,17 @@ async function connectPhoneView(relay, phone, agent = false) {
     control.onmessage = ({ data }) => {
       if (!active()) return;
       const message = JSON.parse(data);
-      if (message.type === 'waiting') status.textContent = '等待手机用户接受并共享屏幕…';
-      if (message.type === 'agentTools' && tools) {
-        if (message.error) status.textContent = message.error;
-        if (message.url) { toolUrl.value = message.url; tools.hidden = false; }
-      }
       if (message.type === 'agentBusy') {
         view.agentBusy = message.busy === true;
-        commands.disabled = view.agentBusy || !!view.pending;
-        status.textContent = view.agentBusy ? 'Agent 正在操作手机…' : 'Agent 本次操作已结束。';
+        commands.disabled = view.state !== 'ready' || view.agentBusy || !!view.pending;
+        if (view.state === 'ready') status.textContent = view.agentBusy ? 'Agent 正在操作手机…' : 'Agent 本次操作已结束。';
       }
       if (message.type === 'started') {
-        view.started = true;
-        commands.disabled = !!view.agentBusy;
-        status.textContent = '已连接手机。';
+        view.canReshare = message.canReshare;
+        updateState(message.state);
         const video = view.video = phoneSocket(relay, message.ticket);
         video.binaryType = 'arraybuffer';
-        video.onclose = failed;
+        video.onclose = event => event.code === 4004 ? end('手机远控已结束。') : failed();
         video.onerror = failed;
         video.onmessage = ({ data: frame }) => {
           if (!active() || !(frame instanceof ArrayBuffer) || frame.byteLength < 8) return;
@@ -281,6 +357,7 @@ async function connectPhoneView(relay, phone, agent = false) {
           draw();
         };
       }
+      if (message.type === 'state') updateState(message.state);
       if (message.type === 'screen') {
         view.screen = message.revision;
         view.frame = null;
@@ -291,9 +368,10 @@ async function connectPhoneView(relay, phone, agent = false) {
       if (message.type === 'ack' && view.pending?.id === message.id) {
         clearTimeout(view.pending.timer);
         view.pending = null;
-        commands.disabled = !!view.agentBusy;
-        status.textContent = message.ok ? '手机已确认操作。'
-          : message.reason === 'stale' ? '界面已变化，请查看最新画面后重试。' : '手机没有完成本次操作。';
+        commands.disabled = view.state !== 'ready' || !!view.agentBusy;
+        if (view.state === 'ready') status.textContent = message.ok ? '手机已确认操作。'
+          : message.reason === 'stale' ? '界面已变化，请查看最新画面后重试。'
+            : message.reason === 'outcomeUnknown' ? '手机未确认操作结果，请先查看最新画面。' : '手机没有完成本次操作。';
       }
       if (message.type === 'ended') end(message.reason === 'rejected' ? '手机拒绝了本次请求。'
         : message.reason === 'approvalExpired' ? '手机未在有效时间内确认。' : '手机远控已结束。');
