@@ -316,6 +316,12 @@
   };
   const nativeSessionInfo = (app, id, catalog = false, previous = null) => {
     if (app === 'cursor' && catalog === 'projectPlacement') return cursorProjectPlacement(previous);
+    if (app === 'cursor' && catalog === 'projectThread') return (async () => {
+      const thread = agentStartupState(app, true)?.thread;
+      if (!thread || !cursorChatReady(thread)) return null;
+      const context = await nativeSessionContext(app, thread);
+      return context.roots.some(root => !root.host && samePath(root.root, previous)) ? thread : null;
+    })();
     if (app === 'devin' && catalog === 'missing') {
       const state = devinSessionData(id);
       return state?.loadStatus === 'failed' && state.loadErrorKind === 'session_not_found';

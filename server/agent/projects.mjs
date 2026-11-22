@@ -549,14 +549,13 @@ export const methods = {
     if (this.fusionBinding && this.app === 'cursor' && !await this.waitFor('control("model")', 250))
       throw new Error('主会话的原生模型控件尚未就绪');
     if (this.app === 'cursor') {
-      const state = await this.waitFor('agentStartupState("cursor")', 250);
-      if (!state) throw new Error('Cursor 项目已切换，会话面板尚未就绪');
       if (!pending.threadId && !pending.newSession) {
-        const context = state.thread && await this.cdp.evaluate(helpersCall(`nativeSessionInfo('cursor', ${JSON.stringify(state.thread)}, 'context')`));
-        const thread = context?.roots.some(root => !root.host && samePath(root.root, pending.root)) ? state.thread : '';
+        const thread = await this.waitFor(`nativeSessionInfo('cursor', '', 'projectThread', ${JSON.stringify(pending.root)})`, 250);
+        if (!thread) throw new Error('Cursor 项目会话尚未就绪，请重试');
         if (this.threadId !== thread) this.clearViewState();
         this.threadId = this.selectedThread = thread;
-      }
+      } else if (!await this.waitFor('agentStartupState("cursor")', 250))
+        throw new Error('Cursor 项目已切换，会话面板尚未就绪');
     }
     if (this.app === 'devin' && !pending.threadId && !pending.newSession) {
       const state = await this.adapter.openDefaultSession.call(this);

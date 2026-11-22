@@ -885,25 +885,29 @@ export const adapter = {
       || matches.find(row => row.pageId === preferred && row.visible) || matches.find(row => row.visible)
       || matches.find(row => row.pageId === preferred) || matches[0] || null;
   },
-  async manageBackendThread(id, action, name) {
-    const owner = await adapter.backendOwner(id, action !== 'rename');
-    if (!owner) return codexBackend.manage(id, action, name);
-    const cdp = new Cdp(owner.chatWs);
-    try {
-      await cdp.connect();
-      const context = { app: 'codex', threadId: id, host: '', cwd: owner.cwd };
-      if (!['rename', 'archive'].includes(action)) throw new Error('不支持的 Codex 会话操作');
-      const result = await cdp.evaluate(helpersCall(`nativeSessionAction('codex', ${JSON.stringify(id)}, ${JSON.stringify(action === 'archive' ? 'cleanup' : action)}, ${JSON.stringify(name)})`, context));
-      if (!result?.confirmed) throw new Error('Codex 桌面端尚未确认会话操作');
-      if (action === 'archive') {
+  async manageBackendThread(id, action, name, preferred = '') {
+    if (!['rename', 'archive'].includes(action)) throw new Error('不支持的 Codex 会话操作');
+    const rename = action === 'rename', title = rename ? String(name ?? '').trim().slice(0, 80) : '';
+    if (rename && !title) throw new Error('会话名称不能为空');
+    const perform = async () => {
+      const owner = await adapter.backendOwner(id, !rename, preferred);
+      if (!owner) return rename ? codexBackend.renameInsideCommand(id, title) : codexBackend.manage(id, action);
+      const cdp = new Cdp(owner.chatWs);
+      try {
+        await cdp.connect();
+        const context = { app: 'codex', threadId: id, host: '', cwd: owner.cwd };
+        const result = await cdp.evaluate(helpersCall(`nativeSessionAction('codex', ${JSON.stringify(id)}, ${JSON.stringify(rename ? 'rename' : 'cleanup')}, ${JSON.stringify(title)})`, context));
+        if (!result?.confirmed || rename && result.title !== title) throw new Error('Codex 桌面端尚未确认会话操作');
+        if (rename) {
+          const thread = await codexBackend.refresh(id);
+          if (thread.id !== id || thread.name !== title) throw new Error('Codex 尚未确认会话名称');
+          return title;
+        }
         codexBackend.forget(id);
         codexBackend.changed(id);
-      } else {
-        const thread = await codexBackend.refresh(id);
-        if (!thread.name) throw new Error('Codex 尚未确认会话名称');
-        return thread.name;
-      }
-    } finally { cdp.close(); }
+      } finally { cdp.close(); }
+    };
+    return rename ? codexBackend.runCommand(id, perform) : perform();
   },
   backendThread(id, host = nativeSessionCatalog('codex')?.rows.find(row => row.id === id)?.host || '') {
     return !host && !allFusionRuns().some(run => run.bindings.some(binding => binding.app === 'codex' && binding.threadId === id));

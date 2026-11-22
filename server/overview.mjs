@@ -197,9 +197,14 @@ export function overviewSnapshot(deviceId, selection) {
 }
 
 export function overviewSession(deviceId, { win, windowId, threadId }) {
-  const session = overviewSnapshot(deviceId, { win, threadId }).sessions.find(row => row.win === win && row.windowId === windowId && row.threadId === threadId);
+  const sessions = overviewSnapshot(deviceId, { win, threadId }).sessions;
+  let session = sessions.find(row => row.win === win && row.windowId === windowId && row.threadId === threadId);
+  if (!session && String(win).split(':')[0] === 'cursor') {
+    const matches = sessions.filter(row => row.app === 'cursor' && row.threadId === threadId && !row.dormant);
+    if (matches.length === 1) [session] = matches;
+  }
   if (!session) throw new Error('会话已从目录移除，请刷新概览');
-  const target = nativeTargets().find(row => row.app === session.app && (row.pageId || row.id) === windowId);
+  const target = nativeTargets().find(row => row.app === session.app && (row.pageId || row.id) === session.windowId);
   return { session, target };
 }
 

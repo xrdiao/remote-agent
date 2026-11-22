@@ -31,9 +31,9 @@ export async function manageOverviewSession(deviceId, body) {
     if (app !== 'codex' || session.host) throw new Error('此会话没有本地 deeplink');
     return { text: `codex://threads/${threadId}` };
   }
-  if (app === 'codex' && windowId === CODEX_BACKEND) {
+  if (app === 'codex' && (windowId === CODEX_BACKEND || action === 'rename' && !session.host && !session.dormant)) {
     if (action === 'actions') return { actions: ['rename', 'archive'] };
-    const title = await codexAdapter.manageBackendThread(threadId, action, body.name);
+    const title = await codexAdapter.manageBackendThread(threadId, action, body.name, windowId);
     publishSessionChange('codex', threadId, { action, ...(action === 'rename' ? { title } : {}) });
     return { ok: true };
   }
