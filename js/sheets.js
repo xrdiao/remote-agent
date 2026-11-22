@@ -176,6 +176,7 @@ function rememberAgentOpen(m) {
   }
 }
 function openSheet(kind, content) {
+  if (sheetKind === 'phone-control' && kind !== 'phone-control') closePhoneControl();
   if (!['agents', 'agent-actions', 'projects', 'project-trust', 'computer-files'].includes(kind)) projectEntry = null;
   if (kind !== 'ask') askDone?.(false);
   if (kind !== 'agents') pendingProjectReveal = null;
@@ -215,6 +216,7 @@ function openSheet(kind, content) {
   if (leavingVoice) scheduleVoiceWarmup();
 }
 function closeSheet() {
+  if (sheetKind === 'phone-control') closePhoneControl();
   projectEntry = null;
   askDone?.(false);
   agentActionTarget = null;

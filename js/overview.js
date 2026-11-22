@@ -524,7 +524,8 @@ function ovPlan() {
   if (ovS.level === 'fusion') crumbs.unshift('<strong class="ov-fusion-title">Fusion ·</strong>');
   const levels = [['sessions', ovT('概览'), OV_ICON.grid], ['projects', ovT('项目'), OV_ICON.folder], ['favorites', ovT('收藏'), OV_ICON.star], ['fusion', 'Fusion', OV_ICON.fusion]]
     .map(([v, l, ic]) => `<button class="ov-lv${ovS.level === v ? ' on' : ''}" data-ov="level" data-v="${v}"><i>${ic}${v === 'sessions' && anyWait && ovS.level !== 'sessions' ? '<span class="ov-dot"></span>' : ''}</i><span>${l}</span></button>`).join('')
-    + `<button class="ov-lv" data-ov="peer-tasks" aria-haspopup="dialog"><i>${OV_ICON.peers}</i><span>${I18N.tr('互控')}</span></button>`;
+    + `<button class="ov-lv" data-ov="peer-tasks" aria-haspopup="dialog"><i>${OV_ICON.peers}</i><span>${I18N.tr('互控')}</span></button>
+       <button class="ov-lv" data-ov="phone-control" aria-haspopup="dialog"><i><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><rect x="7" y="3" width="10" height="18" rx="2"/><path d="M10 17.5h4"/></svg></i><span>${I18N.tr('手机远控')}</span></button>`;
   const summary = (ovS.level === 'fusion' ? [] : [['total', ovT(ovS.level === 'favorites' ? '收藏会话' : '全部会话'), 'var(--fg-3)'], ['wait', ovT('需要你'), 'var(--ov-amber)'], ['run', ovT('运行中'), 'var(--accent)'], ['err', ovT('已停止'), 'var(--err)'], ['done', '今日完成', 'var(--ok)'], ['inactive', ovT('不常用'), 'var(--fg-4)']])
     .filter(([n]) => k[n]).map(([n, l, c]) => `<span><i class="ov-d" style="background:${c}"></i><b>${k[n]}</b><em>${l}</em></span>`).join('');
   const lane = ovS.level !== 'projects' || ovS.proj ? '' : scoped.filter(r => r.state === 'wait').sort((a, b) => ovRecency(b) - ovRecency(a))
@@ -1043,6 +1044,7 @@ $('overview').addEventListener('click', e => {
     case 'up': return ovUp();
     case 'menu': return showMainMenu();
     case 'peer-tasks': return showPeerTasks();
+    case 'phone-control': return showPhoneControl();
     case 'computer-projects': return showComputerActions(id);
     case 'computer-editor': return openComputerFiles(id);
     case 'computer-terminal': return openComputerTerminal(id);

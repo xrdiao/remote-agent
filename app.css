@@ -2106,3 +2106,44 @@ body.split #overview .fusion-grid { grid-template-columns: repeat(auto-fill, min
 body.split.fusion #titleText { font-size: 16px; font-weight: 650; color: var(--fg-hi); }
 body.split.fusion #titleProject { font-size: 12px; font-weight: 400; color: var(--fg-3); }
 #overview .ov-lv[data-v="fusion"] svg { width: 24px; height: 24px; }
+
+body.wide #sheet[data-kind="phone-control"] { width: min(760px, 92vw); }
+.phone-picker, .phone-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.phone-target { display: flex; gap: 8px; align-items: center; }
+.phone-target .opt { flex: 1; }
+.phone-tools:not([hidden]) { display: grid; gap: 8px; margin-bottom: 12px; }
+.phone-tools label { display: flex; gap: 8px; align-items: center; }
+.phone-tools input { min-width: 0; flex: 1; }
+.phone-picker label, .phone-text label { display: flex; flex: 1; align-items: center; gap: 8px; }
+.phone-picker select, .phone-text input { min-width: 0; flex: 1; }
+.phone-picker button, .phone-target [data-phone-agent-request], .phone-commands button, .phone-picker select, .phone-text input, .phone-tools input {
+  color: var(--fg); background: var(--s2); border: 1px solid var(--line-2); border-radius: 8px; padding: 7px 10px;
+  font: inherit;
+}
+.phone-commands button:disabled { opacity: .55; }
+.phone-view { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; }
+.phone-stage { align-self: start; display: grid; place-items: center; background: #17181a; border-radius: 12px; padding: 8px; }
+.phone-stage canvas {
+  display: block; height: auto; width: auto; max-width: 100%; max-height: min(64dvh, 600px);
+  touch-action: none; cursor: crosshair; user-select: none;
+}
+.phone-commands { min-width: 0; }
+.phone-commands fieldset { padding: 0; border: 0; min-width: 0; }
+.phone-commands [data-phone-app] { color: var(--fg-3); overflow-wrap: anywhere; margin: 8px 0; }
+.phone-nodes { max-height: 42dvh; overflow-y: auto; }
+.phone-nodes > div { display: flex; align-items: center; flex-wrap: wrap; gap: 5px; padding: 5px 0; border-bottom: 1px solid var(--line-2); }
+.phone-nodes span { flex: 1 1 110px; overflow-wrap: anywhere; }
+.phone-nodes button { padding: 4px 7px; }
+.phone-text:not([hidden]) { display: flex; gap: 8px; margin: 8px 0; }
+.phone-commands [data-phone-stop] { margin-top: 12px; color: var(--err); }
+@media (min-width: 561px) {
+  .phone-view { --phone-view-height: max(150px, calc(80dvh - 76px)); }
+  .phone-stage canvas { max-height: min(600px, calc(var(--phone-view-height) - 16px)); }
+  .phone-commands { max-height: var(--phone-view-height); overflow-y: auto; }
+}
+@media (max-width: 560px) {
+  .phone-view { grid-template-columns: minmax(0, 1fr); }
+  .phone-stage canvas { max-height: 49dvh; }
+  .phone-nodes { max-height: 26dvh; }
+  #overview .ov-lv[data-ov="phone-control"] span { font-size: 10px; }
+}
