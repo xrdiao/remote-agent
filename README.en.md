@@ -153,7 +153,7 @@ The voice installer asks for confirmation, creates an isolated Python virtual en
 
 ## Fusion
 
-Fusion supports Cursor, Devin, and Codex as native main and child Agent providers; available models come from the selected computer. OpenCode is not integrated with Fusion. Codex can use RA background sessions, while Cursor and Devin use native windows. Model availability does not imply every execution branch has passed acceptance; known background questionnaire and transcript/terminal-state gaps are tracked in the [combined repair plan](docs/testing/backend-runtime-fixes-v450-20261112.md).
+Fusion supports Cursor, Devin, and Codex as native main and child Agent providers; available models come from the selected computer. OpenCode is available as a child Agent on this computer or through an explicitly authorized RA Peer workspace. Codex can use RA background sessions, while Cursor and Devin use native windows. Model availability does not imply every execution branch has passed acceptance; known background questionnaire and transcript/terminal-state gaps are tracked in the [combined repair plan](docs/testing/backend-runtime-fixes-v450-20261112.md).
 
 ### Getting started
 

@@ -62,18 +62,92 @@
   const powerProps = () => codexModelButton()
     ? codexFiberProps(modelButton(), 96).find(p => p.powerSelections && typeof p.onSelectPower === 'function' && typeof p.onCommitPower === 'function')
     : null;
+  // Current Codex exposes an asynchronous, host-scoped RPC client. Keep model
+  // management on that client and verify the exact native conversation again
+  // after every read or write; UI picker props alone do not own background tabs.
+  const codexModelOwner = async id => {
+    if (remoteContext && (remoteContext.app !== 'codex' || remoteContext.threadId !== id))
+      throw new Error('Codex 模型请求不属于当前会话 Binding');
+    const context = await nativeSessionInfo('codex', id, 'context');
+    const host = context.host || 'local', exactDocument = doc;
+    const owner = () => codexConversationManager(id, codexHistoryScopes(), host) || codexConnectedRpc(host);
+    const client = owner();
+    if (!client) throw new Error('Codex 原生模型连接尚未就绪');
+    const check = () => {
+      if (doc !== exactDocument || exactDocument.defaultView.document !== exactDocument || owner() !== client)
+        throw new Error('Codex 原生模型连接已变化');
+    };
+    const read = async () => {
+      check();
+      const value = await codexRpcCall(client, 'getConversation', id);
+      check();
+      if (value?.id !== id || value.hostId !== host || !samePath(value.cwd, context.cwd)
+          || remoteContext?.host !== undefined && (context.host || '') !== (remoteContext.host || '')
+          || remoteContext?.cwd !== undefined && !samePath(context.cwd, remoteContext.cwd)
+          || remoteContext?.roots !== undefined && JSON.stringify(context.roots) !== JSON.stringify(remoteContext.roots))
+        throw new Error('Codex 原生模型会话或项目与 Binding 不一致');
+      return value;
+    };
+    return { client, requestClient: codexConversationManager(id, codexHistoryScopes(), host)?.requestClient || client, context, check, read, conversation: await read() };
+  };
+  const codexModelCatalog = async owner => {
+    const provider = owner.conversation.latestThreadSettings?.modelProvider || owner.conversation.modelProvider || null;
+    const models = [], seen = new Set();
+    let cursor = null;
+    do {
+      owner.check();
+      if (seen.has(cursor) || seen.size >= 8) throw new Error('Codex 原生模型目录分页未收敛');
+      seen.add(cursor);
+      const page = await codexRpcCall(owner.requestClient, 'sendRequest', 'model/list',
+        { cursor, limit: 100, includeHidden: true, modelProvider: provider });
+      owner.check();
+      if (!Array.isArray(page?.data)) throw new Error('Codex 原生模型目录格式未知');
+      models.push(...page.data);
+      cursor = page.nextCursor;
+    } while (cursor);
+    const current = await owner.read();
+    if ((current.latestThreadSettings?.modelProvider || current.modelProvider || null) !== provider)
+      throw new Error('Codex 原生模型来源已变化，请重新读取');
+    return models;
+  };
+  const codexSetNativeModel = async (id, selection) => {
+    const owner = await codexModelOwner(id), models = await codexModelCatalog(owner);
+    const before = await owner.read(), settings = before.latestThreadSettings || {};
+    const currentModel = settings.model || before.latestModel, currentEffort = settings.effort ?? before.latestReasoningEffort;
+    const modelId = selection.model || currentModel;
+    const model = models.find(row => (row.model || row.id) === modelId && (!selection.model || !row.hidden));
+    if (!model) throw new Error('模型不属于当前 Codex 原生候选');
+    const effort = selection.effort ?? (model.supportedReasoningEfforts?.some(row => row.reasoningEffort === currentEffort)
+      ? currentEffort : model.defaultReasoningEffort);
+    if (!model.supportedReasoningEfforts?.some(row => row.reasoningEffort === effort))
+      throw new Error('思考强度不属于当前 Codex 原生候选');
+    owner.check();
+    const accepted = await codexRpcCall(owner.client, 'updateThreadSettingsForNextTurn', id,
+      { model: modelId, effort }, { ifModelEquals: currentModel, ifEffortEquals: currentEffort });
+    if (accepted === false) throw new Error('Codex 原生模型设置已变化，未提交选择');
+    const after = await owner.read(), actual = after.latestThreadSettings || {};
+    if ((actual.model || after.latestModel) !== modelId || (actual.effort ?? after.latestReasoningEffort) !== effort)
+      throw new Error('Codex 原生模型设置回执未确认');
+    return true;
+  };
   const codexPickerProps = () => {
     const trg = codexModelButton();
     const props = trg ? codexFiberProps(trg, 70).find(p => p.modelOptions && p.onSelectModelOption) : null;
     if (remoteContext?.app !== 'codex' || !remoteContext.threadId) return props;
-    const manager = codexNativeManager(), conversation = manager.getConversation(remoteContext.threadId);
-    const models = codexQueryClient()?.getQueryCache().getAll().find(query => query.queryKey[0] === 'models' && query.queryKey[2] === (remoteContext.host || 'local'))?.state.data?.data || [];
-    const model = models.find(model => model.id === conversation.latestModel);
-    return { ...props, modelOptions: models.map(model => ({ model })), model: conversation.latestModel,
-      reasoningEffort: conversation.latestReasoningEffort ?? model?.defaultReasoningEffort,
-      onSelectModel: (model, effort) => manager.updateThreadSettingsForNextTurn(remoteContext.threadId, nativeValue({ model, effort })),
+    const host = remoteContext.host || 'local', thread = remoteContext.threadId;
+    const manager = codexNativeManager(), projection = codexThreadProjection(thread, host);
+    const conversation = manager?.getConversation(thread);
+    if (!conversation && (projection?.summary?.conversationId !== thread || projection.summary.hostId !== host)) return null;
+    const settings = conversation?.latestThreadSettings || projection?.latestThreadSettings || {};
+    const modelId = settings.model || conversation?.latestModel;
+    const visible = codexVisibleThread() === thread ? props : null;
+    const models = codexQueryClient()?.getQueryCache().getAll().find(query => query.queryKey[0] === 'models' && query.queryKey[2] === host)?.state.data?.data || [];
+    const model = models.find(model => (model.model || model.id) === modelId);
+    return { ...visible, modelOptions: models.map(model => ({ model })), model: modelId,
+      reasoningEffort: settings.effort ?? conversation?.latestReasoningEffort ?? model?.defaultReasoningEffort,
+      onSelectModel: (model, effort) => codexSetNativeModel(thread, { model, effort }),
       onSelectComplete: undefined,
-      selectionMode: codexVisibleThread() === remoteContext.threadId ? props?.selectionMode : 'custom' };
+      selectionMode: visible?.selectionMode || 'custom' };
   };
   const cursorPickerProps = (readOnly = false) => {
     const btn = modelButton(readOnly);
@@ -121,6 +195,14 @@
   };
   const modelItemsFast = (capabilities = false) => {
     if (capabilities) {
+      if (remoteContext?.app === 'codex' && remoteContext.threadId) return (async () => {
+        const owner = await codexModelOwner(remoteContext.threadId);
+        const models = await codexModelCatalog(owner);
+        return models.filter(model => !model.hidden).map(model => ({
+          id: model.model || model.id, label: (model.displayName || model.model || model.id).replace(/-/g, ' '),
+          efforts: (model.supportedReasoningEfforts || []).map(effort => ({ label: effort.reasoningEffort, description: effort.description || '' })),
+        }));
+      })();
       if (remoteContext?.app === 'devin') {
         const models = devinAcpModelItems(remoteContext.threadId);
         if (models?.length) return models;
@@ -323,11 +405,20 @@
   const fastProps = () => {
     const props = codexSpeedPicker();
     if (remoteContext?.app !== 'codex') return props;
-    const manager = codexNativeManager(), conversation = manager.getConversation(remoteContext.threadId);
-    const model = codexPickerProps().modelOptions.find(option => option.model.id === conversation.latestModel)?.model;
-    return { ...props, serviceTierOptions: [{ value: null }, ...(model?.serviceTiers || []).map(tier => ({ value: tier.id, iconKind: tier.id === 'priority' ? 'fast' : '', description: { defaultMessage: tier.description } }))],
-      selectedServiceTier: conversation.latestThreadSettings?.serviceTier === 'default' ? null : conversation.latestThreadSettings?.serviceTier ?? null,
-      onSelectServiceTier: serviceTier => manager.updateThreadSettingsForNextTurn(remoteContext.threadId, nativeValue({ serviceTier })) };
+    const thread = remoteContext.threadId, host = remoteContext.host || 'local';
+    const manager = codexNativeManager(), projection = codexThreadProjection(thread, host);
+    const conversation = manager?.getConversation(thread);
+    if (!conversation && (projection?.summary?.conversationId !== thread || projection.summary.hostId !== host)) return null;
+    const settings = conversation?.latestThreadSettings || projection?.latestThreadSettings || {};
+    const picker = codexPickerProps(), model = picker?.modelOptions.find(option => option.model.id === picker.model)?.model;
+    return { ...(codexVisibleThread() === thread ? props : null), serviceTierOptions: [{ value: null }, ...(model?.serviceTiers || []).map(tier => ({ value: tier.id, iconKind: tier.id === 'priority' ? 'fast' : '', description: { defaultMessage: tier.description } }))],
+      selectedServiceTier: settings.serviceTier === 'default' ? null : settings.serviceTier ?? null,
+      onSelectServiceTier: async serviceTier => {
+        const result = await nativeSessionAction('codex', thread, 'modelSettings', { serviceTier });
+        if ((result.serviceTier === 'default' ? null : result.serviceTier ?? null) !== serviceTier)
+          throw new Error('Codex 原生速度设置回执未确认');
+        return true;
+      } };
   };
   const cursorFastRow = () => [...doc.querySelectorAll('[role=menuitemcheckbox], [role=switch]')].find(e => vis(e) && /^Fast(?: Mode)?$/i.test(normLabel(e.innerText)));
   const fastInfo = () => {
@@ -348,6 +439,15 @@
     return el ? { on: el.getAttribute('aria-checked') === 'true' } : null;
   };
   const pickFast = on => {
+    if (remoteContext?.app === 'cursor') {
+      const props = cursorPickerProps(true), selections = props?.selections, selected = selections?.[0];
+      const model = props?.models.find(model => model.name === selected?.modelId || model.id === selected?.modelId);
+      if (!model?.parameterDefinitions?.some(definition => definition.id === 'fast')) return false;
+      const parameters = [...(selected.parameters || []).filter(parameter => parameter.id !== 'fast'), { id: 'fast', value: String(on) }];
+      props.onSelectionChange([{ ...selected, parameters }, ...selections.slice(1)]);
+      return true;
+    }
+
     const p = fastProps();
     if (p) {
       const option = p.serviceTierOptions.find(x => on ? x.iconKind === 'fast' : x.value == null);

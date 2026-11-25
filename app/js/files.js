@@ -127,12 +127,12 @@ function finishFileRead() {
   clearTimeout(readingFile?.timer);
   readingFile = null;
 }
-function failFileRead(message, computer = '') {
-  if (!readingFile || readingFile.computer !== computer) return;
-  const { name, source } = readingFile;
+function failFileRead(message, computer = currentComputer()?.id || '', capability = 'chat-file') {
+  if (!readingFile || readingFile.source.computerId !== computer || readingFile.source.capability !== capability) return;
+  const { name, displayComputer } = readingFile;
   fileRequestId++;
   finishFileRead();
-  showFile({ name, error: message, computer: source });
+  showFile({ name, error: message, computer: displayComputer });
 }
 function dirtyEdit() {
   const box = $('vEditBox');
@@ -246,16 +246,21 @@ function leaveEdit() {
   $('vTools').hidden = true;
   $('vSearch').hidden = true;
 }
-let fileComputer = null, fileDownload = null;
+let fileDownload = null;
 $('vDownload').onclick = async () => {
   const target = fileDownload;
   $('vDownload').disabled = true;
-  try { await downloadComputerFiles(target.computer, [target.path]); }
+  try {
+    const computer = target.source.computer();
+    if (!computer) throw new Error('电脑授权已变化，请重新打开文件');
+    await downloadComputerFiles(computer, [target.path]);
+  }
   catch (error) { if (fileDownload === target) status(error.message); }
   finally { if (fileDownload === target) $('vDownload').disabled = false; }
 };
 async function openFile(ref, diff = '', fromChanges = false, computer = null) {
-  fileComputer = { ...(computer || currentComputer()) };
+  const source = computer ? new SourceRef(computer, 'computer-file') : SourceRef.current('chat-file');
+  const relay = computer?.relay || base;
   fileDownload = null;
   $('vDownload').hidden = true;
   const requestId = ++fileRequestId;
@@ -278,12 +283,13 @@ async function openFile(ref, diff = '', fromChanges = false, computer = null) {
     $('viewer').classList.add('open');
     history.pushState({ viewer: true }, '');
   }
-  readingFile = { computer: computer?.id || '', source: computer, name: ref.split(/[\\/]/).pop(), timer: setTimeout(() => failFileRead('文件读取结果尚未返回，请重试', computer?.id || ''), 30000) };
+  readingFile = { source, relay, displayComputer: computer, name: ref.split(/[\\/]/).pop(),
+    timer: setTimeout(() => failFileRead('文件读取结果尚未返回，请重试', source.computerId, source.capability), 30000) };
   if (computer) {
     try {
       const data = await computerFileRequest(computer, '/api/transfer/preview?' + new URLSearchParams({ path: ref, theme: document.documentElement.dataset.theme }));
-      if (requestId === fileRequestId) showFile({ ...data, computer });
-    } catch (error) { if (requestId === fileRequestId) failFileRead(error.message, computer.id); }
+      if (requestId === fileRequestId && source.computer()) showFile({ ...data, computer });
+    } catch (error) { if (requestId === fileRequestId) failFileRead(error.message, source.computerId, source.capability); }
     return;
   }
   if (!send({ t: 'file', path: ref, diff, requestId, ...(fromChanges ? { changes: true } : {}) })) failFileRead('未连接，文件未读取，请重试');
@@ -291,13 +297,15 @@ async function openFile(ref, diff = '', fromChanges = false, computer = null) {
 
 function showFile(m) {
   if (!$('viewer').classList.contains('open') || m.loading) return;
-  fileDownload = m.path && !m.error && !m.host ? { computer: m.computer || fileComputer, path: m.path } : null;
+  const read = readingFile;
+  const source = read?.source.withRoot(m.root);
+  fileDownload = source && m.path && !m.error && !m.host ? { source, path: m.path } : null;
   $('vDownload').hidden = !fileDownload;
   $('vDownload').disabled = false;
   finishFileRead();
   stopVideo();
   leaveEdit();
-  viewing = m.text != null ? m : null;
+  viewing = m.text != null ? { ...m, source } : null;
   $('vFind').hidden = m.text == null;
   $('vEdit').hidden = !m.editable;
   $('vEdit').disabled = Boolean(saving);
@@ -321,7 +329,7 @@ function showFile(m) {
     video.controls = true;
     video.playsInline = true;
     video.preload = 'metadata';
-    video.src = (m.computer ? m.computer.relay : base) + m.video;
+    video.src = (read?.relay || base) + m.video;
     video.onerror = () => {
       const note = document.createElement('div');
       note.className = 'note err';
@@ -343,7 +351,7 @@ function showFile(m) {
     (async () => {
       const [pdfjs, response] = await Promise.all([
         import('../pdfjs/pdf-6.4.299.min.mjs'),
-        fetch((m.computer ? m.computer.relay : base) + m.pdf, { signal: state.controller.signal, cache: 'no-store' }),
+        fetch((read?.relay || base) + m.pdf, { signal: state.controller.signal, cache: 'no-store' }),
       ]);
       if (!response.ok) throw new Error('PDF 读取失败 (' + response.status + ')');
       const data = new Uint8Array(await response.arrayBuffer());
@@ -499,52 +507,58 @@ function onSaved(m) {
   if (!submitted || m.requestId !== submitted.requestId || m.path !== submitted.path || (m.host || '') !== submitted.host) return;
   finishFileSave();
   if (!viewing || fileRequestId !== submitted.viewRequestId || viewing.path !== submitted.path || (viewing.host || '') !== submitted.host) return;
-  if (!m.ok) { editorStatus(m.error || '保存失败', false); return status(m.error || '保存失败', false); }
+  if (!m.ok) return fileSaveStatus(submitted, m.error || '保存失败', false);
   viewing.text = editBase = submitted.text;
   viewing.hl = null;
   viewing.size = m.size;
-  editorStatus('已保存');
-  status('已保存');
+  fileSaveStatus(submitted, '已保存');
 }
 function finishFileSave() {
+  if (saving?.source.isCurrent()) finishPending(['正在保存…']);
   saving = null;
   $('vEdit').disabled = false;
-  finishPending(['正在保存…']);
 }
 function failFileSave(message) {
-  if (!saving) return;
+  const submitted = saving;
+  if (!submitted) return;
   finishFileSave();
-  editorStatus(message, false);
-  status(message, false);
+  fileSaveStatus(submitted, message, false);
 }
 function waitFileSave(computer = currentComputer()?.id || '') {
-  if (!saving || saving.computer && saving.computer.id !== computer) return;
-  editorStatus('连接已断开，等待电脑端保存结果');
-  status('连接已断开，等待电脑端保存结果');
+  if (!saving || saving.source.computerId !== computer) return;
+  fileSaveStatus(saving, '连接已断开，等待电脑端保存结果');
+}
+function fileSaveStatus(submitted, message, ok = true) {
+  editorStatus(message, ok);
+  if (submitted.source.isCurrent()) status(message, ok);
 }
 function editorStatus(message, ok = true) {
   $('vStatus').hidden = false;
   $('vStatus').textContent = I18N.tr(message);
   $('vStatus').className = ok ? '' : 'err';
 }
-async function saveEdit() {
+function saveEdit() {
   if (!editing || saving) return;
-  if (!viewing.computer && (!authed || !ws || ws.readyState !== 1)) { editorStatus('未连接', false); return; }
-  const submitted = saving = { requestId: ++saveRequestId, viewRequestId: fileRequestId, path: viewing.path, host: viewing.host || '', text: $('vEditBox').value, computer: viewing.computer };
+  const source = viewing.source;
+  const conversation = source?.capability === 'chat-file';
+  if (!source || conversation && !source.isCurrent()) return editorStatus('文件来源会话已切换，请返回该会话后保存', false);
+  const link = source.link();
+  if (!link || conversation && (!authed || ws !== link.socket)) return editorStatus('未连接，文件未发送保存，请重试', false);
+  const submitted = saving = { requestId: ++saveRequestId, viewRequestId: fileRequestId, path: viewing.path,
+    host: viewing.host || '', text: $('vEditBox').value, source };
   $('vEdit').disabled = true;
-  editorStatus('正在保存…');
-  status('正在保存…');
-  if (submitted.computer) {
-    const link = computerSockets.get(submitted.computer.key);
-    if (!link?.authed || link.socket.readyState !== 1) { failFileSave('未连接，文件未发送保存，请重试'); return; }
-    const message = { t: 'saveComputerFile', requestId: submitted.requestId, path: submitted.path, text: submitted.text };
-    sendDesktopOperation(message, submitted.computer.id, link.socket, {
-      message, device: link.auth.device, resultType: 'saved',
-      complete: result => { if (saving === submitted) onSaved(result); },
-    });
-    return;
-  }
-  if (!send({ t: 'saveFile', requestId: submitted.requestId, path: submitted.path, host: submitted.host, text: submitted.text })) failFileSave('未连接，文件未发送保存，请重试');
+  fileSaveStatus(submitted, '正在保存…');
+  const message = { t: conversation ? 'saveFile' : 'saveComputerFile', requestId: submitted.requestId,
+    path: submitted.path, text: submitted.text, ...(conversation ? { sel: source.selection, host: submitted.host, root: source.root } : {}) };
+  if (!desktopAction(message)) return link.send(message);
+  sendDesktopOperation(message, source.computerId, link.socket, {
+    device: source.deviceId, resultType: 'saved',
+    complete: result => {
+      if (saving !== submitted) return;
+      if (!result.ok && !result.path) return failFileSave(result.error);
+      onSaved(result);
+    },
+  });
 }
 
 function closeViewer() {

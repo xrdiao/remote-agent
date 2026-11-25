@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { Unavailable, pause } from './browser.mjs';
+import { browserDeadline, Unavailable, pause } from './browser.mjs';
 
 export const attr = value => JSON.stringify(String(value));
 export const by = (name, value) => `[${name}=${attr(value)}]`;
@@ -27,10 +27,15 @@ export class Context {
   check(value, message) { this.assertions.push(message); assert(value, message); }
   equal(actual, expected, message) { this.assertions.push(message); assert.equal(actual, expected, message); }
   async start() {
-    this.original = await this.b.read(`({computer:currentComputer()?.id,target:windowReady?(winBinding?.target||(lastChat?.thread?{computer:currentComputer()?.id,win:currentApp,windowId:viewSel.split('|')[1],threadId:lastChat.thread}:null)):null,mode,
-      overview:{...ovS},conversation:document.body.classList.contains('conv'),width:innerWidth,height:innerHeight,
-      theme:store.get('theme')||'dark',language:I18N.lang,draft:text.value,inputExpanded:document.getElementById('composerFold').getAttribute('aria-expanded'),
-      expanded:[...ovExpanded],collapsed:[...ovCollapsed]})`);
+    this.original = await this.b.read(`(()=>{
+      const computer=currentComputer()?.id, conversation=document.body.classList.contains('conv');
+      const [,windowId,selectedThread]=viewSel.split('|'), threadId=lastChat?.thread||selectedThread;
+      const target=conversation&&windowReady&&!selectedConversation.navigation&&threadId ?
+        {app:currentApp,windowId,threadId} : null;
+      return {computer,view:{conversation,target,level:ovS.level,query:ovS.query,comp:ovS.comp,proj:ovS.proj,open:ovS.open,
+        mode,inputExpanded:document.getElementById('composerFold').getAttribute('aria-expanded')},
+        width:innerWidth,height:innerHeight,draft:text.value,draftKey:activeDraft};
+    })()`);
     this.computer = this.options.computer || this.original.computer;
     if (!this.computer) throw new Unavailable('没有已配对的执行电脑');
     if (this.options.computer && this.options.computer !== this.original.computer)
@@ -54,7 +59,11 @@ export class Context {
     const selected = this.options.targets?.[app]?.[slot];
     if (slot === 'long' && !selected) throw new Unavailable(`${app} 需要通过 --targets 登记真实 long 会话，不用普通空闲会话替代`);
     const label = selected ? `${app} 已登记的 ${slot} 会话` : `${app} 可读的空闲会话`;
-    const candidate = selected ? `r.threadId===${attr(selected)}` : "r.threadId&&r.state!=='run'";
+    // Default real QA candidates must be loadable. A previously failed
+    // native session can still be present in Overview, but it is not a
+    // suitable source for a live read/control scenario.
+    const candidate = selected ? `r.threadId===${attr(selected)}`
+      : "r.threadId&&['idle','done','wait'].includes(r.state)";
     try {
       await this.b.wait(`ovRecs().some(r=>r.comp===${attr(this.computer)}&&r.app===${attr(app)}
         &&!r.off&&!r.workspaceMissing&&(${candidate}))`, label);
@@ -63,21 +72,31 @@ export class Context {
       throw error;
     }
     const rows = await this.rows(app);
-    const target = selected ? rows.find(row => row.thread === selected && !row.missing) : rows.find(row => row.thread && row.state !== 'run' && !row.missing);
+    const target = selected ? rows.find(row => row.thread === selected && !row.missing)
+      : rows.find(row => row.thread && ['idle', 'done', 'wait'].includes(row.state) && !row.missing);
     if (!target) throw new Unavailable(`${app} 没有可读的空闲会话`);
     return target;
   }
   async reveal(target, level = 'projects') {
     await this.refreshTarget(target);
     const b = this.b; await b.home();
-    await b.click(`#ovLevels [data-v="${level}"]`);
+    // Projects and Favorites are Overview filters as of v518, not first-level tabs.
+    await b.click('#ovTabs [data-v="sessions"]');
+    if (['projects', 'favorites'].includes(level)) await b.click(`#ovFilters [data-v="${level}"]`);
+    return this.revealCard(target, level);
+  }
+  async revealCard(target, level) {
+    const b = this.b;
     const project = `[data-ov="proj"]${by('data-id', target.project)}`;
     const card = by('data-ov-session', target.key);
     if (await b.read(`ovCollapsed.has(${attr(target.comp)})`)) {
       const fold = `[data-ov="fold"]${by('data-id', target.comp)}`;
       await b.click(fold);
     }
-    if (level === 'projects') await b.click(project);
+    if (level === 'projects') {
+      await b.click(project, { dom: true });
+      await b.wait(`ovS.proj===${attr(target.project)}`, '所选项目');
+    }
     if (!await b.has(card)) {
       const groups = await b.read("[...document.querySelectorAll('[data-ov=group][aria-expanded=false]')].map(e=>e.dataset.id)");
       for (const group of groups) { await b.click(`[data-ov="group"]${by('data-id', group)}`); if (await b.has(card)) break; }
@@ -95,7 +114,7 @@ export class Context {
       const eventStart = b.events.length;
       await b.click(`${card} [data-ov="full"]`);
       const outcome = await b.wait(`ovOpening?.phase==='error'?{error:ovOpening.message}:
-        windowReady&&!navigationPending&&lastChat?.thread===${attr(target.thread)}&&currentApp===${attr(target.app)}&&document.body.classList.contains('conv')?{ready:true}:null`, '会话新鲜首屏');
+        windowReady&&!selectedConversation.navigation&&lastChat?.thread===${attr(target.thread)}&&currentApp===${attr(target.app)}&&document.body.classList.contains('conv')?{ready:true}:null`, '会话新鲜首屏');
       if (outcome.error) throw new Error('会话打开失败：' + outcome.error);
       const error = b.events.slice(eventStart).find(event => event.type === 'relay-status-error'
         && event.sel?.split('|').at(-1) === target.thread);
@@ -122,7 +141,8 @@ export class Context {
   }
   async refreshTarget(target) {
     if (!target.thread) return target;
-    const row = await this.b.wait(`ovRecs().find(r=>r.comp===${attr(target.comp)}&&r.app===${attr(target.app)}&&r.threadId===${attr(target.thread)})||null`, '按原生身份定位会话');
+    const host = target.host == null ? '' : `&&r.host===${attr(target.host)}`;
+    const row = await this.b.wait(`ovRecs().find(r=>r.comp===${attr(target.comp)}&&r.app===${attr(target.app)}&&r.threadId===${attr(target.thread)}${host})||null`, '按原生身份定位会话');
     Object.assign(target, { key: row.key, project: row.project, window: row.windowId, win: row.win });
     return target;
   }
@@ -139,7 +159,7 @@ export class Context {
     target.creationRequested = true;
     await this.persistResources();
     await b.click('[data-computer-project="chat"]');
-    const ready = `windowReady&&!navigationPending&&lastChat?.thread&&lastChat.thread!==${attr(previous)}&&currentApp===${attr(app)}`;
+    const ready = `windowReady&&!selectedConversation.navigation&&lastChat?.thread&&lastChat.thread!==${attr(previous)}&&currentApp===${attr(app)}`;
     await b.wait(`(${ready})||!!document.querySelector('[data-project-trust="yes"]')`, '项目创建或信任确认');
     if (await b.has('[data-project-trust="yes"]')) await b.click('[data-project-trust="yes"]');
     await b.wait(ready, '新建原生会话');
@@ -206,6 +226,9 @@ export class Context {
       const receipt = await b.read(`({thread:lastChat.thread,draftLength:text.value.length,pending:pendingSends.size,
         ids:lastChat.items.filter(i=>i.k==='human'&&!${JSON.stringify(before)}.includes(i.i)).map(i=>i.i)})`);
       assert.equal(receipt.ids.length, 1, '同一次发送出现重复原生用户消息');
+      const fusion = target.app === 'cursor' && this.fusion.find(row => row.app === target.app && row.thread === target.thread);
+      if (fusion) b.steps.push({ action: 'fusion-native-accept', run: fusion.id, thread: receipt.thread, messageId: receipt.ids[0],
+        ...await b.read('({model:lastChat.model,effort:lastChat.effort})') });
       if (options.complete !== false) await this.finishGeneration(target, '原生生成完成');
       return receipt;
     });
@@ -251,6 +274,10 @@ export class Context {
   }
   async menu(kind) {
     const b = this.b; await b.dismiss();
+    // The model picker belongs to the composer. A valid native session can
+    // start with its composer folded; expand via the actual UI before lookup.
+    if (kind === 'model' && await b.read("document.getElementById('composerFold')?.getAttribute('aria-expanded')==='false'"))
+      await b.click('#composerFold');
     if (kind === 'effort') { await this.menu('model'); await b.click('#sheet [data-effort-open]'); }
     else {
     const selectors = { model: '#pickModel', permission: '#pickPerm', mode: '#pickMode' };
@@ -267,11 +294,24 @@ export class Context {
   }
   async stopOwnedRun(target) {
     const b = this.b;
-    const active = `currentApp===${attr(target.app)}&&lastChat?.thread===${attr(target.thread)}&&lastChat.busy`;
-    if (!await b.read(active)) return;
+    const matches = `currentApp===${attr(target.app)}&&lastChat?.thread===${attr(target.thread)}`;
+    if (!await b.read(`(${matches})&&lastChat.busy`)) return;
     if (await b.read("document.getElementById('composerFold').getAttribute('aria-expanded')==='false'")) await b.click('#composerFold');
-    await b.click('#stop'); await b.click('#askOk');
-    await b.wait(`!(${active})`, '停止本轮测试会话后清理');
+    const state = await b.wait(`(()=>{
+      if (!(${matches})) throw Error('清理时选中的原生会话已变化');
+      if (!lastChat.busy) return 'idle';
+      const stop=document.getElementById('stop');
+      if (!stop?.getClientRects().length || stop.disabled) return null;
+      stop.click(); return 'confirm';
+    })()`, '测试会话已结束或可停止');
+    if (state === 'idle') return;
+    await b.wait(`(()=>{
+      if (!(${matches})) throw Error('确认停止时选中的原生会话已变化');
+      const button=document.getElementById(lastChat.busy?'askOk':'askNo');
+      if (!button?.getClientRects().length || button.disabled) return false;
+      button.click(); return true;
+    })()`, '测试会话停止确认');
+    await b.wait(`(${matches})&&!lastChat.busy`, '停止本轮测试会话后清理');
   }
   async cleanupSession(target) {
     const b = this.b; await b.dismiss();
@@ -290,15 +330,124 @@ export class Context {
   async persistResources() {
     await fs.writeFile(`${this.directory}/resources.json`, JSON.stringify({ sessions: this.owned, terminals: this.terminals, fusion: this.fusion }, null, 2));
   }
+  async stressProgress(progress) {
+    await fs.appendFile(path.join(this.directory, 'stress-progress.jsonl'), JSON.stringify({ at: Date.now(), ...progress }) + '\n');
+    if (progress.phase === 'overview' && progress.state === 'started')
+      console.log(`stress.last-target/${progress.app} · ${progress.iteration}/${this.options.iterations}`);
+  }
+  async codexRestoreTarget(target) {
+    const catalog = await this.overview();
+    if (catalog.id !== this.original.computer || catalog.ready !== true || !Array.isArray(catalog.sessions))
+      throw new Error('原电脑的 Codex 会话目录不可用');
+    const matches = catalog.sessions.filter(row => row.app === 'codex' && row.threadId === target.threadId);
+    const row = matches.find(row => row.windowId === target.windowId) || (matches.length === 1 ? matches[0] : null);
+    if (!row && matches.length) throw new Error('无法确认原 Codex 会话的窗口归属');
+    if (!row) return { reason: '原 Codex 会话已不在当前目录' };
+    if (row.workspaceMissing) return { reason: '原 Codex 会话的项目目录已移除' };
+    const params = new URLSearchParams({ computer: catalog.id, win: row.win, windowId: row.windowId, threadId: row.threadId });
+    const result = await this.b.read(`(async()=>{
+      const response=await api(${attr('/api/overview/session?' + params)});
+      const result=await response.json();
+      if(!response.ok)throw Error(result.error||'Codex 原生目录 HTTP '+response.status);
+      return result;
+    })()`);
+    if (result.threadId !== target.threadId) throw new Error('Codex 原生目录返回了不同的会话');
+    if (result.status === 'missing') return { reason: '原 Codex 会话已从原生目录移除' };
+    if (result.status === 'archived') return { reason: '原 Codex 会话已归档' };
+    if (result.status === 'workspace-missing') return { reason: '原 Codex 会话的项目目录已移除' };
+    if (result.status !== 'available') throw new Error('Codex 原生会话目录不可用');
+    return { row: { app: row.app, comp: catalog.id, thread: row.threadId, host: row.host || '' } };
+  }
+  async restoreOriginal() {
+    const b = this.b, { computer, view, width, height, draft, draftKey } = this.original;
+    await b.dismiss();
+    if (await b.has('#transferClose')) await b.click('#transferClose');
+    if (await b.has('#vClose')) await b.click('#vClose');
+    // Restoring a visible overview does not need to wait for every unrelated
+    // page animation to settle after Back. Verify the actual view instead.
+    if (await b.read("document.body.classList.contains('conv')")) {
+      await b.click('#ovBack', { settle: false });
+      await b.wait("!document.body.classList.contains('conv')", '恢复概览');
+    }
+    await b.viewport(width, height);
+    assert.equal(await b.read('currentComputer()?.id'), computer, '恢复时电脑已变化');
+    const tab = ['fusion', 'devices'].includes(view.level) ? view.level : 'sessions';
+    if (await b.read(`document.querySelector('#ovTabs [aria-current=page]')?.dataset.v`) !== tab)
+      await b.click(`#ovTabs [data-v="${tab}"]`);
+    // Restore the complete visible Overview scope, not just the bottom tab.
+    // The QA scenarios deliberately modify project, computer and search filters.
+    // Restoring only ovS.level silently leaves the user in the wrong subview.
+    if ((await b.read('ovS.comp')) !== view.comp)
+      await b.select('[data-ov-computer]', view.comp || '');
+    if (['sessions', 'projects', 'favorites'].includes(view.level)) {
+      // Projects and Favorites are Overview filters, not separate bottom tabs.
+      // Reselecting the filter also clears any QA-selected project card.
+      if ((await b.read('ovS.level')) !== view.level || (await b.read('ovS.proj')) !== view.proj)
+        await b.click(`#ovFilters [data-v="${view.level === 'sessions' ? 'all' : view.level}"]`);
+      if (view.proj && (await b.read('ovS.proj')) !== view.proj) {
+        // Do not let a QA search hide the original project before reopening it.
+        if (await b.read('ovS.query')) await b.fill('#ovFilters [data-ov-search]', '');
+        const project = `#ovBoard [data-ov="proj"]${by('data-id', view.proj)}`;
+        const folded = `[data-ov="fold"]${by('data-id', view.proj.split('|')[0])}[aria-expanded="false"]`;
+        if (await b.has(folded)) await b.click(folded);
+        await b.click(project);
+      }
+      if ((await b.read('ovS.query')) !== view.query)
+        await b.fill('#ovFilters [data-ov-search]', view.query || '');
+      if (view.open && (await b.read('ovS.open')) !== view.open)
+        await b.click(`#ovBoard [data-ov="sess"]${by('data-id', view.open)}`);
+    } else if ((await b.read('ovS.query')) !== view.query) {
+      // Search is hidden in Work/Devices. Set it through the actual UI before
+      // returning to the original tab; never inject the application state.
+      await b.click('#ovTabs [data-v="sessions"]');
+      await b.fill('#ovFilters [data-ov-search]', view.query || '');
+      await b.click(`#ovTabs [data-v="${view.level}"]`);
+    }
+    assert.equal(await b.read('ovS.level'), view.level, '原概览层级未恢复');
+    assert.equal(await b.read('ovS.comp'), view.comp, '原电脑筛选未恢复');
+    assert.equal(await b.read('ovS.proj'), view.proj, '原项目筛选未恢复');
+    assert.equal(await b.read('ovS.query'), view.query, '原搜索条件未恢复');
+    assert.equal(await b.read('ovS.open'), view.open, '原展开卡片未恢复');
+
+    let restoration = { status: 'overview' };
+    if (view.conversation) {
+      const target = view.target;
+      if (!target) throw new Error('启动时的可见会话身份未确认');
+      const result = target.app === 'codex' ? await this.codexRestoreTarget(target)
+        : { row: (await this.rows(target.app)).find(row => row.thread === target.threadId) };
+      if (result.row) {
+        const opened = await this.open(result.row);
+        assert(opened.conversation && opened.computer === computer && opened.app === target.app && opened.thread === target.threadId,
+          '打开的会话与原可见会话不一致');
+        if (view.mode === 'terminal') await b.click('#tabTerm');
+        if (view.mode === 'chat' && await b.read("document.getElementById('composerFold').getAttribute('aria-expanded')") !== view.inputExpanded)
+          await b.click('#composerFold');
+        restoration = { status: 'exact', thread: target.threadId };
+      } else if (result.reason) restoration = { status: 'overview-fallback', thread: target.threadId, exact: false, reason: result.reason };
+      else throw new Error('原会话已不在目录中');
+    }
+
+    this.cleanup.restored = await b.snapshot();
+    assert.equal(this.cleanup.restored.computer, computer, '未恢复到原电脑');
+    assert.equal(this.cleanup.restored.conversation, restoration.status === 'exact', '未恢复预期的可见视图');
+    const retainedDraft = restoration.status === 'exact' ? 'text.value'
+      : `activeDraft===${attr(draftKey)}?text.value:(drafts.get(${attr(draftKey)})||'')`;
+    assert.equal(await b.read(retainedDraft), draft, '原归属的草稿未恢复');
+    return restoration;
+  }
   async finish() {
     const b = this.b;
     for (const run of this.fusion.slice().reverse()) {
       try {
-        await b.home(); await b.click('#ovLevels [data-v="fusion"]');
+        await b.home(); await b.click('#ovTabs [data-v="fusion"]');
         const card = `[data-fusion-open]${by('data-fusion-open', run.id)}${by('data-computer', this.computer)}`;
         await b.hold(card); await b.click('#sheet [data-agent-action="remove"]');
         if (await b.has('#askOk')) await b.click('#askOk');
-        await b.wait(`!fusionWorkspaces.get(${attr(this.computer)})?.runs.some(r=>r.id===${attr(run.id)})`, '测试工作台删除');
+        const outcome = await b.wait(`(()=>{
+          const r=fusionWorkspaces.get(${attr(this.computer)})?.runs.find(row=>row.id===${attr(run.id)});
+          return !r ? { removed: true } : r.removal?.error ? { error: r.removal.error } : null;
+        })()`, '测试工作台删除回执');
+        if (outcome.error) throw new Error('原生工作台清理被拒绝：' + outcome.error);
         (this.cleanup.fusion ||= []).push({ id: run.id, ok: true });
       } catch (error) { this.cleanup.errors.push({ fusion: run.id, error: error.message }); }
     }
@@ -326,25 +475,11 @@ export class Context {
       }
       catch (error) { this.cleanup.errors.push({ thread: target.thread, error: error.message }); }
     }
-    try {
-      await b.dismiss();
-      if (await b.has('#transferClose')) await b.click('#transferClose');
-      if (await b.has('#vClose')) await b.click('#vClose');
-      if (this.original.target?.threadId && (await b.read('lastChat?.thread') !== this.original.target.threadId || this.original.conversation)) {
-        const row = (await this.rows()).find(row => row.thread === this.original.target.threadId && row.comp === this.original.computer);
-        if (row) await this.open(row);
-        else throw new Error('原会话已不在目录中，保留现场');
-        if (this.original.mode === 'terminal') await b.click('#tabTerm');
-        if (this.original.mode === 'chat' && await b.read("document.getElementById('composerFold').getAttribute('aria-expanded')") !== this.original.inputExpanded)
-          await b.click('#composerFold');
-      }
-      if (!this.original.conversation) await b.home();
-      if (await b.has(`#ovLevels [data-v=${attr(this.original.overview.level)}]`))
-        await b.click(`#ovLevels [data-v=${attr(this.original.overview.level)}]`);
-      await b.viewport(this.original.width, this.original.height);
-      this.cleanup.restored = await b.snapshot();
-      assert.equal(await b.read('text.value'), this.original.draft, '原草稿未恢复');
-    } catch (error) { this.cleanup.errors.push({ restore: error.message }); }
+    try { this.cleanup.restoration = await browserDeadline(this.options.timeout, '恢复原可见视图', () => this.restoreOriginal()); }
+    catch (error) {
+      this.cleanup.restoration = { status: 'failed', reason: error.message };
+      this.cleanup.errors.push({ restore: error.message });
+    }
     if (!this.cleanup.errors.length && this.owned.length) {
       try { this.cleanup.platform = await platform.cleanupProjects(this.directory, this.options.registryConfig, this.computer, () => this.overview()); }
       catch (error) { this.cleanup.errors.push({ projects: error.message }); }

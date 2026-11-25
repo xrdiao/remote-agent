@@ -44,7 +44,7 @@ const computerResumeReady = idbGet('computer-resumes').then(saved => {
   if (saved && Date.now() - saved.at < 5 * 60 * 1000) ovRestoreComputers(saved);
 });
 function saveComputerResume(link) {
-  if (computerSockets.get(link.computer.key) !== link || !link.auth?.resumeId || !computerBindingReady(link)) return;
+  if (linkForComputerKey(link.computer.key) !== link || !link.auth?.resumeId || !computerBindingReady(link)) return;
   const foreground = link.socket === ws && !!link.receive;
   const { chat, ...binding } = link.binding;
   computerResumes.set(link.expectedId, {
@@ -649,7 +649,7 @@ function pruneEchoes(chat) {
   pendingEchoes = pendingEchoes.filter(p => {
     // A send that vanished with a dead socket would otherwise spin "发送中…" forever.
     if (!p.confirmed && Date.now() - p.at > 120000) return false;
-    if (p.sel !== viewSel) return true;
+    if (!echoInSelection(p)) return true;
     if (p.messageId && humans.some(it => it.i === p.messageId)) return false;
     p.represented = false;
     if (p.kind === 'queue' || p.queueId) {
@@ -674,7 +674,7 @@ function pruneEchoes(chat) {
   });
 }
 function pendingEchoEls() {
-  return pendingEchoes.filter(p => p.kind === 'chat' && p.sel === viewSel).map(p => {
+  return pendingEchoes.filter(p => p.kind === 'chat' && echoInSelection(p)).map(p => {
     const el = renderItem({ i: 'pending:' + p.requestId, k: 'human', t: p.text, images: p.images });
     el.classList.add('pending');
     el.querySelector('.bubble').hidden = !p.text.trim() && !!p.images?.length;
@@ -729,8 +729,9 @@ function renderChat(chat, stale, loading = false, keepReading = true, historyIns
     $('older').disabled = false;
     $('historyStatus').hidden = true;
   }
-  if (chat && !historyExpanded && Number.isFinite(chat.historyBefore)) historyCursor = chat.historyBefore;
-  if (chat?.earlier === true && (currentApp !== 'codex' || !historyExpanded)) historyAtEnd = false;
+  if (chat && !historyExpanded && (currentApp === 'cursor' || Number.isFinite(chat.historyBefore)))
+    historyCursor = chat.historyBefore ?? null;
+  if (chat?.earlier === true && (!['codex', 'cursor'].includes(currentApp) || !historyExpanded)) historyAtEnd = false;
   const paged = currentApp === 'codex' && Number.isFinite(chat?.historyBefore) && !stale && !previousStale;
   if (chat && previous?.thread === chat.thread && (historyExpanded || paged) && !chat.windowed) {
     const updates = new Map(chat.items.map(it => [it.i, it]));
@@ -777,7 +778,9 @@ function renderChat(chat, stale, loading = false, keepReading = true, historyIns
   $('emptyHint').hidden = loading || imageOnly || !!chat?.loginRequired;
   $('older').hidden = !chat || chat.earlier === false;
   $('pickMode').hidden = currentApp === 'devin' || currentApp === 'cursor' || !chat?.mode;
-  $('pickModel').hidden = !supportsCapability('model') || (currentApp === 'codex' && (chatStale || !chat?.model));
+  // A native Codex thread can be ready before its first model is selected.
+  // The picker must remain available so the user can choose that model.
+  $('pickModel').hidden = !supportsCapability('model') || (currentApp === 'codex' && chatStale);
   if (chat?.mode) { $('pickMode').textContent = chat.mode === 'Bypass Permissions' ? '⚠绕过' : chat.mode; $('pickMode').title = chat.mode; }
   $('pickMode').classList.toggle('bypass', chat?.mode === 'Bypass Permissions');
   const mdl = chat?.model || '模型';
@@ -825,7 +828,9 @@ function renderChat(chat, stale, loading = false, keepReading = true, historyIns
     noteSwitch(chat);
     return;
   }
-  if (SC.key && V.all.length && !(currentApp === 'devin' && Number.isFinite(chat.historyBefore)))
+  const nativeHistory = currentApp === 'cursor' ? typeof chat.earlier === 'boolean'
+    : currentApp === 'devin' && Number.isFinite(chat.historyBefore);
+  if (SC.key && V.all.length && !nativeHistory)
     $('older').hidden = Math.min(...V.all.map(it => acpNum(it.i)).filter(n => n >= 0), Infinity) <= 0;
   $('older').hidden ||= historyAtEnd;
   $('cachedMore').hidden = !V.older;
@@ -945,7 +950,7 @@ function renderChat(chat, stale, loading = false, keepReading = true, historyIns
   if (SC.jump && SC.items.has(SC.jump)) { const j = SC.jump; SC.jump = null; scJump(j); }
   completeTurnNavigation();
   applyPendingHistory();
-  if ((!stale || chat.imagePreview) && !loading && windowReady && liveChatSelection === viewSel) {
+  if ((!stale || chat.imagePreview) && !loading && windowReady && selectedConversation.live === viewSel) {
     if (!chat.readonly) rememberConversation();
     connContentReady();
   }
@@ -958,7 +963,12 @@ function showTasks() {
   if (!latestTasks) return closeSheet();
   openSheet('tasks', `<h3>${I18N.tr('任务')} ${latestTasks.done}/${latestTasks.total}</h3><div class="sheetTasks">${tasksHtml(latestTasks)}</div>`);
 }
-itemsEl.addEventListener('click', e => { const b = e.target.closest('[data-codex-agent]'); if (b) send({ t: 'openAgent', id: b.dataset.codexAgent }); });
+itemsEl.addEventListener('click', e => {
+  const agent = e.target.closest('[data-codex-agent]')?.dataset.codexAgent;
+  if (!agent) return;
+  const [, windowId] = viewSel.split('|');
+  send({ t: 'openAgent', id: currentApp === 'cursor' ? agent : `thread:${windowId}:${agent}` });
+});
 $('taskChip').onclick = () => showTasks();
 itemsEl.addEventListener('toggle', e => { const id = e.target.dataset.task; if (id) e.target.open ? taskOpen.add(id) : taskOpen.delete(id); }, true);
 $('qnBar').addEventListener('click', e => {
@@ -1015,7 +1025,7 @@ function sendQuestion(message) {
   try {
     if (send(action)) return;
   } catch {
-    desktopRequests.delete(action.operationId);
+    desktopOperations.remove(action.operationId);
   }
   finishQuestion({ requestId, ok: false, error: '连接已断开，回答未发送' });
 }
@@ -1080,7 +1090,7 @@ function renderQuestions(qs) {
     if (!pending) finishPending(['正在提交回答…']);
   }
   qnState = qs;
-  if (!chatStale && !navigationPending) syncQuestionDrafts([
+  if (!chatStale && !selectedConversation.navigation) syncQuestionDrafts([
     ...(qs?.requests || []).map(request => request.id),
     ...(qs?.devin && qs.list?.length ? [devinQuestionId(qs)] : []),
     ...(lastChat?.items || []).filter(item => item.k === 'opencodeQuestion').map(item => item.requestID),
@@ -1224,7 +1234,7 @@ function toggleChangeNotice() {
 }
 function queuedMessages(queued = chatStale ? [] : lastChat?.queued || [], qCount = chatStale ? 0 : lastChat?.queuedCount) {
   const devin = currentApp === 'devin';
-  const pending = pendingEchoes.filter(p => p.kind === 'queue' && p.sel === viewSel && !p.represented);
+  const pending = pendingEchoes.filter(p => p.kind === 'queue' && echoInSelection(p) && !p.represented);
   const nativeCount = Math.max(queued.length, devin ? qCount || 0 : 0);
   const count = queued.length ? nativeCount + pending.length : Math.max(nativeCount, pending.length);
   return { count, pending, queued, devin };
@@ -1276,7 +1286,7 @@ function renderQueue(busy, queued, subs = [], readonly = false, changed = 0, qCo
 
 let queueEditRequest = null;
 function sendQueueAction(id, action, text, requestId) {
-  const echoes = pendingEchoes.filter(p => p.sel === viewSel && (action === 'clear'
+  const echoes = pendingEchoes.filter(p => echoInSelection(p) && (action === 'clear'
     ? p.kind === 'queue' || p.represented : p.represented && p.queueId === id)).map(p => p.requestId);
   return send({ t: 'queue', id, action, text, requestId, echoes });
 }
@@ -1284,12 +1294,13 @@ function editQueued(id) {
   const q = (lastChat?.queued || []).find(x => x.id === id);
   if (!q) return status('这条排队消息已经不在了', false);
   if (currentApp === 'devin') { status('正在取出…'); return sendQueueAction(id, 'edit'); }
-  const edit = queueEditRequest = { id, sel: viewSel, requestId: crypto.randomUUID(), action: 'read' };
+  const edit = queueEditRequest = { id, sel: viewSel, computer: currentComputer()?.id || '', requestId: crypto.randomUUID(), action: 'read' };
   openSheet('queueEdit', `<h3>修改排队消息</h3>
     <textarea id="qEdit" disabled style="width:100%;box-sizing:border-box;min-height:120px;max-height:50dvh;margin-bottom:10px"></textarea>
     <div id="qError" role="status">正在读取完整内容…</div>
     <button class="opt" id="qSave" disabled style="justify-content:center;background:var(--accent);border-color:var(--accent-b);color:#fff;font-weight:600">保存（仍在排队）</button>`);
   $('qSave').onclick = () => {
+    if (edit.computer !== (currentComputer()?.id || '') || edit.sel !== viewSel) return;
     if (edit.action === 'read') {
       edit.requestId = crypto.randomUUID(); $('qSave').disabled = true;
       $('qError').textContent = '正在读取完整内容…';
@@ -1305,9 +1316,10 @@ function editQueued(id) {
   };
   if (!sendQueueAction(id, 'read', undefined, edit.requestId)) receiveQueueEdit({ ...edit, ok: false, error: '连接已断开，请重试' });
 }
-function receiveQueueEdit(m) {
+function receiveQueueEdit(m, computer = currentComputer()?.id || '') {
   const edit = queueEditRequest;
-  if (!edit || sheetKind !== 'queueEdit' || edit.sel !== viewSel || m.sel !== edit.sel || m.requestId !== edit.requestId) return;
+  if (!edit || edit.computer !== computer || computer !== (currentComputer()?.id || '')
+      || sheetKind !== 'queueEdit' || edit.sel !== viewSel || m.sel !== edit.sel || m.requestId !== edit.requestId) return;
   if (!m.ok) {
     $('qError').textContent = m.error || '操作未完成，内容已保留';
     $('qSave').disabled = false;
@@ -1594,8 +1606,8 @@ function requestOlderRemote() {
     const orders = lastChat.items.map(it => it.order).filter(Number.isFinite);
     Object.assign(paging, { before: historyCursor ?? (orders.length ? Math.min(...orders) : null),
       known: SC.key ? [...SC.items.keys()] : lastChat.items.map(it => it.i), details: executionRecordsShown() });
-  } else if (currentApp === 'devin' && historyCursor !== null) paging.before = `acp${historyCursor}`;
-  else if (currentApp === 'cursor' || currentApp === 'devin') paging.before = lastChat.items[0]?.i || null;
+  } else if (currentApp === 'cursor') paging.before = historyCursor ?? lastChat.items[0]?.i ?? null;
+  else if (currentApp === 'devin') paging.before = historyCursor !== null ? `acp${historyCursor}` : lastChat.items[0]?.i || null;
   if (send({ t: 'scrollChat', dy: -900, automatic: true, history: true, requestId: historyRequest.id, ...paging }) === false) {
     historyExpanded = historyRequest.expanded;
     clearHistoryRequest();
@@ -1638,7 +1650,7 @@ function applyPendingHistory() {
   else {
     const known = new Set(chat.items.map(it => it.i));
     SC.show += page.items.filter(it => !known.has(it.i)).length;
-    if (Number.isFinite(page.before)) historyCursor = page.before;
+    if (currentApp === 'cursor' ? typeof page.before === 'string' : Number.isFinite(page.before)) historyCursor = page.before;
     const rows = [...new Map([...page.items, ...chat.items].map(it => [it.i, it])).values()];
     const order = it => Number.isFinite(it.order) ? it.order : Number(/^acp(\d+)/.exec(it.i)?.[1] || 0);
     rows.sort((a, b) => order(a) - order(b));

@@ -1,5 +1,43 @@
   const fusionCodexBind = async (id, name) => {
       const manager = codexConversationManager(id, codexHistoryScopes(), remoteContext?.host || 'local');
+      if (name.mcp) {
+        const host = remoteContext?.host || '', client = manager || codexConnectedRpc(host || 'local');
+        if (!client || host || remoteContext?.app !== 'codex' || remoteContext.threadId !== id
+            || remoteContext.fusionController !== true || name.mcp.name !== 'ra-fusion')
+          throw new Error('Codex 会话级主控 MCP 缺少精确本机绑定');
+        const context = await nativeSessionContext('codex', id);
+        if (context.host !== host || context.threadId !== id || !samePath(context.cwd, remoteContext.cwd)
+            || JSON.stringify(context.roots) !== JSON.stringify(remoteContext.roots))
+          throw new Error('Codex 主控会话或项目绑定已变化');
+        // This cache is only an instruction/profile optimization. Native MCP
+        // requests are bound through their token and thread history, not a view.
+        const profiles = doc.defaultView.__remoteAgentFusionCodexMcp ||= new Map();
+        const key = JSON.stringify([host, id]), profile = JSON.stringify({ instructions: name.instructions, mcp: name.mcp });
+        const project = JSON.stringify({ host: context.host || '', cwd: context.cwd, roots: context.roots });
+        const previous = profiles.get(key);
+        if (previous?.client === client && previous.document === doc
+            && previous.profile === profile && previous.project === project) return { profileReady: true };
+        const latest = await codexRpcCall(client, 'getLatestTurnId', id);
+        const turn = latest && await codexRpcCall(client, 'getDynamicToolTurnContext', id, latest);
+        if (turn?.status === 'inProgress') return { profileReady: false };
+        const conversation = await codexRpcCall(client, 'getConversation', id);
+        const settings = conversation?.latestThreadSettings, permissions = conversation?.currentPermissions;
+        if (!settings || !permissions) throw new Error('Codex 主控原生设置尚未就绪');
+        const params = {
+          threadId: id, excludeTurns: true, developerInstructions: name.instructions,
+          model: settings.model, serviceTier: settings.serviceTier, cwd: settings.cwd,
+          approvalPolicy: permissions.approvalPolicy, approvalsReviewer: permissions.approvalsReviewer,
+          permissions: permissions.activePermissionProfile?.id, runtimeWorkspaceRoots: permissions.runtimeWorkspaceRoots,
+          config: { ...(settings.effort ? { model_reasoning_effort: settings.effort } : {}),
+            ['mcp_servers.' + name.mcp.name]: { url: name.mcp.url } },
+        };
+        if (manager) await manager.requestClient.sendRequest('thread/resume', nativeValue(params));
+        else await codexRpcCall(client, 'sendRequest', 'thread/resume', params);
+        profiles.set(key, { client, document: doc, profile, project });
+        return { profileReady: true };
+      }
+      if (typeof manager?.threadExecution?.executeDynamicToolCall !== 'function')
+        throw new Error('该旧版 Codex Fusion 会话没有会话级 MCP 配置，不能转接或重放原工具请求');
       const managers = window.__remoteAgentNativeTools ||= new WeakMap();
       let bridge = managers.get(manager);
       if (!bridge) {
@@ -222,6 +260,9 @@
     };
   };
   const fusionDevinTurn = (id, messageId = '', generationId = '', attemptId = '') => {
+    // acpN task receipts are native transcript positions, not Fusion message
+    // IDs. MCP cancellation uses nativeSessionInfo('devin', id, 'cancelState')
+    // and must never substitute the latest ledger turn for an unmatched ID.
     const spec = fusionDevinState(id);
     fusionDevinCapture(id, spec);
     const clientId = row => row.params._meta?.['cognition.ai/clientMessageId'], values = [...spec.turns.values()];
@@ -230,11 +271,13 @@
       : attemptId ? values.find(row => clientId(row) === attemptId)
       : values.findLast(row => row.messageId);
     if (attemptId && (!turn || clientId(turn) !== attemptId)) turn = undefined;
-    const ended = ['completed', 'failed'].includes(turn?.status);
-    return { id: turn?.messageId || '', ids: [...spec.turns.values()].map(row => row.messageId).filter(Boolean), turnId: turn?.messageId || '',
-      generationId: turn?.generationId || '', threadId: id, current: turn === [...spec.turns.values()].at(-1), accepted: !!turn?.messageId,
-      user: turn?.user || '', text: turn?.replyText || '', ended, completed: turn?.status === 'completed' && !!turn?.hasReply,
-      error: turn?.status === 'failed' ? turn.errorMessage || 'Devin 原生执行失败' : '', items: [] };
+    const current = !!turn && turn === values.at(-1);
+    const failed = turn?.status === 'failed' || current && devinSessionRecord(id)?.status === 'unknown_error';
+    const ended = failed || turn?.status === 'completed';
+    return { id: turn?.messageId || '', ids: values.map(row => row.messageId).filter(Boolean), turnId: turn?.messageId || '',
+      generationId: turn?.generationId || '', threadId: id, current, accepted: !!turn?.messageId,
+      user: turn?.user || '', text: turn?.replyText || '', ended, completed: !failed && turn?.status === 'completed' && !!turn.hasReply,
+      error: failed ? turn.errorMessage || 'Devin 原生执行失败' : '', items: [] };
   };
   const fusionDevinBind = async (id, spec) => {
     const native = await import('@exa/chat-client'), session = devinSessionRecord(id);
@@ -307,6 +350,115 @@
         return (manager.getConversation(id)?.requests || []).filter(request => request.method === 'item/tool/call');
       }
       return [...(fusionNativeControllers().get(fusionNativeKey(app, id))?.pending || new Map()).values()].map(row => row.request);
+    },
+    async identify(app, id, input) {
+      const host = remoteContext?.host || '', view = doc.defaultView;
+      if (app !== 'codex' || host || remoteContext?.app !== app || remoteContext.threadId !== id
+          || remoteContext.fusionController !== true || input.server !== 'ra-fusion' || input.tool !== 'ra_fusion')
+        throw new Error('Codex MCP 请求不属于已登记的主控 Binding');
+      const manager = codexConversationManager(id, codexHistoryScopes(), 'local');
+      const client = manager || codexConnectedRpc('local');
+      if (!client) throw new Error('Codex 原生连接尚未就绪');
+      const canonical = value => JSON.stringify(value, (_key, row) => row && typeof row === 'object' && !Array.isArray(row)
+        ? Object.fromEntries(Object.keys(row).sort().map(key => [key, row[key]])) : row);
+      const currentClient = () => manager ? codexConversationManager(id, codexHistoryScopes(), 'local') : codexConnectedRpc('local');
+      let stopped = false, timeout;
+      try {
+        return await Promise.race([
+          (async () => {
+            while (!stopped) {
+              // thread/read is persisted history: it omits a pending MCP item
+              // until the tool has finished. Bind the live callback to the
+              // native client's current conversation store instead.
+              const [conversation, latest, live] = await Promise.all([
+                codexRpcCall(client, 'getConversation', id),
+                codexRpcCall(client, 'getLatestTurnId', id),
+                nativeSessionContext(app, id),
+              ]);
+              if (stopped) return;
+              if (view.closed || view.document !== doc || currentClient() !== client || live.threadId !== id || live.host !== host
+                  || !samePath(live.cwd, remoteContext.cwd) || JSON.stringify(live.roots) !== JSON.stringify(remoteContext.roots)
+                  || conversation?.id !== id)
+                throw new Error('Codex MCP 原生会话或项目身份已变化');
+              const turns = Object.values(conversation.turnHistory?.entitiesByKey || {}).filter(row => row?.turnId === latest);
+              if (turns.length > 1) throw new Error('Codex MCP 当前原生轮次不唯一');
+              const turn = turns[0];
+              if (turn && turn.status !== 'inProgress') throw new Error('Codex MCP 所属原生轮次已经结束');
+              const matches = (turn?.items || []).filter(row => row.type === 'mcpToolCall' && row.server === input.server
+                && row.tool === input.tool && row.status === 'inProgress' && canonical(row.arguments) === canonical(input.arguments));
+              if (matches.length > 1) throw new Error('多个原生 MCP 调用参数相同，无法确认本次归属');
+              if (matches.length === 1 && typeof matches[0].id === 'string' && matches[0].id) {
+                const [origin, current] = await Promise.all([
+                  codexRpcCall(client, 'getDynamicToolTurnContext', id, turn.turnId),
+                  codexRpcCall(client, 'getLatestTurnId', id),
+                ]);
+                if (stopped) return;
+                if (current !== turn.turnId || origin?.status !== 'inProgress' || origin.matchesOriginatingClient !== true
+                    || currentClient() !== client || view.document !== doc)
+                  throw new Error('Codex MCP 调用已不属于当前原生执行轮次');
+                const call = matches[0];
+                return { id: call.id, method: 'item/tool/call',
+                  params: { threadId: id, turnId: turn.turnId, callId: call.id, tool: input.tool, arguments: input.arguments } };
+              }
+              await new Promise(resolve => setTimeout(resolve, 75));
+            }
+          })(),
+          new Promise((_, reject) => { timeout = setTimeout(() => reject(new Error('Codex MCP 原生调用身份核对超时')), 3000); }),
+        ]);
+      } finally { stopped = true; clearTimeout(timeout); }
+    },
+    async receipt(app, id, query) {
+      const host = remoteContext?.host || '', native = query?.native, view = doc.defaultView;
+      if (app !== 'codex' || remoteContext?.app !== app || remoteContext.threadId !== id
+          || remoteContext.fusionController !== true || query.host !== host || native?.threadId !== id
+          || typeof native.turnId !== 'string' || !native.turnId || typeof native.callId !== 'string' || !native.callId)
+        throw new Error('Codex 管理工具回执缺少精确绑定');
+      const manager = codexConversationManager(id, codexHistoryScopes(), host || 'local');
+      const client = manager?.requestClient || codexConnectedRpc(host || 'local');
+      if (!client) return { status: 'unconfirmed', reason: 'Codex 原生连接未就绪' };
+      let timeout;
+      try {
+        const [response, live] = await Promise.race([
+          Promise.all([
+            manager ? client.sendRequest('thread/read', nativeValue({ threadId: id, includeTurns: true }))
+              : codexRpcCall(client, 'sendRequest', 'thread/read', { threadId: id, includeTurns: true }),
+            nativeSessionContext(app, id),
+          ]),
+          new Promise((_, reject) => { timeout = setTimeout(() => reject(new Error('Codex 管理工具回执核对超时')), 3000); }),
+        ]);
+        const current = manager ? codexConversationManager(id, codexHistoryScopes(), host || 'local')?.requestClient
+          : codexConnectedRpc(host || 'local');
+        if (view.closed || view.document !== doc || current !== client || live.threadId !== id || live.host !== host
+            || !samePath(live.cwd, remoteContext.cwd, !host)
+            || JSON.stringify(live.roots) !== JSON.stringify(remoteContext.roots))
+          return { status: 'unconfirmed', reason: 'Codex 原生会话或项目绑定已变化' };
+        const thread = response?.thread;
+        if (thread?.id !== id) return { status: 'unconfirmed', reason: 'Codex 回执会话身份不一致' };
+        const turn = thread.turns?.find(row => row.id === native.turnId);
+        const type = query.transport === 'mcp' ? 'mcpToolCall' : 'dynamicToolCall';
+        const rows = turn?.items?.filter(row => row.type === type && row.id === native.callId) || [];
+        const item = rows.length === 1 ? rows[0] : null;
+        if (!item || !['completed', 'failed'].includes(item.status))
+          return { status: 'unconfirmed', reason: '原生记录尚未确认这个工具调用结果' };
+        let result;
+        if (query.transport === 'mcp') {
+          // Bundled app-server McpToolCallResult omits MCP isError. It records
+          // success/failure in the native item status, with a separate error.
+          if (item.server !== 'ra-fusion' || !Array.isArray(item.result?.content)
+              || item.result.content.some(row => row.type !== 'text' || typeof row.text !== 'string')
+              || item.status === 'completed' && item.error != null)
+            return { status: 'unconfirmed', reason: '原生 MCP 结果格式与发送记录不一致' };
+          result = { success: item.status === 'completed',
+            contentItems: item.result.content.map(row => ({ type: 'inputText', text: row.text })) };
+        } else {
+          if (item.namespace != null || typeof item.success !== 'boolean' || !Array.isArray(item.contentItems))
+            return { status: 'unconfirmed', reason: '原生动态工具结果尚未就绪' };
+          result = { success: item.success, contentItems: item.contentItems };
+        }
+        return { status: 'consumed', source: 'thread/read', host, threadId: thread.id, turnId: turn.id, callId: item.id,
+          tool: item.tool, arguments: item.arguments, result };
+      } catch (error) { return { status: 'unconfirmed', reason: error.message }; }
+      finally { clearTimeout(timeout); }
     },
     reply(app, id, value) {
       if (app === 'codex') return fusionCodexReply(id, value);

@@ -247,6 +247,12 @@
     const uri = props?.agentWorkspace.workspaceIdentifier?.uri || (!id && cursorProjectPicker()?.selectedTarget?.id?.uri);
     return uri ? { root: uri.scheme === 'file' ? uriFilePath(uri) : uri.path, host: uri.scheme === 'file' ? '' : uri.authority.replace(/^ssh-remote\+/, '') } : null;
   };
+  const cursorSessionRunning = (thread, data = cursorSessionServices()?.data.getComposerDataIfLoaded(thread), fallback = false) => {
+    // The provider's focused state is presentation state, not a stopped generation.
+    if (data?.composerId === thread && ['generating', 'completed', 'aborted'].includes(data.status))
+      return data.status === 'generating';
+    return !!window.__SSG_COMPOSER_PROVIDER__?.getStates?.().some(row => row.id === thread && row.state === 'generating') || fallback;
+  };
   const agentList = () => {
     const composers = cursorSessionServices()?.data.allComposersData.allComposers || [];
     const names = new Map(composers.map(c => [c.composerId, c.name]));
@@ -272,7 +278,7 @@
         workspace: workspace?.root || '',
         host: workspace?.host || '',
         current: id === active || !!row.querySelector('[data-active="true"]'),
-        running: !!row.querySelector('.ui-dot-grid-loader'),
+        running: cursorSessionRunning(id, undefined, !!row.querySelector('.ui-dot-grid-loader')),
         lastUsed: lastUsed.get(id) || 0,
       };
     }).filter(a => a.id && a.title && available.has(a.id));
@@ -281,8 +287,8 @@
     const loaded = window.__SSG_COMPOSER_PROVIDER__?.getStates?.() || [];
     const focused = loaded.find(c => c.state === 'focused')?.id;
     if (tabs.length || loaded.length) return [...new Map([
-      ...loaded.map(c => [c.id, { id: c.id, title: c.title || '新会话', current: c.state === 'focused', running: c.state === 'generating', workspace: '', host: '', group: '' }]),
-      ...tabs.map(t => [t.dataset.resourceName, { id: t.dataset.resourceName, title: t.querySelector('.label-name')?.textContent || '新会话', current: focused ? t.dataset.resourceName === focused : t.classList.contains('active'), workspace: '', host: '', group: '' }]),
+      ...loaded.map(c => [c.id, { id: c.id, title: c.title || '新会话', current: c.state === 'focused', running: cursorSessionRunning(c.id), workspace: '', host: '', group: '' }]),
+      ...tabs.map(t => [t.dataset.resourceName, { id: t.dataset.resourceName, title: t.querySelector('.label-name')?.textContent || '新会话', current: focused ? t.dataset.resourceName === focused : t.classList.contains('active'), running: cursorSessionRunning(t.dataset.resourceName), workspace: '', host: '', group: '' }]),
     ]).values()].filter(row => available.has(row.id)).map(row => ({ ...row, lastUsed: lastUsed.get(row.id) || 0, title: names.get(row.id) || row.title, titleNative: names.has(row.id), titleAt: Date.now() }));
     if (devinSurface() === 'editor') {
       const selected = devinTabs().find(tab => tab.active)?.id;
@@ -419,14 +425,14 @@
       if (!request) return null;
       const status = session?.status === 'unknown_error' || (remoteContext ? request.status === 'failed' : request.error) ? 'error'
         : ['active', 'pending', 'canceling'].includes(session?.status) ? 'running'
-        : request.status === 'completed' ? 'completed' : 'unknown';
+        : request.status === 'completed' ? (request.result?.stopReason === 'cancelled' ? 'stopped' : 'completed') : 'unknown';
       return { id: remoteContext ? requestId : request.id, status, startedAt: Number(request.startedAt || request.createdAt) || 0,
         completedAt: status === 'completed' ? Number(request.completedAt) || 0 : 0 };
     }
     const data = cursorSessionServices()?.data.getComposerDataIfLoaded(thread);
     const headers = data?.fullConversationHeadersOnly || [], human = headers.findLastIndex(row => row.type === 1);
     if (human < 0) return null;
-    const start = headers[human], running = window.__SSG_COMPOSER_PROVIDER__?.getStates?.().some(row => row.id === thread && row.state === 'generating');
+    const start = headers[human], running = cursorSessionRunning(thread, data);
     const status = running ? 'running' : data.status === 'aborted' ? 'stopped' : data.status === 'completed' ? 'completed' : 'unknown';
     return { id: data.latestChatGenerationUUID || start.bubbleId, status,
       startedAt: Number(start.startedAtMs) || Date.parse(start.createdAt || '') || 0,
@@ -443,15 +449,13 @@
         workspace: manager.hostId === 'local' ? localFilePath(conversation.cwd || '') : conversation.cwd || '', nativeOwner: manager.getStreamRole(thread)?.role === 'owner' };
     }
     if (app === 'cursor') {
-      const data = cursorSessionServices()?.data.getComposerDataIfLoaded(thread);
+      const { data, capability, decisions, terminal } = cursorPendingTool(thread);
       if (!data) return null;
-      const capability = data.capabilities.find(capability => typeof capability.getPendingUserDecisionGroup === 'function');
-      const decisions = capability?.getPendingUserDecisionGroup()() || [];
       const uri = data.workspaceIdentifier?.uri;
       const waitingToolIds = decisions.map(decision => decision.toolCallId);
       return { waiting: decisions.length ? JSON.stringify([thread, ...waitingToolIds]) : null, waitingToolIds,
         waitingText: decisions.map(decision => {
-          const tool = capability.getBubbleDataByToolCallId(decision.toolCallId);
+          const tool = terminal?.tool || capability.getBubbleDataByToolCallId(decision.toolCallId);
           return tool?.params?.questions?.map(question => question.prompt).join('\n') || tool?.params?.command || tool?.name || '';
         }).join('\n'), nativeOwner: !!data.conversationActionManager && !data.conversationActionManager.signal.aborted,
         ...(uri ? { workspace: uri.scheme === 'file' ? uriFilePath(uri) : uri.path } : {}) };

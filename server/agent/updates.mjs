@@ -3,27 +3,32 @@ import { cdpRead } from '../cdp.mjs';
 import { PAGE_SRC, helpersCall } from '../page/build.mjs';
 import { createHash } from 'node:crypto';
 import { DATA_DIR } from '../../lib/auth.mjs';
+import { ConversationRef } from '../session/binding.mjs';
+import { bindConnectionDelivery } from '../session/connection-view.mjs';
 
 const watchOwner = createHash('sha256').update(DATA_DIR).digest('hex');
 
 // Keep one snapshot in flight. Intermediate updates collapse into the next current snapshot.
 export function watchChatUpdates(session, subscribe, publish) {
-  const key = session.selectionKey(), app = session.app, client = session.client;
+  const binding = ConversationRef.capture(session), client = session.client;
+  const connection = session.connectionView?.generation;
+  const current = () => !stopped && binding.isCurrent(session) && session.visible && session.mode === 'chat'
+    && !session.disposed && (!connection || session.connectionView.current(connection));
   const receipt = Buffer.from(crypto.randomUUID());
   let sending = false, pending = false, stopped = false, scheduled;
-  const refresh = () => {
+  const refresh = bindConnectionDelivery(() => {
     pending = true;
     if (sending || scheduled) return;
     scheduled = setImmediate(() => {
       scheduled = null;
-      if (stopped || session.app !== app || session.selectionKey() !== key || !session.visible || session.mode !== 'chat' || session.disposed) return;
+      if (!current()) return;
       pending = false;
       sending = true;
       if (publish(error => {
-        if (!error && !stopped) client.ping(receipt);
+        if (!error && current()) client.ping(receipt);
       }) === false) sending = false;
     });
-  };
+  });
   const stop = subscribe(refresh);
   const received = data => {
     if (!data.equals(receipt)) return;

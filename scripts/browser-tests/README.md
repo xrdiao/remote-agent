@@ -61,6 +61,8 @@ npm run qa:browser -- --suite stress --apps codex --iterations 20 --max-open-ms 
 
 参数：`--registry PATH` 指定既有配对配置，`--computer ID` 核对执行电脑（需先在浏览器选择该电脑），`--timeout 20000` 控件和导航超时，`--generation-timeout 120000` 原生生成超时，`--fusion-app codex|cursor|devin` 指定主 Agent。Devin 沿用本机网络配置，脚本不设置代理。OpenCode 服务及本地模型需提前启动；脚本不会启动、下载或替换模型。
 
+`stress.last-target` 每个阶段受 `--timeout` 限制，整组受 `--stress-timeout 180000` 限制。终端显示轮次，`stress-progress.jsonl` 记录各阶段起止及最后失败位置，`results.json` 记录该场景的导航代次、原生连接回执和首屏发布。
+
 检测进程必须运行在**配对执行电脑本机**，以便创建隔离目录、核对真实文件、驱动本机浏览器。不能用当前电脑的文件系统核对第二电脑。
 
 ## 长会话样本

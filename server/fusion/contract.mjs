@@ -83,6 +83,23 @@ export function scopeList(value, field, read) {
   }
   return value;
 }
+// Normalize new question choices at the write boundary. Existing v2 shards may
+// contain scalar choices from older clients; FusionStore reads them unchanged.
+export function normalizeFusionQuestionOptions(value) {
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || value.length > 64)
+    throw new FusionControlError('ask_user.options 需要至多 64 项的文字选项数组', 'options', '字符串、有限数字或布尔值的数组');
+  return value.map((option, index) => {
+    const valid = typeof option === 'string' || typeof option === 'boolean'
+      || typeof option === 'number' && Number.isFinite(option);
+    const label = valid ? String(option) : '';
+    if (!valid || !label.trim() || label.length > 1000)
+      throw new FusionControlError(`ask_user.options[${index}] 需要有效的文字选项`,
+        `options[${index}]`, '非空字符串、有限数字或布尔值（最长 1000 字符）');
+    return label;
+  });
+}
+
 export function validateFusionAction(action) {
   if (!action || !FUSION_ACTIONS.includes(action.action)) throw new FusionControlError('未知或缺少 RA 管理动作', 'action', FUSION_ACTIONS, workspaceIndex());
   const missing = (ACTION_FIELDS[action.action] || []).filter(field => action[field] === undefined || action[field] === null);
@@ -90,6 +107,7 @@ export function validateFusionAction(action) {
   if (missing.length) throw new FusionControlError(`${action.action} 缺少参数：${missing.join(', ')}；请按 read_workspace.protocol.required 一次补齐`,
     missing[0], ACTION_FIELDS[action.action], { action: 'read_workspace', input: JSON.stringify({ view: 'protocol' }) });
   if (action.action === 'plan' && action.tasks !== undefined) throw new FusionControlError('plan 仅登记范围和完成标准；请将 tasks 交给 dispatch，不能将方案登记当作任务已派发', 'tasks', 'tasks属于dispatch，plan不派工', workspaceIndex());
+  if (action.action === 'ask_user') normalizeFusionQuestionOptions(action.options);
   if (action.action === 'list_models') return modelQuery(action.input, action.app);
   if (action.action === 'read_workspace') return workspaceQuery(action.input, action.workId);
 }
@@ -97,7 +115,10 @@ const string = { type: 'string' }, strings = { type: 'array', items: string };
 const scope = { ...strings, minItems: 1, description: 'Non-empty project-relative filesystem paths; ["."] means the project root. Put explanations in summary, never inside a path.' };
 const criterion = { type: 'object', additionalProperties: false, required: ['id', 'text'], properties: { id: string, text: string } };
 const execution = { type: 'object', additionalProperties: false, required: ['app', 'model', 'effort', 'input'], properties: {
-  app: { ...string, description: 'A registered native application ID from read_workspace.apps.' }, model: { ...string, description: 'Exact model ID returned by list_models.' }, effort: string, input: string,
+  app: { ...string, description: 'A registered native application ID from read_workspace.apps.' },
+  model: { ...string, description: 'Exact model ID returned by list_models.' },
+  effort: { ...string, description: 'Choose exactly one effort from the selected list_models model efforts[]; if that list is empty, pass an empty string. Do not invent low/medium/high.' },
+  input: string,
 } };
 const cost = { type: 'object', additionalProperties: false, required: ['reason', 'sources'], properties: {
   selfExecute: string, delegate: string, overhead: string, reason: { ...string, description: 'Task fit and total coordination cost.' },
@@ -111,11 +132,11 @@ const task = { type: 'object', additionalProperties: false, required: ['goal', '
   required: { type: 'boolean' }, priority: { type: 'integer' },
 } };
 const worker = { type: 'object', additionalProperties: false, required: ['workerId', 'label', 'reason'], properties: {
-  workerId: { type: ['string', 'null'] }, label: string, reason: string,
+  workerId: { type: ['string', 'null'], description: 'Use the existing Worker id when reusing a worker; use null when creating a new Worker. Do not omit.' }, label: string, reason: string,
   compared: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['workerId', 'reason'],
     properties: { workerId: string, reason: string } } },
 } };
-const dispatchedTask = { ...task, required: [...task.required, 'id', 'execution', 'cost'], properties: { ...task.properties, execution, cost, worker } };
+const dispatchedTask = { ...task, required: [...task.required, 'id', 'execution', 'cost', 'worker'], properties: { ...task.properties, execution, cost, worker } };
 const evidence = { type: 'object', additionalProperties: false, required: ['criterion', 'detail', 'reference'], properties: {
   ...Object.fromEntries(Object.entries(EVIDENCE_FIELDS).map(([name, description]) => [name, { ...string, description }])),
 } };

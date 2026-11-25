@@ -7,7 +7,8 @@ import { appPlans, quotaErrorMessage } from './agent/context.mjs';
 import { probeLatency } from './latency.mjs';
 import { launchAgents, detectAgents } from './launch.mjs';
 import { inspectCompatibility } from './apps/compatibility.mjs';
-import { ADAPTERS } from './apps/index.mjs';
+import { AGENT_REGISTRY, nativeRoute, runAdapterMethod, runNativeAction, runNativeQueue } from './apps/index.mjs';
+import { unsupportedCapability } from './apps/adapter.mjs';
 import { readLibrary, importLibrary, favoriteSession } from '../lib/session-library.mjs';
 import { computerId } from '../lib/auth.mjs';
 import { scanProjectWindows, projectWindowSettings } from './project-windows.mjs';
@@ -20,6 +21,7 @@ import { fileAction } from '../lib/file-actions.mjs';
 import { parseSessionRef } from '../lib/shared-rules.mjs';
 import os from 'node:os';
 import { terminalService } from './terminal-service.mjs';
+import { SourceRef, conversationTerminalSource } from './session/source-ref.mjs';
 
 // One entry per message type the phone can send (auth/ack are handled inside ws.mjs itself).
 //   pre      — runs in handle() before the read-only/focus split, without a cdp
@@ -27,8 +29,8 @@ import { terminalService } from './terminal-service.mjs';
 //   readOnly — skips the focus lock; boolean or (session, msg) => bool
 //   fusionFree — allowed on a fusion session without a cdp; boolean or (session, msg) => bool
 //   fusion   — alternate runner used instead of run when fusionFree applies (refresh only)
-//   fast     — ws.mjs bypasses the per-client queue entirely; fastRun is the direct call
-//   switchRead / connection / navigation — cancellation and selection ownership in ws.mjs
+//   fast     — the WS scheduler bypasses the per-client queue entirely; fastRun is the direct call
+//   switchRead / connection / navigation — cancellation and selection ownership in the WS scheduler
 //   background — waits for preceding commands, then reads without holding up later commands
 //   run      — the dispatch body
 //   after    — emits on success from the queued ws handler
@@ -40,13 +42,18 @@ const flag = (v, s, m) => (typeof v === 'function' ? v(s, m) : !!v);
 // message continue to the normal dispatch path (used by codex `agents`).
 export const SKIP = Symbol('route-skip');
 export function resolveRoute(session, type) {
-  const route = ROUTES[type];
-  const native = session.codexBackend ? session.adapter.backendRoutes[type] : session.app === 'opencode' && session.adapter.routes[type];
+  const route = Object.hasOwn(ROUTES, type) ? ROUTES[type] : undefined;
+  const native = nativeRoute(session, type);
   if (!native) return route;
   const run = (s, m) => native.call(s, m);
   return { ...route, native: true, run,
     ...(session.codexBackend && route?.fastRun ? { fastRun: run } : {}) };
 }
+function runAppMethod(session, method, ...args) {
+  if (!AGENT_REGISTRY[session.app]?.methods[method]) throw unsupportedCapability(session.app, method);
+  return session[method](...args);
+}
+
 const fusionRoute = method => ({ fast: true, fastRun: async (session, message) => {
   try { return await session[method](message); }
   catch (error) { session.emit({ t: 'fusionError', computer: computerId(), runId: message.runId || '', requestId: message.requestId, message: error.message }); }
@@ -179,7 +186,7 @@ export const ROUTES = {
     s.emit({ t: 'pong' });
   } },
   saveFile: {
-    pre: (s, m) => s.saveFile(String(m.path ?? ''), String(m.text ?? ''), m.host == null ? undefined : String(m.host), m.requestId),
+    pre: (s, m) => s.saveFile(String(m.path ?? ''), String(m.text ?? ''), m.host == null ? undefined : String(m.host), m.requestId, m.root),
     fail: (s, m, error) => s.emit({ t: 'saved', requestId: m.requestId, path: m.path, host: m.host || '', ok: false, error: error?.message || '保存未执行' }),
   },
   connAgents: { switchRead: true, connection: true,
@@ -258,7 +265,7 @@ export const ROUTES = {
       try {
         if (read) {
           text = s.app === 'codex'
-            ? await nativeWindow(s.cdp).composerCall(`nativeSessionInfo('codex', ${JSON.stringify(s.threadId)}, 'draft')`, { app: 'codex', threadId: s.threadId })
+            ? await nativeWindow(s.cdp).composerCall(`nativeSessionInfo('codex', ${JSON.stringify(s.threadId)}, 'draft', { format: 'plain' })`, { app: 'codex', threadId: s.threadId })
             : await s.cdp.evaluate(helpersCall('composerDraft()'));
           ok = typeof text === 'string';
         }
@@ -298,9 +305,9 @@ export const ROUTES = {
     after: (s, m) => { if (m.kind === 'model' || m.kind === 'effort' || m.kind === 'fast' || s.app === 'opencode' && m.kind === 'permission') s.emit({ t: 'menuPicked', sel: s.selectionKey(), requestId: m.requestId, kind: m.kind, label: m.label, ok: true }); },
     fail: (s, m) => { if (m.kind === 'model' || m.kind === 'effort' || m.kind === 'fast' || s.app === 'opencode' && m.kind === 'permission') s.emit({ t: 'menuPicked', sel: s.selectionKey(), requestId: m.requestId, kind: m.kind, label: m.label, ok: false }); },
   },
-  fusionOptions: { run: (s, m) => s.fusionOptions(String(m.part ?? '')) },
-  fusionPick: { run: (s, m) => s.fusionPick(String(m.part ?? ''), m.value) },
-  toggleMax: { run: s => s.toggleMax() },
+  fusionOptions: { run: (s, m) => runAppMethod(s, 'fusionOptions', String(m.part ?? '')) },
+  fusionPick: { run: (s, m) => runAppMethod(s, 'fusionPick', String(m.part ?? ''), m.value) },
+  toggleMax: { run: s => runAppMethod(s, 'toggleMax') },
   params: { switchRead: true,  run: (s, m) => s.showParams(String(m.model ?? ''), String(m.label ?? '')) },
   pickParam: { run: (s, m) => s.pickParam(String(m.model ?? ''), String(m.label ?? ''), m.section, m.value) },
   terminals: terminalRoute((s, m) => s.emit({ t: 'terminals', requestId: m.requestId,
@@ -311,16 +318,9 @@ export const ROUTES = {
     s.emit({ t: 'termRemoved', id: m.id, requestId: m.requestId });
   }),
   newTerminal: terminalRoute(async (s, m) => {
-    let project = { root: m.cwd || os.homedir(), host: '' };
-    if (m.source === 'conversation') {
-      if (!s.bindingReady) throw new Error('当前会话项目尚未确认，暂时无法新建终端');
-      if (m.sel !== s.selectionKey()) throw new Error('会话已切换，请从当前会话新建终端');
-      // Freeze the originating native identities before the first asynchronous project read.
-      const origin = Object.assign(Object.create(Object.getPrototypeOf(s)), s);
-      project = await origin.adapter.terminalProject.call(origin);
-      if (!project?.root) throw new Error('未读取到唯一项目目录，暂时无法新建终端');
-    }
-    const terminal = await terminalService.create({ cwd: project.root, host: project.host || '' });
+    const source = m.source === 'conversation' ? await conversationTerminalSource(s, m.sel, runAdapterMethod)
+      : new SourceRef('computer-terminal', { root: m.cwd || os.homedir() });
+    const terminal = await terminalService.create({ cwd: source.root, host: source.host });
     s.emit({ t: 'termCreated', requestId: m.requestId, terminal });
   }),
   termWrite: terminalRoute(async (s, m) => {
@@ -359,7 +359,7 @@ export const ROUTES = {
     },
   },
   codexInstructions: { run: (s, m) => s.app === 'codex' && s.saveCodexInstructions(String(m.text ?? ''), m.requestId) },
-  closeCodexSettings: { run: s => s.closeCodexSettings() },
+  closeCodexSettings: { run: s => runAppMethod(s, 'closeCodexSettings') },
   settings: { switchRead: true,  run: (s, m) => s.showSettings(m.requestId, String(m.section || '')) },
   closeDesktopSettings: { run: s => s.closeDesktopSettings() },
   toggleSetting: { run: (s, m) => s.toggleSetting(String(m.label ?? ''), typeof m.value === 'string' ? m.value : undefined) },
@@ -384,9 +384,9 @@ export const ROUTES = {
   fusionResume: fusionRoute('fusionResume'),
   fusionNative: fusionRoute('fusionNative'),
   newProjectChat: { run: s => s.newProjectChat() },
-  surface: { run: (s, m) => s.setSurface(String(m.to ?? '')) },
-  openEditorChat: { run: s => s.openEditorChat() },
-  closeTab: { run: (s, m) => s.closeTab(String(m.id ?? '')) },
+  surface: { run: (s, m) => runAppMethod(s, 'setSurface', String(m.to ?? '')) },
+  openEditorChat: { run: s => runAppMethod(s, 'openEditorChat') },
+  closeTab: { run: (s, m) => runAppMethod(s, 'closeTab', String(m.id ?? '')) },
   file: { switchRead: true,  run: (s, m) => s.openFile(String(m.path ?? ''), String(m.diff ?? ''), m.changes === true, m.requestId) },
   click: { run: (s, m) => s.clickButton(m.item, m.n, m.actionId, m.label, m.sel, m.requestId) },
   codexRetry: { fast: true, fastRun: (s, m) => {
@@ -396,12 +396,7 @@ export const ROUTES = {
   } },
   queue: {
     readOnly: (s, m) => m.action === 'read',
-    run: (s, m) => {
-      if (m.action === 'read') return s.queuedText(m.id);
-      if (m.action === 'clear' && s.app === 'devin') return s.devinClearQueue();
-      if (m.action === 'edit' && s.app === 'devin') return s.devinTakeOut(m.id);
-      return m.action === 'edit' ? s.editQueued(m.id, String(m.text ?? '')) : s.queueAction(m.id, m.action);
-    },
+    run: runNativeQueue,
     after: (s, m, result) => {
       s.emit({ t: 'queueDone', sel: m.sel || s.selectionKey(), requestId: m.requestId, id: m.id, action: m.action, text: m.action === 'read' ? result : m.text, echoes: m.echoes, ...(m.action === 'edit' && result), ok: true });
       if (m.action === 'edit') s.emit({ t: 'status', ok: true, msg: s.app === 'devin' ? '已取回输入框，编辑后需重新发送' : s.app === 'codex' && result.queued === false ? '已修改并已发送' : '已修改，仍在排队' });
@@ -410,15 +405,15 @@ export const ROUTES = {
   },
   stop: {
     fast: true,
-    fastRun: (s, m) => s.app === 'fusion' ? s.adapter.stopAgent.call(s) : s.handle(m),
+    fastRun: (s, m) => s.app === 'fusion' ? runNativeAction(s, 'stop', m) : s.handle(m),
     readOnly: true,
     run: (s, m) => s.stopButton(m),
   },
   subagent: {
-    run: (s, m) => s.subagentAction(m.name, m.part === 'stop' ? 'stop' : 'open'),
+    run: (s, m) => runAppMethod(s, 'subagentAction', m.name, m.part === 'stop' ? 'stop' : 'open'),
     after: (s, m) => { if (m.part === 'stop') s.emit({ t: 'status', msg: '已点击子 Agent 停止' }); },
   },
-  mainChat: { run: s => s.backToMain() },
+  mainChat: { run: s => runAppMethod(s, 'backToMain') },
   cancelImage: { fast: true, fastRun: (s, m) => {
     const transfer = s.imageTransfers?.get(m.clientImageId);
     if (transfer) transfer.cancelled = true;
@@ -435,15 +430,15 @@ export const ROUTES = {
     run: (s, m) => s.answerQuestion(m.qi, m.oi, m.part === 'text' && s.app === 'devin' ? 'text' : ['option', 'submit', 'skip', 'prev', 'next'].includes(m.part) ? m.part : 'option', m.text),
     after: questionDone, fail: questionFailed,
   },
-  workdir: { switchRead: true,  run: s => s.workdirList() },
-  workdirPick: { run: (s, m) => s.workdirPick(String(m.name ?? '').slice(0, 200), String(m.path ?? '').slice(0, 400)) },
-  envPick: { run: (s, m) => s.envPick(String(m.label ?? '')) },
+  workdir: { switchRead: true,  run: s => runAppMethod(s, 'workdirList') },
+  workdirPick: { run: (s, m) => runAppMethod(s, 'workdirPick', String(m.name ?? '').slice(0, 200), String(m.path ?? '').slice(0, 400)) },
+  envPick: { run: (s, m) => runAppMethod(s, 'envPick', String(m.label ?? '')) },
   changes: { switchRead: true,  run: s => s.listChanges() },
-  toolDetails: { switchRead: true, readOnly: true, run: (s, m) => s.adapter.routes.toolDetails.call(s, m) },
-  thought: { switchRead: true,  readOnly: true, run: (s, m) => s.thought(String(m.i ?? '')) },
-  revert: { run: (s, m) => s.revert(String(m.i ?? '')) },
-  revertOk: { run: (s, m) => s.revertAnswer(true, typeof m.apply === 'boolean' ? m.apply : undefined) },
-  revertCancel: { run: (s, m) => s.revertAnswer(false) },
+  toolDetails: { switchRead: true, readOnly: true, run: (s, m) => runNativeAction(s, 'toolDetails', m) },
+  thought: { switchRead: true,  readOnly: true, run: (s, m) => runAppMethod(s, 'thought', String(m.i ?? '')) },
+  revert: { run: (s, m) => runAppMethod(s, 'revert', String(m.i ?? '')) },
+  revertOk: { run: (s, m) => runAppMethod(s, 'revertAnswer', true, typeof m.apply === 'boolean' ? m.apply : undefined) },
+  revertCancel: { run: (s, m) => runAppMethod(s, 'revertAnswer', false) },
   change: { run: (s, m) => s.changeAction(m.i, m.name, m.act) },
   scrollChat: { switchRead: true,
     background: (s, m) => s.app === 'codex' && m.history === true,
@@ -475,40 +470,23 @@ export const ROUTES = {
   },
   mentionQuery: { switchRead: true,  run: (s, m) => s.mentionQuery(String(m.q ?? '').slice(0, 80), m.cat ? String(m.cat).slice(0, 40) : '', Number(m.seq) || 0, m.trigger === '/' ? '/' : '@', { text: String(m.text ?? ''), start: m.start, caret: m.caret }) },
   codexRequest: {
-    run: async (s, m) => {
-      if (s.app === 'devin') return s.adapter.answerRequest.call(s, m);
-      if (s.app !== 'codex') return;
-      const call = method => nativeWindow(s.cdp).composerCall(method);
-      let result;
-      if (m.field != null) {
-        if (!await call(`codexRequestField(${JSON.stringify(String(m.id))}, ${Number(m.field)}, ${JSON.stringify(String(m.value || ''))})`)) throw new Error('请求输入框已不存在');
-      } else {
-        result = await call(`codexRequestAction(${JSON.stringify(String(m.id))}, ${Number(m.n)}, ${JSON.stringify(m.fields || [])}, ${m.advance === true})`);
-        if (!result) {
-          const pos = await s.cdp.evaluate(helpersCall(`codexRequestTarget(${JSON.stringify(String(m.id))}, ${Number(m.n)})`));
-          if (!pos) throw new Error('请求已经处理或不存在');
-          await s.tapCss(pos.x, pos.y);
-        }
-      }
-      s.pollChat(true).catch(() => {});
-      return result;
-    },
+    run: (s, m) => runNativeAction(s, 'codexRequest', m),
     after: questionDone, fail: questionFailed,
   },
   opencodeQuestion: {
-    run: (s, m) => s.adapter.routes.opencodeQuestion.call(s, m),
+    run: s => { throw unsupportedCapability(s.app, 'opencodeQuestion'); },
     after: (s, m) => s.emit({ t: 'opencodeQuestionDone', requestId: m.requestId, sel: s.selectionKey(), id: m.id, ok: true }),
     fail: (s, m, error) => s.emit({ t: 'opencodeQuestionDone', requestId: m.requestId, sel: s.selectionKey(), id: m.id, ok: false, error: error.message }),
   },
-  codexPick: { run: (s, m) => s.codexPick(m) },
-  codexGoal: { readOnly: (s, m) => m.action === 'read', run: (s, m) => s.app === 'codex' && s.codexGoal(m) },
-  codexSkills: { switchRead: true,  run: s => s.codexSkillList() },
-  codexPlan: { run: s => s.codexTogglePlan() },
-  codexIde: { run: s => s.codexToggleIde() },
-  codexRun: { switchRead: true,  run: s => s.codexRunMenu() },
-  codexChat: { switchRead: true,  run: s => s.codexChatMenu() },
-  codexRename: { run: (s, m) => s.codexRenameThread(String(m.id || ''), String(m.name || '')) },
-  codexArchive: { run: (s, m) => s.codexArchiveThread(String(m.id || '')) },
+  codexPick: { run: (s, m) => runAppMethod(s, 'codexPick', m) },
+  codexGoal: { readOnly: (s, m) => m.action === 'read', run: (s, m) => s.app === 'codex' && runAppMethod(s, 'codexGoal', m) },
+  codexSkills: { switchRead: true,  run: s => runAppMethod(s, 'codexSkillList') },
+  codexPlan: { run: s => runAppMethod(s, 'codexTogglePlan') },
+  codexIde: { run: s => runAppMethod(s, 'codexToggleIde') },
+  codexRun: { switchRead: true,  run: s => runAppMethod(s, 'codexRunMenu') },
+  codexChat: { switchRead: true,  run: s => runAppMethod(s, 'codexChatMenu') },
+  codexRename: { run: (s, m) => runAppMethod(s, 'codexRenameThread', String(m.id || ''), String(m.name || '')) },
+  codexArchive: { run: (s, m) => runAppMethod(s, 'codexArchiveThread', String(m.id || '')) },
   visualList: { connection: true, pre: s => s.visualList()},
   visualSelect: { connection: true, pre: (s, m) => s.visualSelect(m.id)},
   refresh: { switchRead: true, readOnly: true, fusionFree: true,

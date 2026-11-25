@@ -2,7 +2,7 @@
 let raTerminal = null;
 let terminalOrigin = null, terminalListRequest = null, terminalCreateRequest = null;
 let terminalSubscription = '', terminalSequence = 0, terminalReady = false;
-let terminalComputer = '', terminalExited = false, terminalCwd = '', terminalFollow = true;
+let terminalSource = null, terminalExited = false, terminalCwd = '', terminalFollow = true;
 let terminalPrompt = false;
 let terminalPasswordTarget = null, terminalPasswordRequest = null;
 let terminalCompletion = null, terminalHistoryRequest = null;
@@ -12,7 +12,7 @@ const terminalInputKey = () => [currentComputer()?.id || '', currentTerminalId].
 function sendTerminalInput() {
   if (!terminalAvailable() || !text.value.trim()) return;
   saveDraft();
-  const receipt = sendReceipt(text.value);
+  const receipt = sendReceipt(text.value, { id: currentTerminalId, subscription: terminalSubscription });
   if (!send({ t: 'termSend', id: currentTerminalId, subscription: terminalSubscription, text: text.value, ...receipt }))
     failPendingSend(receipt.requestId);
 }
@@ -74,7 +74,7 @@ function terminalMessage(message = '', error = false) {
 }
 function terminalAvailable() {
   return mode === 'terminal' && authed && terminalReady && !terminalExited
-    && terminalComputer === currentComputer()?.id;
+    && terminalSource?.isCurrent() && terminalSource.link()?.socket === ws;
 }
 function terminalActionAvailable(action) {
   if (action === 'copy' || action === 'selectAll') return !!raTerminal;
@@ -145,13 +145,13 @@ function openRaTerminal(id) {
   closeSheet();
   closeTerminalPassword();
   terminalListRequest = terminalCreateRequest = null;
-  if (id !== currentTerminalId || terminalComputer !== currentComputer()?.id) {
+  if (id !== currentTerminalId || !terminalSource?.isCurrent()) {
     disposeTerminalView();
     currentTerminal = terminalCwd = '';
     termState = 'loading'; updateTermEmpty(); updateTitle();
   }
   terminalReady = false;
-  terminalComputer = currentComputer().id;
+  terminalSource = SourceRef.current('computer-terminal', false);
   currentTerminalId = id;
   restoreDraft();
   terminalSubscription = crypto.randomUUID();
@@ -167,9 +167,10 @@ function requestTerminals(select = false) {
 }
 function resumeTerminal() {
   saveDraft();
-  if (terminalOrigin?.computer !== currentComputer().id) terminalOrigin = { computer: currentComputer().id, source: 'computer' };
+  if (!terminalOrigin?.matchesComputer(currentComputer())) terminalOrigin = SourceRef.current('computer-terminal', false);
+  terminalCompletion = terminalHistoryRequest = null;
   terminalReady = false;
-  terminalComputer = currentComputer().id;
+  terminalSource = SourceRef.current('computer-terminal', false);
   terminalSubscription = '';
   currentTerminalId = '';
   currentTerminal = '';
@@ -180,15 +181,15 @@ function resumeTerminal() {
   requestTerminals(true);
 }
 function enterTerminalMode(fromChat) {
-  if (fromChat && terminalOrigin?.source !== 'computer') terminalOrigin = { computer: currentComputer()?.id, source: 'conversation' };
-  terminalOrigin ||= { computer: currentComputer()?.id, source: 'computer' };
+  if (fromChat && terminalOrigin?.capability !== 'computer-terminal' && viewSel) terminalOrigin = SourceRef.current('conversation-terminal');
+  terminalOrigin ||= SourceRef.current('computer-terminal', false);
   if (authed) resumeTerminal();
   else { terminalDisconnected(); terminalMessage('正在连接电脑…'); }
 }
 function leaveTerminalMode() {
   terminalReady = false;
   terminalSubscription = '';
-  terminalOrigin = null;
+  terminalSource = terminalOrigin = null;
   terminalListRequest = terminalCreateRequest = null;
   terminalCompletion = terminalHistoryRequest = null;
   closeTerminalPassword();
@@ -199,7 +200,7 @@ function leaveTerminalMode() {
 async function openComputerTerminal(id) {
   const index = loadComputers().findIndex(computer => computer.id === id);
   if (index < 0) return;
-  terminalOrigin = { computer: id, source: 'computer' };
+  terminalOrigin = new SourceRef(loadComputers()[index], 'computer-terminal');
   // Mode is selected before changing computers, so authentication opens the terminal directly.
   if (currentComputer()?.id !== id) {
     saveDraft();
@@ -211,21 +212,21 @@ async function openComputerTerminal(id) {
   ovShowConversation();
 }
 function createRaTerminal() {
-  const computer = currentComputer()?.id;
-  if (!authed || terminalOrigin?.computer && terminalOrigin.computer !== computer)
-    return terminalMessage('电脑已切换，请从当前电脑新建终端', true);
-  const origin = terminalOrigin || { source: 'computer' };
+  const source = terminalOrigin || SourceRef.current('computer-terminal', false);
+  if (mode !== 'terminal' || !source.isCurrent() || source.link()?.socket !== ws || !authed)
+    return terminalMessage('终端来源已切换，请从当前电脑或会话重新打开', true);
   terminalListRequest = null;
-  terminalCreateRequest = { requestId: crypto.randomUUID(), computer };
+  terminalCreateRequest = { requestId: crypto.randomUUID(), source };
   terminalMessage('正在新建终端…');
-  send({ t: 'newTerminal', requestId: terminalCreateRequest.requestId, source: origin.source,
-    ...(origin.source === 'conversation' ? { sel: viewSel } : {}) });
+  const conversation = source.capability === 'conversation-terminal';
+  send({ t: 'newTerminal', requestId: terminalCreateRequest.requestId, source: conversation ? 'conversation' : 'computer',
+    ...(conversation ? { sel: source.selection } : {}) });
 }
-function removeRaTerminal(id) {
-  send({ t: 'closeTerminal', id, requestId: crypto.randomUUID() });
+function removeRaTerminal(id, source = SourceRef.current('computer-terminal', false)) {
+  if (source.isCurrent() && source.link()?.socket === ws) send({ t: 'closeTerminal', id, requestId: crypto.randomUUID() });
 }
 function renderTerminalSnapshot(m) {
-  const same = terminalComputer === currentComputer().id && raTerminal && currentTerminalId === m.id;
+  const same = terminalSource?.isCurrent() && raTerminal && currentTerminalId === m.id;
   const scroll = same ? [view.scrollLeft, view.scrollTop] : [0, 0];
   disposeTerminalView();
   currentTerminalId = m.id; currentTerminal = m.title; terminalCwd = m.cwd;
@@ -241,25 +242,27 @@ function renderTerminalSnapshot(m) {
   for (const type of ['mousedown', 'contextmenu']) rows.addEventListener(type, event => event.stopPropagation());
   terminal.textarea.readOnly = true;
   terminal.textarea.tabIndex = -1;
-  const subscription = terminalSubscription;
+  const subscription = terminalSubscription, source = terminalSource, socket = ws;
   terminal.write(m.data, () => {
-    if (raTerminal !== terminal || terminalSubscription !== subscription) return;
+    if (raTerminal !== terminal || terminalSubscription !== subscription || ws !== socket || source.link()?.socket !== socket) return;
     terminalReady = true;
-    store.set('terminal-' + terminalComputer, m.id);
+    store.set('terminal-' + terminalSource.computerId, m.id);
     view.scrollLeft = scroll[0]; view.scrollTop = scroll[1];
     updateTerminalControls(); terminalCursorVisible();
   });
   terminalMessage(m.exited ? ct('终端已退出（{code}）', { code: m.exitCode }) : '');
   updateTitle(); updateTerminalControls();
 }
+function receiveTerminalReceipt(message, computer) {
+  const sent = pendingSends.get(message.requestId);
+  if (!sent?.terminal || sent.computer !== computer || sent.terminal.id !== message.id || sent.terminal.subscription !== message.subscription) return;
+  if (message.t === 'termError') return failPendingSend(message.requestId, message.message, true, computer);
+  confirmSent(message, false, computer);
+  terminalInputHistory.delete([computer, message.id].join('|'));
+}
 function receiveTerminal(m) {
   if (m.t === 'termInput' || m.t === 'termHistory') { receiveTerminalInput(m); return true; }
-  if (m.t === 'termSent') {
-    const sent = pendingSends.get(m.requestId);
-    confirmSent(m, false);
-    if (sent) terminalInputHistory.delete([sent.computer, m.id].join('|'));
-    return true;
-  }
+  if (m.t === 'termSent') { receiveTerminalReceipt(m, currentComputer()?.id); return true; }
   if (m.t === 'terminals') {
     const request = terminalListRequest;
     if (mode !== 'terminal' || !request || request.computer !== currentComputer()?.id || m.requestId !== request.requestId) return true;
@@ -276,7 +279,7 @@ function receiveTerminal(m) {
     return true;
   }
   if (m.t === 'termCreated') {
-    if (m.requestId === terminalCreateRequest?.requestId && terminalCreateRequest.computer === currentComputer()?.id && mode === 'terminal') {
+    if (m.requestId === terminalCreateRequest?.requestId && terminalCreateRequest.source.isCurrent() && mode === 'terminal') {
       terminalCreateRequest = null; openRaTerminal(m.terminal.id);
     }
     return true;
@@ -286,13 +289,13 @@ function receiveTerminal(m) {
     return true;
   }
   if (m.t === 'termError') {
+    if (m.action === 'termSend') receiveTerminalReceipt(m, currentComputer()?.id);
     if (m.subscription && m.subscription !== terminalSubscription) return true;
     if (m.action === 'newTerminal' && m.requestId !== terminalCreateRequest?.requestId) return true;
     if (m.action === 'terminals' && m.requestId !== terminalListRequest?.requestId) return true;
     if (m.requestId === terminalPasswordRequest) closeTerminalPassword();
     if (m.requestId === terminalCompletion?.requestId) terminalCompletion = null;
     if (m.requestId === terminalHistoryRequest?.requestId) terminalHistoryRequest = null;
-    if (m.action === 'termSend') failPendingSend(m.requestId, m.message);
     if (mode === 'terminal') terminalMessage(m.message, true);
     return true;
   }
@@ -301,7 +304,7 @@ function receiveTerminal(m) {
     return true;
   }
   if (!['termSnapshot', 'termData', 'termShell', 'termSize', 'termExit', 'termClosed'].includes(m.t)) return false;
-  if (mode !== 'terminal' || terminalComputer !== currentComputer()?.id || m.id !== currentTerminalId || m.subscription !== terminalSubscription) return true;
+  if (mode !== 'terminal' || !terminalSource?.isCurrent() || m.id !== currentTerminalId || m.subscription !== terminalSubscription) return true;
   if (m.t === 'termSnapshot') { renderTerminalSnapshot(m); return true; }
   if (m.seq <= terminalSequence) return true;
   if (m.seq !== terminalSequence + 1) {
@@ -317,7 +320,7 @@ function receiveTerminal(m) {
     terminalExited = true; updateTerminalControls(); terminalMessage(ct('终端已退出（{code}）', { code: m.exitCode }));
   } else if (m.t === 'termClosed') {
     terminalReady = false; currentTerminalId = ''; currentTerminal = ''; terminalCwd = '';
-    store.set('terminal-' + terminalComputer, null);
+    store.set('terminal-' + terminalSource.computerId, null);
     disposeTerminalView(); termState = 'empty'; updateTermEmpty(); updateTitle(); updateTerminalControls();
     terminalMessage('已关闭终端');
   }
@@ -372,14 +375,14 @@ function closeTerminalPassword() {
 }
 function openTerminalPassword() {
   closeSheet();
-  terminalPasswordTarget = { computer: terminalComputer, id: currentTerminalId, subscription: terminalSubscription };
+  terminalPasswordTarget = { source: terminalSource, id: currentTerminalId, subscription: terminalSubscription };
   $('termPasswordBox').hidden = false;
   $('termPassword').focus();
 }
 $('termPasswordCancel').onclick = closeTerminalPassword;
 $('termPasswordBox').onsubmit = e => {
   e.preventDefault();
-  if (!terminalPasswordTarget || terminalPasswordRequest || terminalPasswordTarget.computer !== currentComputer()?.id
+  if (!terminalPasswordTarget || terminalPasswordRequest || !terminalPasswordTarget.source?.isCurrent()
       || terminalPasswordTarget.id !== currentTerminalId || terminalPasswordTarget.subscription !== terminalSubscription) return;
   const requestId = crypto.randomUUID();
   if (!terminalWrite($('termPassword').value + '\r', requestId)) return;

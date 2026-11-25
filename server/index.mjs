@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { PORT, HOST, CDP_URL, CODEX_CDP_URL, EDITORS, TUNNEL, PUBLISH_REPO, ALLOWED_ORIGINS, loadConfig } from './config.mjs';
-import { DATA_DIR, listDevices, saveState, saveConfig, normalizeAppUrl } from '../lib/auth.mjs';
+import { DATA_DIR, computerId, listDevices, saveState, saveConfig, normalizeAppUrl } from '../lib/auth.mjs';
 import { startWatcher } from '../lib/notify.mjs';
 import { themeFor } from '../lib/theme.mjs';
 import { warmHighlighter } from '../lib/highlight.mjs';
@@ -15,17 +15,47 @@ import { preloadVoice } from './voice/service.mjs';
 import { offerFirstPairing } from './util.mjs';
 import { run } from './publish/pages.mjs';
 import { startTunnel } from './publish/tunnel.mjs';
-import { startProjectWindowCleanup, clearLegacyFusionWindows } from './project-windows.mjs';
+import { startProjectWindowCleanup } from './project-windows.mjs';
 import { NativeCdp, nativeWindow, nativeTargets, startNativeWindows } from './native-windows.mjs';
 
-import { initializeFusionState } from './fusion/state.mjs';
-import { recoverFusionRuns } from './fusion/runner.mjs';
+import { AGENT_REGISTRY } from './apps/index.mjs';
+import { fusionRuntime } from './fusion/runner.mjs';
+import { attachFusionPresenter } from './fusion/presenter.mjs';
 import { terminalService } from './terminal-service.mjs';
 import { openCode } from './opencode/state.mjs';
 import { codexBackend } from './codex/state.mjs';
 import { initializeUploads } from '../lib/uploads.mjs';
 import { stopPeerJobs } from './peer/jobs.mjs';
+import { SessionRecovery } from './ws/recovery.mjs';
+import { RaCoreJournal } from './ra-core/journal.mjs';
+import { createOriginRegistry } from './ra-core/origin.mjs';
+import { createNodeRegistry } from './ra-core/registry.mjs';
+import { createRaCoreService } from './ra-core/service.mjs';
+
+const recovery = new SessionRecovery();
+let raCore, raCoreJournal, chatgptBridge;
+const remoteMcp = process.env.RA_MCP_PUBLIC_URL ? import('./integrations/ra-mcp/server.mjs')
+  .then(({ createRemoteMcpServer }) => createRemoteMcpServer(process.env.RA_MCP_PUBLIC_URL)) : null;
+
+function initializeRaCore() {
+  try {
+    raCoreJournal = new RaCoreJournal(DATA_DIR);
+    const id = computerId();
+    raCore = createRaCoreService({ journal: raCoreJournal, nodes: createNodeRegistry(id),
+      origins: createOriginRegistry({ computerId: id, sessions: device => recovery.activeSessions(device),
+        agents: AGENT_REGISTRY, openCode, codex: codexBackend }) });
+  } catch (error) {
+    raCoreJournal?.close();
+    raCoreJournal = undefined;
+    const sqliteCode = error.errcode & 0xff;
+    const reason = sqliteCode === 5 || sqliteCode === 6 ? '无法获取操作日志的 SQLite 独占锁' : '操作日志不可用';
+    console.error(`[ra-core] ${reason}，RA Core API 已停用`);
+  }
+}
+
 for (const [signal, code] of [['SIGINT', 130], ['SIGTERM', 143]]) process.once(signal, () => {
+  try { chatgptBridge?.close(); } catch (error) { console.error('[chatgpt] bridge cleanup failed'); }
+  raCoreJournal?.close();
   try { stopPeerJobs(); } catch (error) { console.error('[peer]', error.message); }
   terminalService.dispose();
   openCode.close();
@@ -40,12 +70,18 @@ const server = http.createServer(async (req, res) => {
     return res.end();
   }
   // The same app also runs from GitHub Pages; there url.json holds the encrypted relay address instead.
+  if (remoteMcp && (url.pathname === '/mcp' || url.pathname.startsWith('/oauth/')
+      || url.pathname.startsWith('/.well-known/oauth-') || url.pathname === '/.well-known/openid-configuration')) {
+    try { return (await remoteMcp).handle(req, res, url); }
+    catch (error) { console.error('[ra-mcp] unavailable: ' + error.message);
+      return json(req, res, 503, { error: 'ra_mcp_unavailable' }); }
+  }
   if (url.pathname === '/url.json') return json(req, res, 200, { self: true });
-  if (url.pathname.startsWith('/api/')) return handleApi(req, res, url.pathname);
+  if (url.pathname.startsWith('/api/')) return handleApi(req, res, url.pathname, raCore);
   if (req.method === 'GET' && serveApp(res, url.pathname === '/' ? 'index.html' : url.pathname)) return;
   res.writeHead(404, SECURITY_HEADERS).end('not found');
 });
-attachWss(server);
+attachWss(server, recovery);
 
 fs.mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
 const orphanUploads = initializeUploads(path.join(DATA_DIR, 'uploads'), listDevices().map(device => device.id));
@@ -67,8 +103,17 @@ export async function detectAppUrl() {
 }
 
 // Notifications follow each real Codex chat, not the single merged Codex entry.
+let qaNativeDiscoverySignature = '';
 async function watchTargets() {
-  const wins = await listWindows();
+  const report = process.env.RA_MCP_TEST_ROOT ? [] : null;
+  const wins = await listWindows(report);
+  if (report) {
+    const diagnostic = JSON.stringify(report.map(({app,windows,address,error,timeout}) => ({app,windows,address,error,timeout})));
+    if (diagnostic !== qaNativeDiscoverySignature) {
+      qaNativeDiscoverySignature = diagnostic;
+      console.log('[ra-native-qa] ' + diagnostic);
+    }
+  }
   const out = wins.filter(w => w.app !== 'codex' && w.app !== 'opencode');
   for (const p of await codexWindows(CODEX_CDP_URL)) {
     if (!p.chatWs) continue;
@@ -81,15 +126,24 @@ const lanIps = () => Object.values(os.networkInterfaces()).flat()
   .filter(i => i && i.family === 'IPv4' && !i.internal).map(i => i.address);
 
 server.listen(PORT, HOST, async () => {
+  initializeRaCore();
+  // Optional, local-only integration. An owner-approved policy is required.
+  // Normal RA startup exposes no additional service or tools by default.
+  if (process.env.RA_CHATGPT_CONFIG) {
+    try {
+      const { startChatgptBridge } = await import('./integrations/chatgpt/bridge.mjs');
+      chatgptBridge = await startChatgptBridge(process.env.RA_CHATGPT_CONFIG);
+      console.log('[chatgpt] private Unix socket bridge ready');
+    } catch (error) { console.error('[chatgpt] bridge disabled: ' + (error.code || 'policy_or_startup_error')); }
+  }
   console.log(`Remote Agent 已启动，端口 ${PORT}`);
   console.log(`数据目录：${DATA_DIR}`);
   console.log(`已配对 ${listDevices().length} 台设备。添加新设备：npm run pair`);
   detectAppUrl();
   startProjectWindowCleanup();
   startNativeWindows(watchTargets);
-  const fusionError = initializeFusionState(clearLegacyFusionWindows);
-  if (fusionError) console.error(`[Fusion] ${fusionError.message}`);
-  else recoverFusionRuns();
+  attachFusionPresenter();
+  fusionRuntime.initialize({ adapterRegistry: AGENT_REGISTRY });
   startWatcher({
     listWindows: () => [...nativeTargets(), ...(codexBackend.threads.size ? [{ id: 'codex:backend', pageId: 'backend', title: 'Codex', app: 'codex', ws: 'codex-backend', kind: 'api' }] : [])],
     openCdp: async ws => {

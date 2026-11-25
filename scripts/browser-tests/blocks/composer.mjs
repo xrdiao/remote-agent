@@ -10,22 +10,49 @@ import { CodexClient } from '../../../server/codex/client.mjs';
 
 export default [
   { id: 'composer.codex-writer', title: '桌面进程持有会话时手机使用同一写入者发送', refs: ['F06', 'F16', 'F17'], mode: 'generate', apps: ['codex'], async run(c, app) {
-    const writerWindow = c.options.targets?.codex?.writerWindow;
-    const page = (await codexWindows(CODEX_CDP_URL)).find(page => page.chatWs && (!writerWindow || page.pageId === writerWindow));
-    if (!page) throw new Unavailable('此场景需要已打开的 Codex 桌面窗口');
-    const target = await c.target(app, 'writer', true), native = new Cdp(page.chatWs);
-    await native.connect();
-    const original = await native.evaluate(helpersCall('codexThread()'));
+    const { writerWindow, writerThread, writerRoot } = c.options.targets?.codex || {};
+    const qaRoot = path.resolve('_shots/browser-tests') + path.sep;
+    if (!writerWindow || !writerThread || typeof writerRoot !== 'string' || !writerRoot.startsWith(qaRoot)
+        || !writerRoot.endsWith(path.join('projects', 'codex', 'writer'))
+        || await fs.realpath(writerRoot).catch(() => '') !== writerRoot)
+      throw new Unavailable('此场景需要明确指定由 Codex 桌面原生创建的本轮 QA 窗口、线程和测试目录');
+    const page = (await codexWindows(CODEX_CDP_URL)).find(page => page.chatWs && page.pageId === writerWindow);
+    if (!page) throw new Unavailable('指定的 Codex 桌面 QA 窗口未打开侧边栏');
+    const native = new Cdp(page.chatWs);
+    const probe = new CodexClient();
     try {
+      await native.connect();
+      if (await native.evaluate(helpersCall('codexThread()')) !== writerThread)
+        throw new Unavailable('指定窗口未显示测试线程');
+      const connection = helpersCall(`nativeSessionInfo('codex',${attr(writerThread)},'connection')`);
+      const owner = await native.evaluate(connection);
+      if (!owner?.loaded || !owner.visible || owner.cwd !== writerRoot)
+        throw new Unavailable('未取得测试线程的原生桌面连接回执');
+      await probe.connect();
+      const readThread = async () => (await probe.request('thread/read', { threadId: writerThread, includeTurns: false })).thread;
+      const thread = await readThread();
+      if (thread.id !== writerThread || thread.cwd !== writerRoot || thread.originator !== 'codex_vscode')
+        throw new Unavailable('原生线程记录未确认由桌面在指定 QA 目录创建');
+      let resumed, writerLocked = false;
+      try {
+        resumed = await probe.request('thread/resume', { threadId: writerThread });
+      } catch (error) {
+        if (!/already has an active writer/.test(error.message)) throw error;
+        writerLocked = true;
+      }
+      if (!writerLocked) {
+        if (resumed?.thread?.id === writerThread) await probe.request('thread/unsubscribe', { threadId: writerThread });
+        throw new Unavailable('独立原生进程未收到预期的桌面写入冲突回执');
+      }
+      c.check(writerLocked, '独立原生进程确认桌面测试线程已有写入锁');
+      const target = c.owned.find(row => row.app === app && row.thread === writerThread)
+        || { app, comp: c.computer, thread: writerThread, root: writerRoot, slot: 'writer', owned: true };
+      if (!c.owned.includes(target)) {
+        await fs.mkdir(path.join(c.directory, 'projects'), { recursive: true });
+        c.owned.push(target);
+        await c.persistResources();
+      }
       await c.b.home();
-      c.check(await native.evaluate(helpersCall(`openCodexThread(${attr(target.thread)})`)), '在原生桌面打开本轮测试会话');
-      c.check(await native.evaluate(helpersCall(`codexWaitThread(${attr(target.thread)}, 10000)`)), '桌面已切换到本轮测试会话');
-      const connection = helpersCall(`nativeSessionInfo('codex',${attr(target.thread)},'connection')`);
-      const owner = await c.b.wait(async () => {
-        const result = await native.evaluate(connection);
-        return result?.loaded && result;
-      }, '原生 app-server 加载测试会话');
-      c.check(owner?.loaded, '原生 app-server 确实已加载该测试会话');
       await c.open(target);
       c.check(await c.b.read(`viewSel.split('|')[1]===${attr(page.pageId)}`), '配对页绑定到实际桌面写入窗口');
       const marker = c.marker + '-WRITER', receipt = await c.send(target, `只回复 ${marker}，不要读写文件或运行工具。`);
@@ -48,15 +75,17 @@ export default [
         c.check(actual.some(row => row.label === label && row.checked), '桌面写入者权限可切换：' + label);
       }
       await c.b.dismiss();
-      const title = c.marker + '-DESKTOP-WRITER', card = await c.reveal(target);
+      const title = (c.marker + '-DESKTOP-WRITER').padEnd(60, '-'), card = await c.reveal(target);
       await c.b.hold(`${card} .ov-title`);
       await c.b.dialog(title, () => c.b.click('#sheet [data-agent-action="rename"]'));
       await c.b.wait(`ovRecs().some(row=>row.app==='codex'&&row.threadId===${attr(target.thread)}&&row.title===${attr(title)})`, '桌面写入者重命名回执');
       c.check((await c.overview()).sessions.some(row => row.threadId === target.thread && row.title === title), '重命名到达实际桌面写入者');
-      c.check((await native.evaluate(connection))?.loaded, '原生桌面在发送和重命名后仍持有会话');
-      return { thread: target.thread, window: page.pageId, nativeLoaded: owner.loaded, role: owner.role };
+      c.equal((await readThread()).name, title, '原生线程持久记录保留完整 60 字符标题');
+      const finalOwner = await native.evaluate(connection);
+      c.check(finalOwner?.loaded && finalOwner.cwd === writerRoot, '原生桌面在发送和重命名后仍持有会话');
+      return { thread: target.thread, window: page.pageId, nativeLoaded: owner.loaded, independentWriteLock: true };
     } finally {
-      if (original && await native.evaluate(helpersCall('codexThread()')) !== original) await native.evaluate(helpersCall(`openCodexThread(${attr(original)})`));
+      probe.close();
       native.close();
     }
   } },

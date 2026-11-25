@@ -46,8 +46,25 @@ export class FusionModelCatalog {
   constructor({ file = path.join(DATA_DIR, 'fusion-model-catalog.json'), fetch = globalThis.fetch, now = Date.now,
     aaKey = process.env.FUSION_AA_API_KEY || '' } = {}) {
     this.file = file; this.fetch = fetch; this.now = now; this.aaKey = aaKey;
-    this.data = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : { sources: [] };
     this.observed = new Set();
+  }
+  get data() {
+    if (this.cache) return this.cache;
+    try {
+      const value = JSON.parse(fs.readFileSync(this.file, 'utf8'));
+      if (!Array.isArray(value?.sources) || value.sources.some(row => !row || typeof row.id !== 'string'
+        || row.kind === 'model-catalog' && row.value && (!Array.isArray(row.value)
+          || row.value.some(model => typeof model?.canonical !== 'string' || !Array.isArray(model.ids)))))
+        throw new Error('Fusion 模型资料缓存结构无效');
+      this.cache = value;
+    } catch (error) {
+      if (error.code !== 'ENOENT') {
+        this.cacheUnreadable = true;
+        console.error(`[Fusion] 模型资料缓存无法读取，已保留原文件 ${this.file}`);
+      }
+      this.cache = { sources: [] };
+    }
+    return this.cache;
   }
   sources() {
     return [...SOURCES, ...(this.aaKey ? [{ id: 'artificial-analysis', kind: 'independent-measurement',
@@ -82,6 +99,7 @@ export class FusionModelCatalog {
     })).then(rows => {
       const updated = new Map(this.data.sources.map(row => [row.id, row])); rows.forEach(row => updated.set(row.id, row));
       this.data.sources = [...updated.values()];
+      if (this.cacheUnreadable) return;
       fs.mkdirSync(path.dirname(this.file), { recursive: true, mode: 0o700 });
       fs.writeFileSync(this.file + '.pending', JSON.stringify(this.data), { mode: 0o600 }); fs.renameSync(this.file + '.pending', this.file);
     }).finally(() => { this.refreshing = null; });

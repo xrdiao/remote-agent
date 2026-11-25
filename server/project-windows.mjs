@@ -10,7 +10,8 @@ import { Cdp } from './cdp.mjs';
 import { codexWindows } from './windows.mjs';
 import { editorRoots } from '../lib/files.mjs';
 import { helpersCall } from './page/build.mjs';
-import { fusionViewers, fusionWindowInUse, fusionRuns } from './fusion/state.mjs';
+import { fusionWindowInUse, allFusionRuns } from './fusion/state.mjs';
+import { fusionViewers } from './fusion/presenter.mjs';
 import { windowLeased, leaseWindow } from './window-use.mjs';
 
 const file = path.join(DATA_DIR, 'project-windows.json');
@@ -49,18 +50,8 @@ export function trackProjectWindow(app, page, root, created = false) {
   persist();
 }
 export function fusionTargets() {
-  return { windows: new Set(), sessions: new Set(Object.values(fusionRuns).flatMap(entry => entry.runs).flatMap(run => run.bindings)
+  return { windows: new Set(), sessions: new Set(allFusionRuns({ removed: true }).flatMap(run => run.bindings)
     .filter(binding => binding.role !== 'main' && binding.threadId).map(binding => binding.app + ':' + sessionId(binding.app, binding.threadId))) };
-}
-export function clearLegacyFusionWindows() {
-  const legacy = Object.fromEntries(Object.entries(saved.windows).filter(([, row]) => row.purpose === 'fusion'));
-  if (!Object.keys(legacy).length) return;
-  const directory = new URL('../_shots/fusion-superagent-cutover/', import.meta.url);
-  fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
-  fs.writeFileSync(new URL(`windows-${Date.now()}.json`, directory), JSON.stringify(legacy), { mode: 0o600 });
-  for (const row of Object.values(legacy)) for (const field of ['purpose', 'computer', 'projectId', 'host', 'ownership', 'expectedThread', 'bindingId',
-    'observedThread', 'ownershipReason', 'ownershipChangedAt']) delete row[field];
-  persist();
 }
 export function rememberFusionSession(app, id, project, windowId) {
   saved.sessions[app + ':' + sessionId(app, id)] = { id, workspace: project.host ? project.root : localFilePath(project.root), host: project.host || '', ownerWindow: windowId };

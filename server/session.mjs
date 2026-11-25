@@ -1,30 +1,28 @@
-import { localFilePath } from '../lib/platform.mjs';
 import { parseAgentRef } from '../lib/shared-rules.mjs';
-import { Cdp, cdpRead } from './cdp.mjs';
-import { listWindows, codexWindows } from './windows.mjs';
-import { CODEX_CDP_URL } from './config.mjs';
+import { cdpRead } from './cdp.mjs';
 import { PAGE_SRC, helpersCall } from './page/build.mjs';
-import { AgentContext, appPlans } from './agent/index.mjs';
-import { resetThinkingCaches } from './agent/thinking-cache.mjs';
-import { hasLaunched, takeLaunched } from './launch.mjs';
-import { fusionViewers, savedFusion, allFusionRuns, rememberFusionMainWindow, assertFusionReady } from './fusion/state.mjs';
-import { FUSION_OWNER, fusionControllerView } from './fusion/owner.mjs';
+import { AgentContext } from './agent/index.mjs';
+import { savedFusion, allFusionRuns, rememberFusionMainWindow, stateOfFusionRun } from './fusion/state.mjs';
+import { FUSION_OWNER } from './fusion/owner.mjs';
+import { fusionViewers, safeFusionControllerView } from './fusion/presenter.mjs';
 import { fusionRunner } from './fusion/runner.mjs';
 import { resolveRoute, SKIP, flag } from './routes.mjs';
+import { dispatchAgentControl } from './agent/control.mjs';
 import { chatForWire } from './chat-images.mjs';
-import { pendingUploads, updateUpload } from '../lib/uploads.mjs';
 import { watchChat } from './agent/updates.mjs';
 import { AGENT_REGISTRY } from './apps/index.mjs';
 import { sessionRows } from '../lib/session-library.mjs';
-import { catalogSessions, touchProjectWindow, bindProjectWindow, orderedProjectWindows } from './project-windows.mjs';
+import { catalogSessions, touchProjectWindow, bindProjectWindow } from './project-windows.mjs';
 import { leaseWindow, windowOperationLocked } from './window-use.mjs';
 import {visualCapture, visualWindows, isWayland} from './visual/capture.mjs';
-import { rememberSelection, lastSelection } from '../lib/auth.mjs';
-import { editorRoots } from '../lib/files.mjs';
-import { NativeCdp, nativeWindow, nativeWindowAt, nativeTargets, nativeSessionCatalog, subscribeCatalog, cursorSource, devinSource } from './native-windows.mjs';
+import { rememberSelection } from '../lib/auth.mjs';
+import { nativeWindow, subscribeCatalog, cursorSource } from './native-windows.mjs';
 import { captureOperation } from './operations.mjs';
+import { ConnectionView } from './session/connection-view.mjs';
+import { bindingMethods } from './session/navigation.mjs';
+import { ConversationRef } from './session/binding.mjs';
 import { terminalService } from './terminal-service.mjs';
-import { codexBackend, CODEX_BACKEND } from './codex/state.mjs';
+import { codexBackend } from './codex/state.mjs';
 
 export async function withTemporarySession(client, deviceId, action) {
   const session = new Session(client, deviceId);
@@ -35,19 +33,24 @@ export async function withTemporarySession(client, deviceId, action) {
 export class Session extends AgentContext {
   constructor(client, deviceId, { fusionBinding = false } = {}) {
     super({ deviceId });
-    this.client = client;
+    this.connectionView = new ConnectionView(client, !fusionBinding);
     this.fusionBinding = fusionBinding;
     if (!fusionBinding) fusionViewers.add(this);
-    this.fusionSaved = savedFusion(deviceId);
-    this.fusionRun = allFusionRuns().find(f => f.id === this.fusionSaved.current);
-    // The phone reports when the app goes to the background; notifications skip the window it is looking at.
-    this.visible = !fusionBinding;
-    this.notifyVisible = !fusionBinding;
-    this.notifyPresenceAt = Date.now();
+    this.fusionRun = fusionBinding ? null : allFusionRuns().find(run => run.id === savedFusion(deviceId).current);
     this.viewport = { w: 1000, h: 800 };
     this.mode = 'chat';
     this.connectionMessages = new Map();
   }
+
+  get client() { return this.connectionView.client; }
+  set client(client) { this.connectionView.connect(client); }
+
+  get visible() { return this.connectionView.visible; }
+  set visible(value) { this.connectionView.visible = value; }
+  get notifyVisible() { return this.connectionView.notifyVisible; }
+  set notifyVisible(value) { this.connectionView.notifyVisible = value; }
+  get notifyPresenceAt() { return this.connectionView.notifyPresenceAt; }
+  set notifyPresenceAt(value) { this.connectionView.notifyPresenceAt = value; }
 
   stopChatUpdates() {
     const stop = this.chatUpdatesStop;
@@ -76,7 +79,9 @@ export class Session extends AgentContext {
   }
 
   async setMode(mode, firstScreen = false) {
+    const connection = this.connectionView.generation;
     const watchGeneration = this.chatWatchGeneration = (this.chatWatchGeneration || 0) + 1;
+    const watchingView = () => this.connectionView.current(connection) && this.chatWatchGeneration === watchGeneration;
     cdpRead.run(null, () => this.stopChatUpdates());
     this.stopTerminalUpdates();
     this.catalogUpdatesStop?.();
@@ -86,18 +91,19 @@ export class Session extends AgentContext {
     if (this.visible && !this.fusionBinding && !this.codexBackend && ['cursor', 'devin', 'codex'].includes(this.app)) {
       const cdp = this.cdp, app = this.app;
       this.catalogUpdatesStop = subscribeCatalog(app, error => {
-        if (!this.visible || this.cdp !== cdp || this.app !== app || this.switchingThread || !this.bindingReady) return;
+        if (!watchingView() || !this.visible || this.cdp !== cdp || this.app !== app || this.switchingThread || !this.bindingReady) return;
         this.catalogError = error ? { app, error } : null;
         if (error) return;
-        if (this.catalogRefresh?.cdp === cdp) { this.catalogRefresh.again = true; return; }
-        const refresh = this.catalogRefresh = { cdp, again: false };
-        cdpRead.run(null, async () => {
+        if (this.catalogRefresh?.watchGeneration === watchGeneration) { this.catalogRefresh.again = true; return; }
+        const refresh = this.catalogRefresh = { watchGeneration, again: false };
+        this.connectionView.run(() => cdpRead.run(null, async () => {
           do {
             refresh.again = false;
-            if (!this.visible || this.cdp !== cdp || this.app !== app || !this.bindingReady) break;
+            if (!watchingView() || !this.visible || this.cdp !== cdp || this.app !== app || !this.bindingReady) break;
             await this.listAgents(true, true);
           } while (refresh.again);
-        }).catch(error => {
+        }), connection).catch(error => {
+          if (!watchingView()) return;
           this.catalogError = { app, error };
           console.error(`[catalog:${app}] ${error.message}`);
         }).finally(() => { if (this.catalogRefresh === refresh) this.catalogRefresh = null; });
@@ -121,27 +127,43 @@ export class Session extends AgentContext {
       this.lastChat = '';
       const source = nativeWindow(cdp);
       if (source) {
-        this.chatUpdatesStop = source.subscribe(error => {
-          if (!this.visible || this.mode !== 'chat' || this.cdp !== cdp) return;
+        const stopWindowWatch = source.subscribe(error => {
+          if (!watchingView() || !this.visible || this.mode !== 'chat' || this.cdp !== cdp) return;
           if (error) this.emit({ t: 'status', ok: false, msg: error.message });
           else if (this.app === 'cursor') {
             const newer = this.bindingReady && !this.switchingThread && cursorSource(this.threadId);
-            const read = newer && newer.cdp.wsUrl !== cdp.wsUrl
-              ? cdpRead.run(null, () => this.attach({ id: newer.win.id, windowId: newer.win.id, threadId: this.threadId })) : this.pollChat(true);
-            read.catch(error => this.emit({ t: 'status', ok: false, msg: error.message }));
-          } else this.pollChat(true).catch(() => {});
+            this.connectionView.run(() => {
+              const read = newer && newer.cdp.wsUrl !== cdp.wsUrl
+                ? cdpRead.run(null, () => this.attach({ id: newer.win.id, windowId: newer.win.id, threadId: this.threadId })) : this.pollChat(true);
+              read.catch(error => this.emit({ t: 'status', ok: false, msg: error.message }));
+            }, connection);
+          } else this.connectionView.run(() => this.pollChat(true).catch(() => {}), connection);
         });
+        const owner = this.app === 'codex' && this.codexOwnerRoot && this.threadId && this.threadId === this.selectedThread
+          ? { app: 'codex', threadId: this.threadId, host: '', cwd: this.codexOwnerRoot } : null;
+        // The window observer follows the visible transcript. A desktop-owned
+        // thread can also finish through its own native conversation observer.
+        const stopOwnerWatch = owner && source.subscribe(error => {
+          if (error || !watchingView() || !this.visible || this.mode !== 'chat' || this.cdp !== cdp
+              || this.threadId !== owner.threadId || !this.lastBusy) return;
+          source.invalidate();
+          this.connectionView.run(() => this.pollChat(true).catch(() => {}), connection);
+        }, owner, 'fusion-control');
+        this.chatUpdatesStop = () => { stopWindowWatch(); stopOwnerWatch?.(); };
         if (firstScreen) await this.pollChat(true, true);
         else await this.pollChat(true);
         return;
       }
-      this.chatTimer = cdpRead.run(null, () => setInterval(() => this.pollChat().catch(() => {}), 700));
+      this.chatTimer = cdpRead.run(null, () => setInterval(() => {
+        if (watchingView()) this.pollChat().catch(() => {});
+      }, 700));
       if (firstScreen) await this.pollChat(true, true);
       const watching = (async () => {
         const stop = await watchChat(cdp, () => {
-          if (this.visible && this.mode === 'chat' && this.cdp === cdp) this.pollChat(true).catch(() => {});
+          if (watchingView() && this.visible && this.mode === 'chat' && this.cdp === cdp)
+            this.connectionView.run(() => this.pollChat(true).catch(() => {}), connection);
         });
-        if (this.chatWatchGeneration !== watchGeneration || this.cdp !== cdp || this.mode !== 'chat') { stop(); return; }
+        if (!watchingView() || this.cdp !== cdp || this.mode !== 'chat') { stop(); return; }
         this.chatUpdatesStop = stop;
       })();
       if (firstScreen) watching.catch(error => {
@@ -170,48 +192,24 @@ export class Session extends AgentContext {
 
   stopVisual() { visualCapture.unsubscribe(this); }
 
-  finishNavigationResult(result) {
-    if (this.navigationResult !== result) return;
-    this.navigationResult = null;
-    if (!this.bindingReady) return;
-    const binding = result.attached;
-    if (!binding) return;
-    if (this.mode === 'chat' && (!result.chat || result.chat.sel !== this.selectionKey()
-      || result.chat.chat.thread !== (this.threadId || ''))) throw new Error('当前会话内容尚未就绪，请重试');
-    this.emit({ ...binding, ready: true, windowId: this.windowId || '', threadId: this.threadId || '',
-      sel: this.selectionKey(), ...(result.chat ? { chat: result.chat.chat } : {}),
-      ...(result.project ? { projectReady: result.project } : {}) }, result.chatSent);
-  }
-
-  emit(obj, sent) {
+  emit(obj, sent, committedNavigation = false) {
     if (captureOperation(this, obj)) return;
-    if (cdpRead.getStore()?.aborted) return;
+    if (!this.connectionView.matchesDelivery() || cdpRead.getStore()?.aborted) return;
+    const deliver = this.connectionView.acceptsDelivery();
+    if (!deliver && !committedNavigation) {
+      this.stageNavigationEvent(obj, sent);
+      return;
+    }
     if (['attached', 'thread'].includes(obj?.t) && obj.app !== 'fusion') {
       const app = obj.app || this.app, threadId = obj.threadId ?? this.threadId;
-      this.fusionRun = allFusionRuns().find(run => run.bindings.some(binding => binding.id === run.main.bindingId
+      this.fusionRun = !this.fusionBinding && allFusionRuns().find(run => run.bindings.some(binding => binding.id === run.main.bindingId
         && binding.app === app && binding.threadId === threadId));
+      const fusionController = this.fusionRun ? safeFusionControllerView(this.fusionRun) : null;
+      if (!fusionController) this.fusionRun = null;
       this.fusionDetail = null;
-      obj = { ...obj, fusionController: this.fusionRun ? fusionControllerView(this.fusionRun) : null };
+      obj = { ...obj, fusionController };
     }
-    const result = this.navigationResult;
-    if (result && (cdpRead.getStore()?.navigationId ?? this.navigationId) === result.id) {
-      if (obj?.t === 'attached' && !obj.closed) {
-        result.attached = { ...result.attached, ...obj,
-          keepQuota: result.attached ? !!result.attached.keepQuota && !!obj.keepQuota : obj.keepQuota };
-        if (obj.ready !== false) return;
-      } else if (obj?.t === 'thread') return;
-      else if (obj?.t === 'chat' && obj.chat) {
-        result.chat = obj;
-        if (sent) result.chatSent = sent;
-        return;
-      }
-      else if (obj?.t === 'projectReady') {
-        const { chat, ...project } = obj;
-        result.project = project;
-        if (chat) result.chat = { sel: obj.sel, chat };
-        return;
-      }
-    }
+    if (this.stageNavigationEvent(obj, sent)) return;
     if (['attached', 'thread', 'chat', 'projectReady', 'attachFailed', 'status'].includes(obj?.t)) {
       const navigationId = cdpRead.getStore()?.navigationId ?? this.navigationId;
       if (navigationId != null) obj = { ...obj, navigationId };
@@ -235,17 +233,18 @@ export class Session extends AgentContext {
       if (!this.fusionBinding && this.bindingReady && obj.sel === this.selectionKey() && !obj.cached
           && (!obj.chat.readonly || obj.chat.empty) && !obj.chat.subagent
           && obj.chat.thread === this.threadId && ['cursor', 'devin', 'codex'].includes(this.app)
-          && this.rememberedSelection !== obj.sel && this.rememberingSelection?.key !== obj.sel) {
-        const cdp = this.cdp, sel = this.sel;
+          && this.rememberedSelection !== obj.sel && this.rememberingSelection?.generation !== this.sel) {
+        const binding = ConversationRef.capture(this);
         const selection = { id: this.targetId, app: this.app, windowId: this.windowId, threadId: this.threadId };
-        const pending = this.rememberingSelection = { key: obj.sel };
+        const pending = this.rememberingSelection = { key: obj.sel, generation: binding.sel };
         this.currentRoots().then(roots => {
-          if (this.bindingReady && this.liveRead(cdp, sel) && obj.sel === this.selectionKey()) {
+          if (this.bindingReady && binding.isCurrent(this) && this.connectionView.acceptsDelivery() && !cdpRead.getStore()?.aborted) {
             rememberSelection(this.deviceId, { ...selection, project: roots[0] || null });
             if (this.fusionRun) {
               const run = this.fusionRun, runner = fusionRunner(run);
-              rememberFusionMainWindow(run, selection, roots);
-              if (!runner.controller.context) cdpRead.run(null, () => runner.ensureMain()).catch(() => {});
+              try { rememberFusionMainWindow(run, selection, roots); }
+              catch (error) { stateOfFusionRun(run).report('window', error, run); }
+              if (!runner.controller.context) cdpRead.run(null, () => runner.ensureMain()).catch(error => runner.report('window', error));
             }
             this.rememberedSelection = obj.sel;
           }
@@ -263,328 +262,11 @@ export class Session extends AgentContext {
       const { chat, ...metadata } = obj;
       this.connectionMessages.set(obj.t, metadata);
     }
-    if (this.client.readyState === 1) this.client.send(JSON.stringify(obj), obj?.t === 'frame' ? { compress: false } : undefined, sent);
+    if (deliver && this.client.readyState === 1) this.client.send(JSON.stringify(obj), obj?.t === 'frame' ? { compress: false } : undefined, sent);
   }
 
   liveRead(cdp, sel) {
-    return !cdpRead.getStore()?.aborted && super.liveRead(cdp, sel);
-  }
-
-  // Asks Cursor's own Cmd+P index where a bare file name lives, then closes the picker again.
-
-  async attach(target, windows) {
-    let req = target && typeof target === 'object' ? target : { id: target || '' };
-    const app = String(req.id || '').replace(/:.*$/, '');
-    if (req.restore) {
-      const saved = lastSelection(this.deviceId, app);
-      if (saved) req = { ...req, ...saved };
-    }
-    if (req.threadId && !codexBackend.canAccess(req.threadId, this.deviceId)) throw new Error('当前设备未获准访问此手机会话');
-    const fusionMain = req.threadId && !req.projectSwitch && !this.fusionBinding && allFusionRuns().flatMap(run => run.bindings
-      .filter(binding => binding.id === run.main.bindingId)).find(binding => binding.reuseWindow && binding.app === app && binding.threadId === req.threadId);
-    if (fusionMain) {
-      if (req.project && !this.projectMatches([{ root: fusionMain.project.root, host: fusionMain.host }], req.project.root, req.project.host))
-        throw new Error('Fusion 主会话不属于所选项目');
-      const window = app === 'codex' || fusionMain.windowId.startsWith(app + ':') ? fusionMain.windowId : `${app}:${fusionMain.windowId}`;
-      req = { ...req, id: app === 'codex' ? app : window, windowId: window, project: null,
-        ...(app === 'codex' ? { nativeOwner: { cwd: fusionMain.project.root } } : {}) };
-    }
-    if (!fusionMain && ['cursor', 'devin'].includes(app) && req.threadId && !req.project && !req.projectSwitch && !this.fusionBinding) {
-      const row = nativeSessionCatalog(app)?.rows.find(row => row.id === req.threadId);
-      if (row?.workspace) req = { ...req, project: { root: row.workspace, host: row.host || '' } };
-    }
-    if (!fusionMain && app === 'cursor' && req.threadId && !req.projectSwitch && !this.fusionBinding) {
-      const source = cursorSource(req.threadId, req.project);
-      if (source) {
-        const context = await source.cdp.evaluate(helpersCall(`nativeSessionInfo('cursor', ${JSON.stringify(req.threadId)}, 'context')`));
-        const roots = await editorRoots(source.cdp, 'cursor'), expected = req.project || context.roots[0];
-        if (context.projectless ? !roots.length : expected && this.projectMatches(roots, expected.root, expected.host))
-          req = { ...req, id: source.win.id, windowId: source.win.id, project: null };
-      }
-    }
-    if (req.project && !req.project.host) req = { ...req, project: { ...req.project, root: localFilePath(req.project.root) } };
-    if (app === 'opencode') return AGENT_REGISTRY.opencode.adapter.attach.call(this, req);
-    if (app === 'codex' && !this.fusionBinding && !req.nativeOwner && (req.windowId === CODEX_BACKEND || codexBackend.owns(req.threadId)
-      || !req.projectSwitch && (req.threadId && AGENT_REGISTRY.codex.adapter.backendThread(req.threadId, req.project?.host)
-        || !req.windowId && !req.threadId))) return AGENT_REGISTRY.codex.adapter.attachBackend.call(this, req);
-    if (req.resume && this.bindingReady && this.cdp?.ws?.readyState === 1 && this.app === app
-        && this.windowId === req.windowId && this.threadId === (req.threadId || '')) {
-      const actual = await this.cdp.evaluate(helpersCall(this.app === 'codex' ? 'codexThread()' : 'activeThread()'));
-      if (actual === this.threadId) {
-        this.emit({ ...this.connectionMessages.get('attached'), keepQuota: false, initial: req.initial === true, ready: true });
-        return this.setMode(this.mode, true);
-      }
-    }
-    if (req.initial && !req.nativeOwner && !fusionMain && hasLaunched(app)) req = { ...req, id: app, windowId: '', threadId: '', project: null };
-    if (req.project && !req.projectSwitch && app === 'codex') {
-      const matches = nativeTargets().filter(win => win.app === app && this.projectMatches(nativeWindowAt(win.ws)?.roots || [], req.project.root, req.project.host));
-      const picked = matches.find(win => (win.pageId || win.id) === req.windowId) || orderedProjectWindows(app, matches)[0];
-      if (picked) req = { ...req, id: app === 'codex' ? 'codex' : picked.id, windowId: picked.pageId || picked.id, project: null };
-    }
-    if (req.project && !req.projectSwitch) {
-      // Bind only the app first. The saved project, not a fallback window, owns the thread.
-      const source = app === 'devin' && req.threadId && !req.project.host
-        ? await devinSource(req.threadId, req.windowId, req.project) : null;
-      const carrier = source?.win || (app === 'devin' && nativeTargets().find(win => win.app === app && win.id === req.windowId));
-      await this.attach({ ...req, id: carrier?.id || app, windowId: carrier?.id || '', restore: false, project: null, threadId: '', projectSwitch: true }, windows);
-      if (!this.cdp || this.app !== app) throw new Error('所选 Agent 尚未连接，请重试');
-      if (!req.project.host) return this.useProject(req.project.root, false, req.threadId || '', '', req.windowId || '');
-      if (!this.projectMatches(await this.currentRoots(), req.project.root, req.project.host)) {
-        const pages = app === 'codex' ? await AGENT_REGISTRY.codex.discover(true) : await AGENT_REGISTRY[app].discover();
-        let match;
-        for (const page of pages) {
-          const cdp = new Cdp(page.ws);
-          try {
-            await cdp.connect();
-            if (this.projectMatches(await editorRoots(cdp, app), req.project.root, req.project.host)) { match = page; break; }
-          } finally { cdp.close(); }
-        }
-        if (!match) throw new Error('远程项目窗口未打开，请在电脑端打开后重新选择');
-        await this.attach({ id: match.id || app, windowId: match.pageId || match.id, projectSwitch: true });
-      }
-      if (app === 'codex') {
-        await this.ensureCodexReady({ id: this.windowId, ws: this.editorCdp.wsUrl }, false);
-        if (req.threadId && !await this.selectCodexThread(req.threadId)) throw new Error('没有找到所选会话');
-        await this.adoptCodexThread(req.threadId || await this.cdp.evaluate(helpersCall('codexThread()')) || '');
-      } else if (req.threadId) await this.withFocus(() => this.adapter.openAgent.call(this, req.threadId));
-      this.bindingReady = true;
-      await this.currentRoots();
-      this.publishThread();
-      return this.setMode(this.mode, true);
-    }
-    let appId = String(req.id || '');
-    let windowId = String(req.windowId || '');
-    const threadId = String(req.threadId || '');
-    if (appId.startsWith('codex:')) {
-      windowId = windowId || appId.slice('codex:'.length);
-      appId = 'codex';
-    }
-    let codexPages;
-    if (appId === 'codex') {
-      try {
-        codexPages = await AGENT_REGISTRY.codex.discover(true);
-        if (windowId && !codexPages.some(p => p.pageId === windowId) && threadId) {
-          const recovered = await this.codexPageForThread(codexPages, threadId);
-          if (recovered) windowId = recovered.pageId;
-        }
-      } catch (error) {
-        throw new Error(`读取 Codex 调试接口失败，请重试：${error.message}`);
-      }
-    }
-    if (AGENT_REGISTRY[appId]?.kind === 'orchestrator') {
-      assertFusionReady();
-      return AGENT_REGISTRY[appId].adapter.attach.call(this, req);
-    }
-    const targetApp = Object.keys(AGENT_REGISTRY).find(app => appId === app || appId.startsWith(app + ':'));
-    const wins = windows || (codexPages ? codexPages.length ? [{id: 'codex', app: 'codex', title: 'Codex', ws: codexPages[0].ws, port: CODEX_CDP_URL, kind: 'local'}] : [] : targetApp ? await AGENT_REGISTRY[targetApp].discover() : await listWindows());
-    if (!appId && ['codex', 'opencode'].includes(wins[0]?.app)) return this.attach({ ...req, id: wins[0].app }, wins);
-    if (appId === 'codex') {
-      const pages = orderedProjectWindows('codex', codexPages);
-      if (!pages.length) {
-        throw new Error('这个 Codex 窗口已经关闭，请重新选择');
-      }
-      if (windowId && !pages.some(p => p.pageId === windowId)) throw new Error('这个 Codex 窗口已经关闭，请重新选择');
-      const picked = windowId && pages.some(p => p.pageId === windowId)
-        ? pages.find(p => p.pageId === windowId)
-        : (pages.find(p => !/^Welcome\b/.test(p.rawTitle || '') && p.chatWs) || pages.find(p => p.chatWs) || pages[0]);
-      if (!picked) throw new Error('没有找到 Codex 窗口。请用 ./scripts/start-codex.sh 启动，并打开 Codex 侧边栏');
-      const entry = wins.find(w => w.id === 'codex');
-      if (!entry) throw new Error('没有找到 Codex 窗口。请用 ./scripts/start-codex.sh 启动，并打开 Codex 侧边栏');
-      await this.openBound({ ...entry, title: picked.rawTitle }, picked.ws, picked.chatWs, { windowId: picked.pageId, threadId, nativeOwner: req.nativeOwner, deferred: req.projectSwitch === true, initial: req.initial === true });
-      if (this.cdp === this.editorCdp && !req.projectSwitch) this.emit({ t: 'status', ok: false, msg: 'Codex 侧边栏还没打开' });
-      return;
-    }
-    const win = wins.find(w => w.id === appId) || wins.find(w => appId && w.id.endsWith(':' + appId))
-      || (appId && !appId.includes(':') ? orderedProjectWindows(appId, wins.filter(w => w.app === appId))[0] : null);
-    if (appId && !win) {
-      throw new Error('这个窗口已经关闭，请重新选择');
-    }
-    const chosen = win || wins[0];
-    if (!chosen) throw new Error('没有找到 Cursor、Devin 或 Codex 窗口。Cursor 用调试端口 9222，Devin 用 ./scripts/start-devin.sh，Codex 用 ./scripts/start-codex.sh');
-    await this.openBound(chosen, chosen.ws, null, { windowId: chosen.id, threadId, deferred: req.projectSwitch === true,
-      initial: req.initial === true, fusionMain: fusionMain || null });
-  }
-
-  async openBound(win, editorWs, chatWs, selection) {
-    const editorCdp = new NativeCdp(editorWs, win.app);
-    const cdp = chatWs ? new NativeCdp(chatWs, win.app) : editorCdp;
-    // A phone-launched app keeps its native home/new-chat view, not a remembered thread.
-    // Keep the marker until startup and the first chat read complete successfully.
-    const launchDefault = this.launchDefault = !selection.nativeOwner && !selection.fusionMain && selection.initial === true && hasLaunched(win.app);
-    let thread = '';
-    let trust;
-    try {
-      await editorCdp.connect();
-      if (cdp !== editorCdp) await cdp.connect();
-      trust = await editorCdp.evaluate(helpersCall('workspaceTrustState()'));
-      if (win.app === 'codex') {
-        thread = await cdp.evaluate(helpersCall('codexThread()')) || '';
-      }
-    } catch (error) {
-      for (const connection of new Set([cdp, editorCdp])) connection.close();
-      this.emit({ t: 'attachFailed', ready: this.app === 'fusion' || !!this.cdp });
-      throw error;
-    }
-    this.detach();
-    this.clearViewState();
-    this.editorCdp = editorCdp;
-    this.cdp = cdp;
-    this.itemCache = nativeWindow(cdp).itemCache;
-    nativeWindow(cdp).start({ id: win.id, ws: cdp.wsUrl, editorWs, app: win.app, pageId: selection.windowId }).catch(() => {});
-    this.bindingReady = false;
-    this.selectionHome = false;
-    this.windowId = selection.windowId;
-    if (win.app === 'codex') this.codexPageId = selection.windowId;
-    this.codexOwnerRoot = localFilePath(selection.nativeOwner?.cwd || '');
-    this.threadId = thread;
-    this.selectedThread = thread;
-    this.targetId = win.id;
-    this.winTitle = win.title;
-    this.app = win.app || 'cursor';
-    if (this.pendingProject && (this.pendingProject.app !== this.app || this.pendingProject.windowId !== this.windowId)) this.pendingProject = null;
-    this.lastChat = '';
-    resetThinkingCaches(this);
-    this.tasksTried = new Map();
-    this.devinHist = new Map();
-    this.devinCmds = new Map();
-    this.devinCmdTried = new Map();
-    this.thoughtFails = new Map();
-    this.curSession = undefined;
-    const onclose = error => {
-      if (this.cdp !== cdp && this.editorCdp !== editorCdp) return;
-      this.detach();
-      this.emit({ t: 'attached', id: win.id, app: win.app, windowId: selection.windowId,
-        closed: true, ready: false, message: error?.message || this.appMessage('{app} 窗口连接已断开') });
-    };
-    for (const connection of new Set([cdp, editorCdp])) {
-      connection.onclose = onclose;
-    }
-    await this.refreshViewport();
-    if (this.app !== 'codex') this.threadId = await this.cdp.evaluate(helpersCall('activeThread()')) || '';
-    if (win.app === 'devin' && !selection.deferred && !selection.threadId && this.threadId
-        && await cdp.evaluate(helpersCall(`nativeSessionInfo('devin', ${JSON.stringify(this.threadId)}, 'missing')`))) {
-      this.selectionHome = true;
-      this.threadId = '';
-    }
-    if (selection.deferred && selection.threadId) this.threadId = selection.threadId;
-    nativeWindow(cdp).setThread(this.threadId);
-    this.selectedThread = this.threadId;
-    const attached = async () => {
-      if (this.bindingReady) await this.currentRoots();
-      if (win.app === 'codex') {
-        this.codexAccountWindowId = selection.windowId;
-        this.codexAccount = !trust.required && this.cdp !== this.editorCdp
-          ? await this.adapter.accountForDesktop(this.cdp).catch(() => ({ account: '', plan: '' }))
-          : { account: '', plan: '' };
-      }
-      this.emit({
-        t: 'attached', id: win.id, title: this.app === 'codex' ? 'Codex' : win.title, app: win.app,
-        appName: this.appMessage('{app}'), project: this.projectName(), windowId: this.windowId || '', threadId: this.threadId || '', sel: this.selectionKey(), plans: appPlans, initial: selection.initial === true, ready: this.bindingReady === true,
-        ...(win.app === 'codex' ? { codexAccount: this.codexAccount } : {}),
-      });
-    };
-    if (trust.required) {
-      await attached();
-      await this.checkProjectTrust({ threadId: selection.threadId || '' }, trust);
-      if (!selection.deferred) this.setMode(this.mode).catch(e => this.emit({ t: 'status', ok: false, msg: e.message }));
-      return;
-    }
-    if (win.app === 'devin' && !selection.deferred && !this.selectionHome
-        && await this.withFocus(() => this.ensureDevinIde(selection.threadId?.replace(/^tab:/, '') || this.threadId))) {
-      if (launchDefault) takeLaunched('devin');
-      return;
-    }
-    const restore = !selection.deferred && selection.threadId && selection.threadId !== this.threadId && !launchDefault;
-    const recoverInitial = win.app === 'codex' && selection.initial === true && !thread;
-    const startup = !selection.deferred && !this.selectionHome && (launchDefault || recoverInitial || win.app === 'devin' && !this.threadId);
-    if (restore) this.threadId = this.selectedThread = selection.threadId;
-    if (startup || (restore && selection.initial)) await attached();
-    if (restore) {
-      const id = win.app === 'codex' ? `thread:${this.codexPageId}:${selection.threadId}` : selection.threadId;
-      await this.withFocus(async () => {
-        if (selection.nativeOwner) {
-          if (!await this.selectCodexThread(selection.threadId)) throw new Error('没有找到所选会话');
-          await this.adoptCodexThread(selection.threadId);
-        } else if (selection.fusionMain) await this.adapter.openAgent.call(this, id, '', { reuseWindow: true });
-        else await this.openAgent(id);
-      });
-      if (this.cdp !== cdp) return;
-      if (this.bindingReady && this.chatUpdatesStop && this.lastChat) {
-        this.prefetchMenus().catch(() => {});
-        return;
-      }
-    } else if (startup) {
-      const pending = this.startupPending = {};
-      try {
-        const state = await this.withFocus(async () => {
-          await this.adapter.openDefaultSession?.call(this);
-          if (this.pendingProject?.trust) return null;
-          const state = await this.waitFor(`agentStartupState(${JSON.stringify(win.app)}, true)`, 250);
-          if (!state) throw new Error('会话输入区尚未就绪，请重试');
-          this.threadId = this.selectedThread = state.thread || '';
-          return state;
-        });
-        cdpRead.getStore()?.throwIfAborted();
-        this.startupPending = null;
-        if (this.pendingProject?.trust) return;
-        if (state.login) {
-          this.emit({ t: 'attachFailed', ready: false, message: '请先在电脑端登录 Codex，再重试当前会话' });
-          return;
-        }
-        this.bindingReady = true;
-        await attached();
-        await this.withFocus(() => this.setMode(this.mode, true));
-        for (let i = 0; this.mode === 'chat' && !this.lastChat && i < 40; i++) {
-          await new Promise(resolve => setTimeout(resolve, 120));
-          cdpRead.getStore()?.throwIfAborted();
-          await this.pollChat(true);
-        }
-        if (this.mode === 'chat' && !this.lastChat) throw new Error('当前会话尚未就绪，请重试');
-        if (launchDefault) takeLaunched(win.app);
-        this.prefetchMenus().catch(() => {});
-      }
-      catch (error) {
-        if (this.startupPending === pending || !this.startupPending) {
-          this.startupPending = null;
-        }
-        throw error;
-      }
-      return;
-    } else if (!selection.deferred && win.app === 'cursor' && this.threadId && !await this.cdp.evaluate(helpersCall('hasComposer()'))) {
-      await this.withFocus(() => this.adapter.openAgent.call(this, this.threadId));
-    }
-    this.bindingReady = !selection.deferred && !this.startupPending;
-    await attached();
-    if (this.startupPending || selection.deferred) return { trust };
-    await this.withFocus(() => this.setMode(this.mode, true));
-    if (this.cdp === cdp) this.prefetchMenus().catch(() => {});
-  }
-
-  navigationFailed(message, error) {
-    this.catalogUpdatesStop?.();
-    this.catalogUpdatesStop = null;
-    const app = message.t === 'attach' ? String(message.id || '').replace(/:.*$/, '') || this.app : this.app;
-    const failure = error.message;
-    if (this.app !== app) this.detach();
-    this.bindingReady = false;
-    this.selectionHome = true;
-    this.rememberedSelection = '';
-    this.rememberingSelection = null;
-    this.chatRead?.controller.abort(error);
-    this.chatRead?.reject?.(error);
-    this.chatRead = null;
-    this.chatWatchGeneration = (this.chatWatchGeneration || 0) + 1;
-    this.stopChatUpdates();
-    clearInterval(this.chatTimer);
-    this.startupPending = this.pendingProject = null;
-    this.switchingThread = false;
-    this.clearViewState();
-    this.threadId = this.selectedThread = '';
-    this.app = app;
-    if (!this.cdp) this.windowId = this.targetId = '';
-    this.emit({ t: 'attachFailed', home: true, ready: false, app, appName: this.appMessage('{app}'), id: this.targetId || app,
-      windowId: this.windowId || '', threadId: '', sel: this.selectionKey(), connected: !!this.cdp,
-      navigationId: message.navigationId, message: failure });
+    return this.connectionView.matchesDelivery() && !cdpRead.getStore()?.aborted && super.liveRead(cdp, sel);
   }
 
   // Warms the phone's sheet caches with whatever can be read without opening visible UI.
@@ -611,58 +293,6 @@ export class Session extends AgentContext {
   // Focus emulation breaks real typing while it is on, so it only wraps phone-driven
   // actions that type/tap, and is switched off again shortly after they finish.
 
-  releaseBackendSettings() {
-    if (this.codexBackendSettings) cdpRead.run(null, () => this.adapter.closeBackendSettings.call(this))
-      .catch(error => console.log('[settings close]', error.message));
-  }
-
-  detach() {
-    this.releaseBackendSettings();
-    if (this.codexBackend) cdpRead.run(null, () => codexBackend.releaseIdle(this.threadId))
-      .catch(error => this.emit({ t: 'status', ok: false, msg: error.message }));
-    if (this.app === 'opencode') this.adapter.detach.call(this);
-    this.catalogUpdatesStop?.();
-    this.catalogUpdatesStop = null;
-    this.bindingReady = false;
-    this.rememberedSelection = '';
-    const read = this.chatRead;
-    this.chatRead = null;
-    this.polling = this.pollAgain = null;
-    const reason = new Error('窗口已切换或断开');
-    read?.controller.abort(reason);
-    read?.reject?.(reason);
-    this.desktopSettingsOwned = undefined;
-    this.desktopSettingsSection = '';
-    this.codexSettingsCdp?.close();
-    this.codexSettingsCdp = null;
-    this.codexSettingsEditor = null;
-    this.codexSettingsReturn = '';
-    this.chatWatchGeneration = (this.chatWatchGeneration || 0) + 1;
-    cdpRead.run(null, () => this.stopChatUpdates());
-    this.stopVisual();
-    clearTimeout(this.focusTimer);
-    this.focusTimer = null;
-    this.focusCount = 0;
-    clearInterval(this.chatTimer);
-    const connections = new Set([this.cdp, this.editorCdp]);
-    this.cdp = this.editorCdp = null;
-    this.codexBackend = false;
-    this.codexOwnerRoot = '';
-    this.sessionProject = null;
-    this.sessionCwd = '';
-    cdpRead.run(null, () => {
-      for (const cdp of connections) {
-        if (cdp) cdp.send('Emulation.setFocusEmulationEnabled', { enabled: false }).catch(() => {})
-          .finally(() => cdp.close());
-      }
-    });
-  }
-
-  async refreshViewport() {
-    const v = await this.editorCdp.evaluate('({ w: innerWidth, h: innerHeight })');
-    if (v) this.viewport = v;
-  }
-
   async snapshot() {
     return visualCapture.publish(this);
   }
@@ -685,45 +315,34 @@ export class Session extends AgentContext {
     return fusionRunner(this.fusionRun);
   }
 
-  async followCodexOwner(msg) {
-    if (this.codexBackend) {
-      const thread = this.threadId;
-      const owner = await this.adapter.backendOwner(thread);
-      if (this.app !== 'codex' || this.threadId !== thread) throw new Error('会话已切换，操作未执行');
-      if (owner) {
-        const previous = this.selectionKey(), files = pendingUploads(previous);
-        await this.attach({ id: 'codex', windowId: owner.pageId, threadId: thread, nativeOwner: { cwd: owner.cwd } });
-        for (const [, file] of files) updateUpload(file, { sel: this.selectionKey() });
-        if (msg.sel === previous) return { ...msg, sel: this.selectionKey() };
-      }
-    }
-    return msg;
-  }
-
   async handle(msg) {
     const command = this.app === 'codex' && (['send', 'pickMenu', 'queue', 'codexRequest', 'codexPlan', 'codexPick'].includes(msg.t)
       || msg.t === 'codexGoal' && msg.action !== 'read')
       && !(msg.t === 'send' && msg.submit === false) && !(msg.t === 'queue' && msg.action === 'read');
-    if (!command) return this.handleSelected(msg);
-    const thread = this.threadId;
-    return codexBackend.runCommand(thread || this, () => {
+    if (!command || this.agentControlCommand === this.threadId) return this.handleSelected(msg);
+    const binding = ConversationRef.capture(this);
+    return codexBackend.runCommand(binding.threadId || this, () => {
       cdpRead.getStore()?.throwIfAborted();
-      if (this.app !== 'codex' || this.threadId !== thread) throw new Error('会话已切换，请在当前会话重新操作');
-      return this.handleSelected(msg);
+      return this.handleSelected(msg, binding);
     });
   }
 
-  async handleSelected(msg) {
-    const app = this.app, thread = this.threadId;
-    if (['send', 'pickMenu', 'queue', 'question', 'codexRequest', 'codexPlan', 'codexPick', 'stop'].includes(msg.t)
-        && msg.sel && msg.sel !== this.selectionKey()) throw new Error('会话已切换，操作未执行');
-    if (['send', 'pickMenu', 'queue', 'codexRequest', 'codexPlan', 'codexPick', 'stop'].includes(msg.t))
-      msg = await this.followCodexOwner(msg);
-    if (msg.t === 'send' && msg.submit !== false && this.mode === 'chat' && this.fusionRun)
+  async handleSelected(msg, origin = ConversationRef.capture(this)) {
+    origin.assertCurrent(this);
+    if (['send', 'pickMenu', 'queue', 'question', 'codexRequest', 'codexPlan', 'codexPick', 'stop', 'opencodeQuestion', 'file', 'saveFile'].includes(msg.t)
+        && msg.sel && msg.sel !== origin.key) throw new Error('会话已切换，操作未执行');
+    if (origin.codexBackend && ['send', 'pickMenu', 'queue', 'codexRequest', 'codexPlan', 'codexPick', 'stop'].includes(msg.t))
+      msg = await this.followCodexOwner(msg, origin);
+    const binding = ConversationRef.capture(this);
+    if (!origin.codexBackend || binding.codexBackend) origin.assertCurrent(this);
+    if (msg.t === 'send' && msg.submit !== false && this.mode === 'chat' && !this.fusionRun?.removedAt
+        && this.fusionRun?.bindings.some(row => row.id === this.fusionRun.main.bindingId
+          && row.app === binding.app && row.threadId === binding.threadId))
       await cdpRead.run(null, () => this.fusionWorker().ensureMain());
-    if (this.app !== app || this.threadId !== thread) throw new Error('会话已切换，操作未执行');
+    binding.assertCurrent(this);
     const route = resolveRoute(this, msg.t);
     const execute = async () => {
+      binding.assertCurrent(this);
       if (msg.t === 'draft') {
         if (msg.sel !== this.selectionKey()) throw new Error('会话已切换，草稿未同步');
         const epoch = this.draftEpoch || '';
@@ -734,17 +353,18 @@ export class Session extends AgentContext {
       if (route?.pre) {
         const r = await route.pre(this, msg);
         if (r !== SKIP) return r;
+        binding.assertCurrent(this);
       }
       const readOnly = flag(route?.readOnly, this, msg);
-      return await (readOnly || this.codexBackend ? this.dispatch(msg) : this.withFocus(() => this.dispatch(msg)));
+      return await (readOnly || this.codexBackend ? this.dispatch(msg) : this.withFocus(() => { binding.assertCurrent(this); return this.dispatch(msg); }));
     };
     if (route?.native && this.app !== 'opencode') return execute();
-    const target = /^(?:project|thread):/.test(msg.id || '') ? parseAgentRef(msg.id).windowId : this.windowId;
-    if (windowOperationLocked(this.app, target, this)) throw new Error('窗口正在批量处理会话，请稍后操作');
-    const release = leaseWindow(this.app, this.windowId, this);
+    const target = /^(?:project|thread):/.test(msg.id || '') ? parseAgentRef(msg.id).windowId : binding.windowId;
+    if (windowOperationLocked(binding.app, target, this)) throw new Error('窗口正在批量处理会话，请稍后操作');
+    const release = leaseWindow(binding.app, binding.windowId, this);
     if (!['ping', 'visible', 'usage', 'agents', 'connAgents', 'windows', 'sessionLibrary', 'sessionActions'].includes(msg.t)) touchProjectWindow(this.app, this.windowId);
     try {
-      const source = nativeWindow(this.cdp);
+      const source = nativeWindow(binding.cdp);
       if (source && route && !route.connection && !route.navigation && !flag(route.readOnly, this, msg))
         return await source.run(execute);
       return await execute();
@@ -752,12 +372,7 @@ export class Session extends AgentContext {
   }
 
   async dispatch(msg, route = resolveRoute(this, msg.t)) {
-    const fusionFree = this.app === 'fusion' && flag(route?.fusionFree, this, msg);
-    if (fusionFree) {
-      if (route.fusion) return route.fusion(this, msg);
-    } else if (!this.cdp && this.app !== 'opencode' && !this.codexBackend) throw new Error(this.appMessage('尚未连接到 {app} 窗口'));
-    if (!route) throw new Error(`未知指令: ${msg.t}`);
-    return route.run(this, msg);
+    return dispatchAgentControl(this, msg, route);
   }
 
   suspend() {
@@ -781,6 +396,7 @@ export class Session extends AgentContext {
 
   dispose() {
     this.disposed = true;
+    this.connectionView.retire();
     fusionViewers.delete(this);
     this.stopChatUpdates();
     clearInterval(this.chatTimer);
@@ -789,4 +405,4 @@ export class Session extends AgentContext {
     this.detach();
   }
 }
-Object.assign(Session.prototype, FUSION_OWNER);
+Object.assign(Session.prototype, bindingMethods, FUSION_OWNER);

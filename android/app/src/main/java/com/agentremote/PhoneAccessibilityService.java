@@ -29,6 +29,7 @@ public final class PhoneAccessibilityService extends AccessibilityService {
     private static final int MAX_OBSERVATION_BYTES = 48 * 1024;
     private static PhoneAccessibilityService connected;
     private Snapshot latest, previous;
+    private boolean gestureInProgress;
 
     private record Target(AccessibilityNodeInfo info, String label) {}
     private record Visit(AccessibilityNodeInfo info, int parent) {}
@@ -226,16 +227,23 @@ public final class PhoneAccessibilityService extends AccessibilityService {
         };
     }
 
-    void gesture(float x, float y, float toX, float toY, int duration, Consumer<Boolean> result) {
+    boolean gestureInProgress() { return gestureInProgress; }
+
+    boolean gesture(float x, float y, float toX, float toY, int duration, Consumer<Boolean> result) {
         Path path = new Path();
         path.moveTo(x, y);
         if (x != toX || y != toY) path.lineTo(toX, toY);
         GestureDescription gesture = new GestureDescription.Builder()
                 .addStroke(new GestureDescription.StrokeDescription(path, 0, duration)).build();
-        if (!dispatchGesture(gesture, new GestureResultCallback() {
-            @Override public void onCompleted(GestureDescription g) { result.accept(true); }
-            @Override public void onCancelled(GestureDescription g) { result.accept(false); }
-        }, null)) result.accept(false);
+        gestureInProgress = dispatchGesture(gesture, new GestureResultCallback() {
+            @Override public void onCompleted(GestureDescription g) { complete(true); }
+            @Override public void onCancelled(GestureDescription g) { complete(false); }
+            private void complete(boolean ok) {
+                gestureInProgress = false;
+                result.accept(ok);
+            }
+        }, null);
+        return gestureInProgress;
     }
 
     private static String actionName(int id) {

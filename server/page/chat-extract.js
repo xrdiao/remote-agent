@@ -103,11 +103,10 @@
   };
 
   const codexVisibleThread = () => {
-    let el = [...doc.querySelectorAll('.ProseMirror')].find(vis);
-    while (el && !Object.keys(el).some(k => k.startsWith('__reactFiber'))) el = el.parentElement;
-    const active = el && codexFiberProps(el, 40).find(p => typeof p.conversationId === 'string');
-    return active?.conversationId || [...doc.querySelectorAll('[data-response-annotation-conversation]')].filter(vis).at(-1)?.getAttribute('data-response-annotation-conversation') || '';
+    const editor = [...doc.querySelectorAll('.ProseMirror')].find(vis);
+    return codexComposerThread(codexFiberProps(editor, 40)) || codexAnnotationThread();
   };
+  const codexAnnotationThread = () => [...doc.querySelectorAll('[data-response-annotation-conversation]')].filter(vis).at(-1)?.getAttribute('data-response-annotation-conversation') || '';
   const codexThread = () => remoteContext?.app === 'codex' ? remoteContext.threadId : codexVisibleThread();
   const attachmentRows = (ready = false) => {
     const ed = [...doc.querySelectorAll(`${COMPOSER}, [data-slate-editor="true"][contenteditable="true"]`)].filter(vis).at(-1);
@@ -192,27 +191,41 @@
     }
     return [];
   };
-  const submitCodexMessage = async (follow = '', dispatch = false, requestId = '') => {
+  const submitCodexMessage = async (follow = '', dispatch = false, requestId = '', expectedThread) => {
     const editor = codexPromptEl();
-    const props = editor && codexFiberProps(editor, Infinity).find(p => typeof p.handleSubmit === 'function' && 'submitDisabled' in p);
+    const target = codexComposerProps(editor, expectedThread);
+    const props = target?.find(p => typeof p.handleSubmit === 'function' && 'submitDisabled' in p);
     if (!props || props.submitDisabled || props.isInteractionBlocked || props.interactionsEnabled === false) return false;
+    const thread = codexComposerThread(target) ?? expectedThread ?? codexThread();
+    if (typeof props.conversationId === 'string' && props.conversationId !== thread) return false;
+    let submit = props.handleSubmit;
+    if (follow) {
+      // The button handler receives a DOM event and fixes the primary action.
+      // Its memoized native submit callback accepts explicit Queue/Steer.
+      const callbacks = new Set();
+      for (const fiber of codexFibers(editor)) for (const values of fiber.updateQueue?.memoCache?.data || [])
+        for (let i = 1; i < values.length; i++) if (values[i] === props.handleSubmit && typeof values[i - 1] === 'function')
+          callbacks.add(values[i - 1]);
+      if (callbacks.size !== 1) return false;
+      submit = [...callbacks][0];
+    }
     if (dispatch) {
-      if (codexPromptPayload() == null) return false;
+      if (target.find(p => p.composerController)?.composerController.getText() == null) return false;
       const submissions = window.__remoteAgentCodexSubmissions ||= new Set();
-      const thread = codexThread(), requests = window.__remoteAgentCodexSubmitRequests ||= new Map();
+      const requests = window.__remoteAgentCodexSubmitRequests ||= new Map();
       const clear = () => { if (requests.get(thread) === requestId) requests.delete(thread); };
       if (requestId) requests.set(thread, requestId);
       const options = { ...(follow ? { followUpSubmitAction: follow } : {}), ...(requestId ? {
         onSubmitted: clear,
         onNotSent: () => { clear(); codexSubmitError(requestId, 'Codex 未提交这条消息，内容已保留'); },
       } : {}) };
-      const pending = Promise.resolve().then(() => props.handleSubmit(options)).catch(error => {
+      const pending = Promise.resolve().then(() => submit(options)).catch(error => {
         clear(); codexSubmitError(requestId, String(error?.message || error));
       }).finally(() => submissions.delete(pending));
       submissions.add(pending);
       return true;
     }
-    await props.handleSubmit(follow ? { followUpSubmitAction: follow } : undefined);
+    await submit(follow ? { followUpSubmitAction: follow } : undefined);
     return true;
   };
   const activeThread = () => {
@@ -272,25 +285,36 @@
         if (typeof value?.turnsPagination?.hasLoadedOldest === 'boolean') hasLoadedOldest = value.turnsPagination.hasLoadedOldest;
         for (const turn of value?.conversationTurns || []) if (turn.turnId && Array.isArray(turn.items)) turns.set(turn.turnId, turn);
         for (const entry of value?.visibleTurnEntries || []) if (entry.turnId && Array.isArray(entry.turn?.items)) turns.set(entry.turnId, entry.turn);
-        if (Array.isArray(value)) for (const item of value) if (typeof item?.id === 'string' && typeof item.text === 'string' && item.clientUserMessageId) queued.set(item.id, item);
+        if (Array.isArray(value)) for (const item of value) {
+          const clientUserMessageId = item?.clientUserMessageId || item?.submissionOptions?.clientUserMessageId;
+          if (typeof item?.id === 'string' && typeof item.text === 'string' && typeof clientUserMessageId === 'string' && clientUserMessageId)
+            queued.set(item.id, { ...item, clientUserMessageId });
+        }
       }
     }
     if (conversation) {
-      nativeReader = (remoteContext?.app === 'codex' ? codexNativeManager() : codexConversationManager(thread, scopes))?.threadStore.stateReaders;
-      if (conversation.turnHistory?.kind === 'canonical') {
-        const history = conversation.turnHistory.history;
+      nativeReader = (remoteContext?.app === 'codex' ? codexNativeManager() : codexConversationManager(thread, scopes))?.threadStore?.stateReaders;
+      const wrapped = conversation.turnHistory?.kind === 'canonical';
+      // Current native RPC conversations expose canonical history directly,
+      // including background threads with no mounted projection atoms.
+      const history = wrapped ? conversation.turnHistory.history : conversation.id === thread ? conversation.turnHistory : null;
+      if (history?.entitiesByKey && Array.isArray(history.islands)) {
         nativeTurns = history.entitiesByKey;
-        index = history.islands.flatMap(island => island.entries).flatMap(({ key }) => {
-          const turn = history.entitiesByKey[key];
+        const nativeIndex = history.islands.flatMap(island => island.entries || []).flatMap(entry => {
+          const key = wrapped ? entry.key : entry.value, turn = nativeTurns[key];
           return turn?.turnId ? [{ entityKey: key, turnId: turn.turnId }] : [];
         });
-        hasLoadedOldest = history.isComplete;
+        index = nativeIndex.length ? nativeIndex : index || [];
+        hasLoadedOldest = history?.isComplete === true;
       } else {
         const identity = nativeReader?.getLegacyTurnIdentity(conversation);
         const keys = new Map((index || []).map(turn => [turn.turnId, turn.entityKey]));
-        index = conversation.turns.flatMap((turn, n) => turn.turnId ? [{ entityKey: identity?.entityKeys[n] || keys.get(turn.turnId) || turn.turnId, turnId: turn.turnId }] : []);
-        for (const turn of conversation.turns) if (turn.turnId) turns.set(turn.turnId, turn);
-        hasLoadedOldest = conversation.turnsPagination.hasLoadedOldest;
+        const legacyTurns = Array.isArray(conversation.turns) ? conversation.turns : [];
+        const nativeIndex = legacyTurns.flatMap((turn, n) => turn?.turnId
+          ? [{ entityKey: identity?.entityKeys?.[n] || keys.get(turn.turnId) || turn.turnId, turnId: turn.turnId }] : []);
+        index = nativeIndex.length ? nativeIndex : index || [];
+        for (const turn of legacyTurns) if (turn?.turnId) turns.set(turn.turnId, turn);
+        hasLoadedOldest = conversation.turnsPagination?.hasLoadedOldest === true;
       }
     }
     // Native pages prepend turns; keep already published numbers anchored to their turn IDs.
@@ -454,7 +478,8 @@
     const content = user.type === 'steeringUserMessage' ? user.input || [] : user.content || [];
     return { type: 'user-message', clientUserMessageId: user.clientUserMessageId || user.clientId || user.id,
       nativeIds: [...new Set([item.id, user.id, user.clientId, user.clientUserMessageId, user.serverUserMessageId, user.serverClientUserMessageId].filter(Boolean))],
-      message: codexUserText(content), images: content.filter(c => c.type === 'image' || c.type === 'localImage'),
+      message: codexUserText(content), nativeInput: codexInputKey(content) === null ? null : content,
+      images: content.filter(c => c.type === 'image' || c.type === 'localImage'),
       attachments: user.attachments || [], sentAtMs: user.targetTurnStartedAtMs || metadata.turnStartedAtMs };
   };
   const codexStoredTurn = (entry, scopes = codexHistoryScopes(), patchesOnly = false, source = codexTurnSource(entry, scopes)) => {
@@ -537,6 +562,7 @@
       if (!service || !threadId) return { id: '', ids: [], threadId, text: '', completed: false };
       const peek = await service.composerDataHandleManager.peekComposerData(threadId);
       const data = peek?.source === 'memory' ? peek.handle.data : peek?.data;
+      if (data?.composerId !== threadId) return { id: '', ids: [], threadId, text: '', completed: false };
       const headers = data?.fullConversationHeadersOnly || [];
       const users = headers.filter(header => header.type === 1);
       const load = async header => {
@@ -544,26 +570,65 @@
         if (cached && !cached.isPlaceholder) return cached;
         return (await service._composerMessageStorageService.retrieveMessagesBatch(threadId, [header.bubbleId])).get(header.bubbleId);
       };
+      const accepted = (header, message) => header && message?.bubbleId === header.bubbleId && message.type === 1
+        && !message.isPlaceholder && !message.isOptimistic && !message.isSteer && !message.isSimulatedMsg && !message.isDisplayOnly;
       let user = id ? users.find(header => header.bubbleId === id) : attemptId ? null : users.at(-1);
       if (!id && attemptId) for (const header of users.filter(header => !previous.includes(header.bubbleId)).reverse()) {
-        if ((await load(header))?.text?.includes(attemptId)) { user = header; break; }
+        const message = await load(header);
+        if (accepted(header, message) && message.text?.includes(attemptId)) { user = header; break; }
       }
-      const start = headers.indexOf(user), tail = start >= 0 ? headers.slice(start + 1) : [];
-      const next = tail.findIndex(header => header.type === 1);
-      const replies = (next < 0 ? tail : tail.slice(0, next)).filter(header => header.type === 2);
-      const messages = await Promise.all(replies.map(load));
-      const final = messages.findLast(item => item?.text?.trim() && !item.toolFormerData && !item.thinking);
-      const nativeAbort = !user && !!id && !!generationId && data.latestChatGenerationUUID === generationId && data.status === 'aborted';
       const acceptedUser = user ? await load(user) : null;
-      return { id: user?.bubbleId || (nativeAbort ? id : ''), ids: users.map(header => header.bubbleId), turnId: user?.bubbleId || (nativeAbort ? id : ''), threadId,
-        accepted: !!acceptedUser && !!data.latestChatGenerationUUID, user: acceptedUser?.text || '',
-        generationId: data.latestChatGenerationUUID || '', current: !!user && user === users.at(-1) || nativeAbort,
-        text: final?.text || '', completed: !!final && user === users.at(-1) && data.status === 'completed' && (remoteContext ? true : !isBusy()),
-        ended: (nativeAbort || !!user && user === users.at(-1) && ['completed', 'aborted'].includes(data.status)) && (remoteContext ? true : !isBusy()),
-        error: data.status === 'aborted' ? `Cursor 原生执行已中断：${data.abortReason || '原因未知'}` : '', items: [] };
+      const nativeGeneration = acceptedUser?.requestId || '';
+      const wrongGeneration = !!generationId && !!nativeGeneration && generationId !== nativeGeneration;
+      const later = users.slice(users.indexOf(user) + 1);
+      let supersededBy;
+      if (accepted(user, acceptedUser) && !wrongGeneration) for (const header of later) {
+        const message = await load(header);
+        if (accepted(header, message) && message.requestId && message.requestId !== (nativeGeneration || generationId)) {
+          supersededBy = { messageId: message.bubbleId, generationId: message.requestId };
+          break;
+        }
+      }
+      const start = headers.indexOf(user), end = later.length ? headers.indexOf(later[0]) : headers.length;
+      const messages = start < 0 || supersededBy ? [] : await Promise.all(headers.slice(start + 1, end).filter(header => header.type === 2).map(load));
+      const final = messages.findLast(item => item?.text?.trim() && !item.toolFormerData && !item.thinking);
+      // The memory handle can change while a bubble is fetched. Use its current selection for live status.
+      const live = peek?.source === 'memory' ? peek.handle.data : data;
+      const latestGeneration = live.latestChatGenerationUUID || '';
+      const liveHeaders = live.fullConversationHeadersOnly || [];
+      const latestUser = liveHeaders.findLast(header => header.type === 1);
+      const status = live.status;
+      const matches = accepted(user, acceptedUser) && !wrongGeneration;
+      const current = matches && !!latestGeneration && latestUser?.bubbleId === user.bubbleId
+        && (!generationId || generationId === latestGeneration)
+        && (nativeGeneration === latestGeneration || !nativeGeneration && status !== 'generating');
+      const nativeAbort = !user && !!id && !!generationId && latestGeneration === generationId && status === 'aborted';
+      if (supersededBy) {
+        const before = liveHeaders.findIndex(header => header.type === 1 && header.bubbleId === user.bubbleId);
+        const after = liveHeaders.findIndex(header => header.type === 1 && header.bubbleId === supersededBy.messageId);
+        const expected = nativeGeneration || generationId;
+        if (before < 0 || after <= before || expected && (latestGeneration === expected || live.chatGenerationUUID === expected))
+          supersededBy = undefined;
+      }
+      const messageId = matches ? user.bubbleId : nativeAbort ? id : '';
+      const ended = !!supersededBy || (nativeAbort || current && ['completed', 'aborted'].includes(status)) && (remoteContext || !isBusy());
+      return { id: messageId, ids: users.map(header => header.bubbleId), turnId: messageId, threadId,
+        accepted: matches && !!(nativeGeneration || current), user: acceptedUser?.text || '',
+        generationId: current || nativeAbort ? latestGeneration : nativeGeneration, current: current || nativeAbort,
+        ...(supersededBy ? { supersededBy } : {}),
+        ...(remoteContext?.app === 'cursor' && current ? { settings: {
+          ...cursorFusionSettings(threadId), nativeModel: acceptedUser.modelInfo?.modelName || '',
+        } } : {}),
+        text: final?.text || '', completed: !!(ended && current && final && status === 'completed'), ended: !!ended,
+        error: (current || nativeAbort) && status === 'aborted' ? `Cursor 原生执行已中断：${live.abortReason || '原因未知'}` : '', items: [] };
     }
     const scoped = remoteContext?.app === 'codex';
-    const state = scoped ? codexHistoryState(codexNativeManager().getConversation(remoteContext.threadId), false) : codexHistoryState();
+    const scopes = scoped ? codexHistoryScopes() : null;
+    const client = scoped && (codexConversationManager(remoteContext.threadId, scopes, remoteContext.host || 'local')
+      || codexConnectedRpc(remoteContext.host || 'local', scopes));
+    const conversation = scoped && client ? await codexRpcCall(client, 'getConversation', remoteContext.threadId) : null;
+    if (scoped && !conversation) return { id: '', ids: [], threadId: remoteContext.threadId, text: '', completed: false };
+    const state = scoped ? codexHistoryState(conversation, false, scopes, remoteContext.threadId) : codexHistoryState();
     const rows = scoped && codexVisibleThread() !== state.thread ? [] : [...doc.querySelectorAll('[data-turn-key]')];
     const entries = new Map(state.entries.map(entry => {
       const el = rows.find(e => e.getAttribute('data-turn-key') === entry.turnKey);
@@ -588,9 +653,12 @@
     const error = found?.entry.nativeTurn?.error?.message || turn?.items?.find(item => item.type === 'system-error')?.content
       || (turn?.status === 'interrupted' ? 'Codex 原生执行已中断' : turn?.status === 'failed' ? 'Codex 原生执行失败' : '');
     return { id: user?.clientUserMessageId || '', ids: [...entries.values()].flatMap(found => users(found).map(it => it.clientUserMessageId)).filter(Boolean),
-      turnId: found?.entry.turnId || '', threadId: state.thread, current: !!found && found.entry.turnId === latest, user: user?.message || '', text: reply?.content || '',
+      turnId: found?.entry.turnId || '', threadId: state.thread,
+      current: !!found && !!turn && !!user && !turn.partial && found.entry.turnId === latest && user === users(found).at(-1),
+      nativeIds: user?.nativeIds || [], lastUserId: found ? users(found).at(-1)?.clientUserMessageId || '' : '',
+      user: user?.message || '', nativeInput: user?.nativeInput || null, text: reply?.content || '',
       accepted: !!user && codexSendState(false, state.thread).runs.some(value => value.id === found?.entry.turnId),
-      ended,
+      ended, interrupted: turn?.status === 'interrupted',
       completed: ['complete', 'completed'].includes(turn?.status) && !!reply?.completed && !error, error,
       items: turn ? codexTurnItems(found.el, found.entry) : [] };
 
@@ -1117,9 +1185,10 @@
     const result = { thread: state.thread, lastTurn: state.entries.at(-1)?.turnId || '', runs, messages: codexReceiptRows(state, 0), queued: codexQueued(true, state) };
     if (draft) {
       const editor = codexPromptEl();
-      result.draft = codexPromptText() || '';
-      result.payload = codexPromptPayload();
-      result.hasDraftAttachments = !!editor && codexFiberProps(editor, Infinity).some(p => p.hasVisibleAttachments === true);
+      const props = codexComposerProps(editor, state.thread);
+      result.draft = props ? codexPromptText() || '' : '';
+      result.payload = props?.find(p => p.composerController)?.composerController.getText() ?? null;
+      result.hasDraftAttachments = props?.some(p => p.hasVisibleAttachments === true) ?? false;
       result.follow = codexQueryClient()?.getQueryData(['vscode', 'get-settings'])?.values?.followUpQueueMode || 'queue';
     }
     return result;
@@ -1300,8 +1369,15 @@
       items.push(native.has(item.i) ? { ...item, ...native.get(item.i) } : item);
     }
     items.push(...missing.slice(next));
+    let first = headers.length;
+    for (const { i } of items) {
+      const position = positions.get(i.split(':think')[0]);
+      if (position !== undefined && position < first) first = position;
+    }
     items.push(...await cursorStructuredItems(chat.thread, data));
-    return { ...chat, items, performance: nativePerformance('cursor', chat.thread, agentRun('cursor', chat.thread), chat.model, data) };
+    const historyBefore = headers[first]?.bubbleId || null;
+    return { ...chat, items, historyBefore, earlier: !!historyBefore && first > 0,
+      performance: nativePerformance('cursor', chat.thread, agentRun('cursor', chat.thread), chat.model, data) };
   };
   const extract = (history = false, knownTurns = [], pageSize = 0, nativeCursor = false) => {
     if (nativeCursor) return cursorCurrentChat(extract(history, knownTurns), pageSize || 120);
@@ -1474,20 +1550,48 @@
       ...(codexFacts()?.view ? { codex: codexFacts().view } : {}),
     };
   };
+  const cursorTerminalApproval = (thread, data) => {
+    if (!data?.chatGenerationUUID || !data.conversationActionManager || data.conversationActionManager.signal.aborted
+        || activeThread() !== thread) return null;
+    const panel = findPanel(), headers = data.fullConversationHeadersOnly || [];
+    const user = headers.findLastIndex(header => header.type === 1);
+    if (!panel || user < 0) return null;
+    const matches = [];
+    for (const card of panel.querySelectorAll('[data-shell-tool-call-marker="root"].ui-shell-tool-call--pending')) {
+      const bubbleId = card.closest('[data-message-id]')?.dataset.messageId;
+      if (!headers.slice(user + 1).some(header => header.bubbleId === bubbleId)) continue;
+      const tool = data.conversationMap[bubbleId]?.toolFormerData;
+      if (tool?.name !== 'run_terminal_command_v2' || tool.status !== 'loading' || !tool.toolCallId
+          || typeof tool.params?.command !== 'string' || !tool.params.command.trim()
+          || ![...card.querySelectorAll('code')].some(code => vis(code) && code.innerText.trim() === '$ ' + tool.params.command.trim())) continue;
+      const buttons = [...card.querySelectorAll('button')].filter(button => vis(button) && !button.disabled
+        && button.getAttribute('aria-disabled') !== 'true');
+      const accept = buttons.filter(button => button.innerText.trim() === 'Run');
+      const reject = buttons.filter(button => button.innerText.trim() === 'Skip');
+      if (accept.length === 1 && reject.length === 1)
+        matches.push({ toolCallId: tool.toolCallId, bubbleId, tool, accept: accept[0], reject: reject[0] });
+    }
+    return matches.length === 1 ? matches[0] : null;
+  };
   const cursorPendingTool = (thread = remoteContext?.threadId || activeThread()) => {
     const data = cursorSessionServices()?.data.getComposerDataIfLoaded(thread);
     const capability = data?.capabilities.find(capability => typeof capability.getPendingUserDecisionGroup === 'function');
     const decisions = capability?.getPendingUserDecisionGroup()() || [];
-    return { data, capability, decisions };
+    // Cursor terminal Allowlist cards use the transcript's own decision controls.
+    const terminal = !decisions.length ? cursorTerminalApproval(thread, data) : null;
+    return { data, capability, decisions: terminal ? [terminal] : decisions, terminal };
   };
   const cursorNativeQuestions = () => {
-    const { capability, decisions } = cursorPendingTool();
-    const decision = decisions.find(decision => capability.getBubbleDataByToolCallId(decision.toolCallId)?.name === 'ask_question');
+    const { capability, decisions, terminal } = cursorPendingTool();
+    if (terminal) return null;
+    const matches = decisions.filter(decision => capability.getBubbleDataByToolCallId(decision.toolCallId)?.name === 'ask_question');
+    if (matches.length !== 1) return null;
+    const decision = matches[0];
     const bubble = decision && capability.getBubbleDataByToolCallId(decision.toolCallId);
     if (!bubble?.params?.questions) return null;
     const { currentSelections = {}, freeformTexts = {} } = bubble.additionalData || {};
-    return { id: decision.toolCallId, list: bubble.params.questions.map(question => ({ text: question.prompt, multi: !!question.allowMultiple,
-      options: [...question.options.map(option => ({ label: option.label, sel: !!currentSelections[question.id]?.includes(option.id) })),
+    return { id: decision.toolCallId, list: bubble.params.questions.map(question => ({ id: question.id, text: question.prompt, multi: !!question.allowMultiple,
+      options: [...question.options.map(option => ({ id: option.id, label: option.label, sel: !!currentSelections[question.id]?.includes(option.id) })),
         { label: '其他…', free: true, value: freeformTexts[question.id] || '', sel: !!currentSelections[question.id]?.includes('__freeform_other__') }] })),
       canSubmit: bubble.params.questions.every(question => currentSelections[question.id]?.length > 0) };
   };
@@ -1535,7 +1639,7 @@
       items.push(...await cursorStructuredItems(thread, data));
       title = data.name || ''; draft = data.text;
       earlier = end > headers.length;
-      before = data.fullConversationHeadersOnly.indexOf(headers[0]);
+      before = headers[0]?.bubbleId || null;
       if (!history) questions = cursorNativeQuestions();
     } else {
       const data = devinSessionData(thread) || fusionDevinState(thread).data;

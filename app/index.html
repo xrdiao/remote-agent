@@ -34,7 +34,7 @@
 <link rel="icon" href="icon-192.png">
 <link rel="apple-touch-icon" href="icon-192.png">
 <title>Remote Agent</title>
-<link rel="stylesheet" href="app.css?v=513">
+<link rel="stylesheet" href="app.css?v=525">
 <link rel="stylesheet" href="vendor/xterm.css?v=6.0.0">
 </head>
 <body>
@@ -63,7 +63,7 @@
       <button id="cachedMore" hidden></button>
       <button id="taskChip" hidden></button>
       <div id="sessionNotice" hidden role="status"></div>
-      <div id="fusionWelcome" hidden><h2>Fusion</h2><p>配置主 Agent 后输入任务；你始终与主 Agent 对话。</p></div>
+      <div id="fusionWelcome" hidden><h2>自主编排</h2><p>配置主 Agent 后输入任务；你始终与主 Agent 对话。</p></div>
       <div id="items"></div>
       <div id="empty" hidden>没找到聊天面板。<br><span id="emptyHint"></span></div>
     </div>
@@ -177,17 +177,19 @@
     <div class="ov-crumbs" id="ovCrumbs"></div>
     <button class="ov-ibtn" id="ovMenu" data-ov="menu"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="12" cy="5" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="12" cy="19" r="1.7"/></svg></button>
   </div>
-  <div class="ov-body">
-    <div class="ov-levels" id="ovLevels"></div>
+  <div class="ov-body" id="ovLevels">
+    <div class="ov-filters" id="ovFilters" hidden></div>
     <div class="ov-main">
       <div class="ov-sum" id="ovSummary"></div>
       <div class="ov-lane" id="ovLane" hidden></div>
       <div class="ov-board" id="ovBoard"></div>
     </div>
     <div class="ov-batch" id="ovBatch" hidden></div>
+    <nav class="ov-levels" id="ovTabs" aria-label="主导航"></nav>
   </div>
   <div class="ov-toasts" id="ovToasts"></div>
 </div>
+<aside id="raSubmitted" hidden></aside>
 <div id="shade"></div>
 <div id="sheet"></div>
 
@@ -243,31 +245,40 @@
   <input id="scannerFile" type="file" accept="image/*" hidden>
 </div>
 
-<script src="i18n.js?v=513"></script>
+<script src="i18n.js?v=525"></script>
 <script src="js/shared-rules.js?v=501"></script>
 <script src="js/ui-helpers.js?v=501"></script>
-<script src="js/core.js?v=514"></script>
-<script src="js/gate.js?v=430"></script>
+<script src="js/core.js?v=527"></script>
+<script src="js/gate.js?v=525"></script>
 <script src="js/scanner.js"></script>
-<script src="js/auth.js?v=501"></script>
-<script src="js/fusion.js?v=503"></script>
-<script src="js/net.js?v=513"></script>
-<script src="js/peers.js?v=513"></script>
-<script src="js/phone-control.js?v=514"></script>
-<script src="js/sheets.js?v=514"></script>
-<script src="js/notify.js?v=513"></script>
-<script src="js/overview.js?v=513"></script>
+<script src="js/auth.js?v=525"></script>
+<script src="js/fusion.js?v=525-remote-qa1"></script>
+<script src="js/net.js?v=525"></script>
+<script src="js/computer-connection.js?v=525"></script>
+<script src="js/command-transport.js?v=525"></script>
+<script src="js/desktop-operations.js?v=525"></script>
+<script src="js/connection-resume.js?v=525"></script>
+<script src="js/session-selection.js?v=525"></script>
+<script src="js/relay-events.js?v=525"></script>
+<script src="js/source-ref.js?v=525"></script>
+<script src="js/peers.js?v=525"></script>
+<script src="js/phone-control.js?v=525"></script>
+<script src="js/sheets.js?v=525"></script>
+<script src="js/notify.js?v=525"></script>
+<script src="js/ra-core-ui.js?v=525"></script>
+<script src="js/overview.js?v=525"></script>
 <script src="js/mode.js?v=386"></script>
 <script src="markdown-it/markdown-it-15.0.3.min.js"></script>
 <script src="js/markdown.js?v=449"></script>
-<script src="js/chat.js?v=508"></script>
-<script src="js/history.js?v=509"></script>
-<script src="js/files.js?v=481"></script>
-<script src="js/transfer.js?v=504"></script>
+<script src="js/chat.js?v=525"></script>
+<script src="js/history.js?v=526"></script>
+<script src="js/files.js?v=525"></script>
+<script src="js/transfer.js?v=527"></script>
 <script src="js/screen.js?v=382"></script>
 <script src="vendor/xterm.js?v=6.0.0"></script>
-<script src="js/terminal.js?v=466"></script>
-<script src="js/composer.js?v=506"></script>
+<script src="js/terminal.js?v=525"></script>
+<script src="js/composer-operations.js?v=525"></script>
+<script src="js/composer.js?v=525"></script>
 <script src="js/latency.js?v=367"></script>
 <script src="js/image-editor.js?v=447"></script>
 <script src="js/voice.js?v=501"></script>

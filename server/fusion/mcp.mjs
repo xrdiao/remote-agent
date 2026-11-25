@@ -3,35 +3,57 @@ import crypto from 'node:crypto';
 
 // MCP is a native tool transport. The existing Runner owns all decisions/state.
 export class FusionMcpServer {
-  constructor() { this.bindings = new Map(); }
-  async bind(binding, { tools, instructions, identify, changed }) {
-    if (!this.server) {
-      this.server = http.createServer((request, response) => this.receive(request, response));
-      await new Promise((resolve, reject) => {
-        this.server.once('error', reject);
-        this.server.listen(binding.mcp?.port || 0, '127.0.0.1', resolve);
+  constructor() { this.listeners = new Map(); }
+  listen(port) {
+    const entry = { channels: new Map(), leases: 0 };
+    const server = entry.server = http.createServer((request, response) => {
+      this.receive(entry, request, response).catch(() => response.destroy());
+    });
+    this.listeners.set(port, entry);
+    entry.ready = new Promise((resolve, reject) => {
+      const failed = error => { this.listeners.delete(port); reject(error); };
+      server.once('error', failed);
+      server.listen(port, '127.0.0.1', () => {
+        server.off('error', failed);
+        server.on('error', error => console.error('[Fusion MCP]', error.message));
+        server.unref();
+        entry.port = server.address().port;
+        this.listeners.delete(port);
+        this.listeners.set(entry.port, entry);
+        resolve();
       });
-      this.server.unref();
-    }
-    binding.mcp ||= { token: crypto.randomBytes(24).toString('hex'), port: this.server.address().port };
-    const channel = this.bindings.get(binding.mcp.token) || { pending: new Map() };
-    Object.assign(channel, { binding, tools, instructions, identify, changed });
-    this.bindings.set(binding.mcp.token, channel);
-    const url = `http://127.0.0.1:${binding.mcp.port}/${binding.mcp.token}`;
-    return {
-      config: { type: 'http', name: 'ra-fusion', url, headers: [] },
-      requests: () => [...channel.pending.values()].map(row => row.native),
-      reply: (id, result) => this.reply(channel, id, result),
-      close: async () => {
-        for (const pending of channel.pending.values()) pending.response.destroy();
-        channel.pending.clear(); this.bindings.delete(binding.mcp.token);
-        if (!this.bindings.size) {
-          const server = this.server;
-          await new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
-          this.server = null;
-        }
-      },
+    });
+    return entry;
+  }
+  async bind(binding, { tools, instructions, identify, changed, recordConfig }) {
+    const port = binding.mcp?.port;
+    const entry = (port ? this.listeners.get(port) : this.listeners.values().next().value) || this.listen(port || 0);
+    entry.leases++;
+    const release = async () => {
+      if (--entry.leases) return;
+      if (this.listeners.get(entry.port) === entry) this.listeners.delete(entry.port);
+      if (entry.server.listening) await new Promise(resolve => entry.server.close(resolve));
     };
+    try {
+      await entry.ready;
+      const mcp = binding.mcp || { token: crypto.randomBytes(24).toString('hex'), port: entry.port };
+      if (entry.channels.has(mcp.token)) throw new Error('这个 Fusion 原生工具通道已被占用');
+      if (!binding.mcp) recordConfig(mcp);
+      const channel = { tools, instructions, identify, changed, pending: new Map(), claimed: new Set(), closed: false };
+      entry.channels.set(mcp.token, channel);
+      return {
+        config: { type: 'http', name: 'ra-fusion', url: `http://127.0.0.1:${mcp.port}/${mcp.token}`, headers: [] },
+        requests: () => [...channel.pending.values()].map(row => row.native),
+        reply: (id, result) => this.reply(channel, id, result),
+        close: async () => {
+          if (channel.closed) return;
+          channel.closed = true;
+          for (const pending of channel.pending.values()) pending.response.destroy();
+          channel.pending.clear(); entry.channels.delete(mcp.token);
+          await release();
+        },
+      };
+    } catch (error) { await release(); throw error; }
   }
   send(response, id, result, error) {
     return new Promise((resolve, reject) => {
@@ -40,11 +62,11 @@ export class FusionMcpServer {
       response.end(JSON.stringify({ jsonrpc: '2.0', id, ...(error ? { error } : { result }) }), resolve);
     });
   }
-  async receive(request, response) {
-    if (request.headers.origin && request.headers.origin !== `http://127.0.0.1:${this.server.address().port}`) {
+  async receive(entry, request, response) {
+    if (request.headers.origin && request.headers.origin !== `http://127.0.0.1:${entry.port}`) {
       response.writeHead(403); response.end(); return;
     }
-    const channel = this.bindings.get(request.url.slice(1));
+    const channel = entry.channels.get(request.url.slice(1));
     if (!channel) { response.writeHead(404); response.end(); return; }
     if (request.method !== 'POST') { response.writeHead(405, { allow: 'POST' }); response.end(); return; }
     let message;
@@ -70,8 +92,10 @@ export class FusionMcpServer {
       if (method !== 'tools/call') return await this.send(response, id, null, { code: -32601, message: 'Unknown MCP method' });
       if (!channel.tools.some(tool => tool.name === params.name)) throw new Error('没有登记这个主控工具');
       const native = await channel.identify({ tool: params.name, arguments: params.arguments });
-      const key = String(native.id);
-      if (channel.pending.has(key)) throw new Error('这个原生工具请求仍在等待回执');
+      if (channel.closed || response.destroyed) { response.destroy(); return; }
+      const key = String(native.id), claim = JSON.stringify([native.params.threadId, native.params.turnId, native.params.callId, native.id]);
+      if (channel.pending.has(key) || channel.claimed.has(claim)) throw new Error('这个原生工具请求已经认领，不会重复执行');
+      channel.claimed.add(claim);
       channel.pending.set(key, { id, response, native });
       response.once('close', () => {
         if (channel.pending.get(key)?.response === response) { channel.pending.delete(key); channel.changed(); }

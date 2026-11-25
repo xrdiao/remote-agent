@@ -1,6 +1,32 @@
   const selCardId = () => doc.querySelector('[data-sidebar-item-key] [data-active="true"]')?.closest('[data-sidebar-item-key]')?.getAttribute('data-sidebar-item-key')?.slice(4) || '';
   const codexNativeModule = async kind => {
-    const modules = window.__remoteAgentNativeModules ||= new Map();
+    const nativeDocument = doc, realm = nativeDocument.defaultView;
+    const current = () => {
+      if (!realm || nativeDocument.defaultView !== realm || realm.document !== nativeDocument)
+        throw new Error('Codex 原生文档已切换，请重新读取');
+      if (realm !== window) throw new Error('Codex 原生模块必须在已绑定的原生 frame 中读取');
+    };
+    current();
+    const documents = window.__remoteAgentNativeModuleDocuments ||= new WeakMap();
+    let entry = documents.get(nativeDocument);
+    if (!entry || entry.realm !== realm || entry.draftDocumentVersion !== 1) documents.set(nativeDocument, entry = { realm, draftDocumentVersion: 1, modules: new Map() });
+    const modules = entry.modules;
+    const remember = (key, load) => {
+      if (!modules.has(key)) {
+        const pending = Promise.resolve().then(load);
+        modules.set(key, pending);
+        pending.catch(() => { if (modules.get(key) === pending) modules.delete(key); });
+      }
+      return modules.get(key);
+    };
+    const bounded = async (load, milliseconds, message, controller) => {
+      let timer;
+      try {
+        return await Promise.race([Promise.resolve().then(load), new Promise((_, reject) => {
+          timer = setTimeout(() => { reject(new Error(message)); controller?.abort(); }, milliseconds);
+        })]);
+      } finally { clearTimeout(timer); }
+    };
     const bindingsFor = (role, source) => {
       const names = new Map(source.match(/\bexport\s*\{([^}]+)\}/)[1].split(',').map(entry => {
         const [local, exported = local] = entry.trim().split(/\s+as\s+/);
@@ -11,7 +37,14 @@
       if (role === 'composer') {
         const state = source.match(/([\w$]+)=[\w$]+\([\w$]+,\(\{get:([\w$]+)\}\)=>\(\{\.\.\.\2\([\w$]+\),prompt:\2\(([\w$]+)\)\}\)\)/);
         const edit = source.match(/function ([\w$]+)\([^)]*\)\{let [\w$]+=[\w$]+\.get\([\w$]+\)\?\?\{prompt:(?:``|""|''),pullRequestChecks:\[\]\}/);
-        return { state: names.get(state[1]), text: names.get(state[3]), editDraft: names.get(edit[1]) };
+        const documentRoles = {"retainedDocument": ["function ([\\w$]+)\\(([\\w$]+)\\)\\{let ([\\w$]+)=\\2\\.get\\([\\w$]+\\)\\?\\.prompt;if\\(\\3==null\\|\\|typeof \\3==\\x60string\\x60\\)return;let ([\\w$]+)=[\\w$]+\\(\\3\\);return \\4==null\\?void 0:\\{document:\\4,plainTextMode:\\3\\.plainTextMode\\}\\}", 1], "writeDocument": ["function ([\\w$]+)\\(([\\w$]+),([\\w$]+),([\\w$]+)\\)\\{let [\\w$]+=\\{document:\\3\\.toJSON\\(\\),plainTextMode:\\4\\},[\\w$]+=[\\w$]+\\(\\3,\\4\\);", 1], "plainText": ["getPlainText\\(\\{preserveLinkMarkers:([\\w$]+)=!1\\}=\\{\\}\\)\\{return ([\\w$]+)\\(this\\.view\\.state\\.doc,\\{preserveLinkMarkers:\\1,preserveTextLinkMarks:!0\\}\\)\\.content\\}", 2]};
+        const documentBindings = Object.fromEntries(Object.entries(documentRoles).map(([role, [pattern, group]]) => {
+          const matches = [...source.matchAll(new RegExp(pattern, 'g'))];
+          const binding = matches.length === 1 && names.get(matches[0][group]);
+          if (!binding) throw new Error('Codex 原生文档接口未唯一确认：' + role);
+          return [role, binding];
+        }));
+        return { state: names.get(state[1]), text: names.get(state[3]), editDraft: names.get(edit[1]), ...documentBindings };
       }
       const create = source.match(/function ([\w$]+)\([^)]*\)\{return new ([\w$]+)\(\{scope:[^}]*dynamicTools:/);
       const initializeClass = [...source.matchAll(/var ([\w$]+);function ([\w$]+)\(\)/g)].find(match => match[1] === create[2])[2];
@@ -20,12 +53,26 @@
       return { initialize: names.get(initialize), createInputs: names.get(create[1]) };
     };
     const graph = kind === 'questions' ? 'questionsGraph' : 'graph';
-    if (!modules.has(graph)) modules.set(graph, (async () => {
+    const graphPromise = remember(graph, async () => {
+      current();
+      const deadline = Date.now() + 6000;
       const markers = kind === 'questions' ? { questions: /selectedQuestionKey:[\w$]+,questionIds:\[[\w$]+\.itemId\]/ }
         : { scope: '.retainedScopeEntries.get(', composer: 'discardRetainedDraft', creation: 'async readCreationInputs(' };
-      const pending = [[...doc.scripts].find(script => script.src).src], seen = new Set(pending), found = {};
+      const first = [...nativeDocument.scripts].find(script => script.src)?.src;
+      if (!first) throw new Error('Codex 原生文档未提供脚本入口');
+      const pending = [first], seen = new Set(pending), found = {};
       for (const url of pending) {
-        const source = await (await fetch(url)).text();
+        current();
+        const remaining = deadline - Date.now();
+        if (remaining <= 0) throw new Error('Codex 原生模块图读取超时');
+        const controller = new realm.AbortController();
+        const source = await bounded(async () => {
+          const response = await realm.fetch(url, { signal: controller.signal });
+          if (!response.ok) throw new Error('Codex 原生模块读取失败：HTTP ' + response.status);
+          return response.text();
+        }, Math.min(2000, remaining), 'Codex 原生模块读取超时', controller);
+        current();
+        if (Date.now() >= deadline) throw new Error('Codex 原生模块图读取超时');
         for (const [role, marker] of Object.entries(markers)) if (!found[role] && (typeof marker === 'string' ? source.includes(marker) : marker.test(source))) found[role] = { url, bindings: bindingsFor(role, source) };
         if (Object.keys(found).length === Object.keys(markers).length) return found;
         for (const match of source.matchAll(/\b(?:from\s*|import\s*\(\s*)["'`]([^"'`]+\.js)["'`]/g)) {
@@ -34,15 +81,19 @@
         }
       }
       throw new Error('Codex 原生输入模块未提供所需入口');
-    })());
-    if (!modules.has(kind)) modules.set(kind, (async () => {
-      const { url, bindings } = (await modules.get(graph))[kind];
-      const native = await import(url);
+    });
+    const result = await remember(kind, async () => {
+      const { url, bindings } = (await graphPromise)[kind];
+      current();
+      const native = await bounded(() => import(url),
+        2000, 'Codex 原生模块加载超时');
+      current();
       if (kind === 'scope') return native[bindings.scope];
       if (kind === 'creation') { native[bindings.initialize](); return native[bindings.createInputs]; }
       return Object.fromEntries(Object.entries(bindings).map(([role, name]) => [role, native[name]]));
-    })());
-    return modules.get(kind);
+    });
+    current();
+    return result;
   };
   const codexComposerScope = async (id, required = true) => {
     const [composer, retainedScope] = await Promise.all([codexNativeModule('composer'), codexNativeModule('scope')]);
@@ -65,13 +116,50 @@
     const scope = retainedScope({ chain }, node.token, node.key);
     return { scope, composer };
   };
-  const codexConversationDraft = async (id, text, expected) => {
+  const codexConversationDraft = async (id, text, expected, format) => {
     const { scope, composer } = await codexComposerScope(id);
+    // Editable text and the persisted native prompt are different representations.
+    // Native submission receipts and expected comparisons use persisted text.
+    const editor = () => {
+      const controller = codexComposerProps(codexPromptEl(), id)?.find(props => props.composerController)?.composerController;
+      const element = controller?.view?.dom;
+      return controller && typeof controller.getPlainText === 'function' && element?.ownerDocument === doc
+        && element.isConnected && doc.defaultView.document === doc && codexVisibleThread() === (id || '') ? controller : null;
+    };
+    const plain = format === 'plain' || format === 'snapshot', controller = editor();
+    const readPlain = () => {
+      if (controller) {
+        if (editor() !== controller) throw new Error('Codex 原生草稿输入已切换，结果待核对');
+        return controller.getPlainText();
+      }
+      const retained = composer.retainedDocument(scope);
+      if (retained?.document && typeof retained.plainTextMode === 'boolean')
+        return composer.plainText(retained.document, nativeValue({ preserveLinkMarkers: false, preserveTextLinkMarks: true })).content;
+      if (scope.get(composer.text) === '') return '';
+      throw new Error('所选 Codex 后台草稿没有可核验的原生纯文本文档');
+    };
     if (text !== undefined && (expected === undefined || scope.get(composer.text) === expected)) {
-      if (codexVisibleThread() === id) setComposerDraft(text);
-      else composer.editDraft(scope, draft => { draft.prompt = text; });
+      if (controller) {
+        // Dispatch once. An unconfirmed edit must never trigger another writer.
+        if (!setComposerDraft(text, id)) throw new Error('Codex 原生输入尚未确认草稿');
+      } else if (plain) {
+        const retained = composer.retainedDocument(scope);
+        if (!retained?.document || typeof retained.plainTextMode !== 'boolean')
+          throw new Error('所选 Codex 后台草稿缺少原生文档或文本模式，未写入');
+        const schema = retained.document.type.schema;
+        const paragraphs = text.split('\n').map(line => schema.nodes.paragraph.create(null, line ? schema.text(line) : null));
+        const document = schema.nodes.doc.create(null, paragraphs);
+        composer.writeDocument(scope, document, retained.plainTextMode);
+        const after = composer.retainedDocument(scope);
+        if (!after?.document?.eq(document) || after.plainTextMode !== retained.plainTextMode)
+          throw new Error('Codex 后台原生草稿回执未确认');
+      } else composer.editDraft(scope, draft => { draft.prompt = text; });
     }
-    return scope.get(composer.text);
+    if (controller && editor() !== controller) throw new Error('Codex 原生草稿输入已切换，结果待核对');
+    if (!plain) return scope.get(composer.text);
+    const prompt = readPlain();
+    return format === 'snapshot' ? { prompt, serializedPrompt: scope.get(composer.text),
+      draftEditedAt: doc.defaultView.__remoteAgentDraftEdits?.get(id) || 0 } : prompt;
   };
   const pickComposer = eds => chooseComposer(doc, eds);
   const composerSlate = ed => codexFiberProps(ed, Infinity).flatMap(p => Object.values(p || {}))
@@ -108,18 +196,18 @@
     return true;
   };
   // Write the composer via the editor's own API (no keyboard, no focus). Returns true only when it worked.
-  const setComposerDraft = text => {
+  const setComposerDraft = (text, expectedThread) => {
     text = String(text ?? '');
-    if (remoteContext?.app === 'codex' || document.getElementById('active-frame')) {
+    if (expectedThread !== undefined || remoteContext?.app === 'codex' || document.getElementById('active-frame')) {
       // Codex keeps its current EditorView on the native composer controller.
       const ed = codexPromptEl();
-      if (!ed) return false;
-      const view = codexFiberProps(ed, Infinity).find(p => p.composerController)?.composerController.view;
+      const controller = codexComposerProps(ed, expectedThread)?.find(p => p.composerController)?.composerController;
+      const view = controller?.view;
       if (!view) return false;
       const schema = view.state.schema;
       const paragraphs = text.split('\n').map(line => schema.nodes.paragraph.create(null, line ? schema.text(line) : null));
       view.dispatch(view.state.tr.replaceWith(0, view.state.doc.content.size, paragraphs));
-      return codexPromptPayload() === text;
+      return controller.getPlainText() === text;
     }
     const ed = composerTarget(doc);
     if (!ed) return false;

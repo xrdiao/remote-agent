@@ -97,7 +97,6 @@
       await service.whenInitialComposerDataLoaded();
       const rows = (await service._storageService.collectionQuery('composerHeaders')).map(row => JSON.parse(row));
       const loaded = new Map(service.allComposersData.allComposers.map(row => [row.composerId, row]));
-      const running = new Set((window.__SSG_COMPOSER_PROVIDER__?.getStates?.() || []).filter(row => row.state === 'generating').map(row => row.id));
       const workspace = services.composer.composerChatService._workspaceContextService.getWorkspace();
       return { ready: true, complete: true, rows: rows.map(row => {
         const current = loaded.get(row.composerId) || row;
@@ -106,7 +105,7 @@
           workspace: uri?.scheme === 'file' ? uriFilePath(uri) : uri?.path || '', host: uri && uri.scheme !== 'file' ? uri.authority.replace(/^ssh-remote\+/, '') : '',
           workspaceId: (row.workspaceIdentifier || current.workspaceIdentifier)?.id || '', projectless: uris?.length === 0,
           workspaceConfirmed: !!uri,
-          lastUsed: current.lastUpdatedAt || row.createdAt || 0, running: running.has(row.composerId) };
+          lastUsed: current.lastUpdatedAt || row.createdAt || 0, running: cursorSessionRunning(row.composerId) };
       }) };
     }
     if (app === 'devin') {
@@ -144,9 +143,11 @@
       return { ready: true, complete: false, rows,
         removed, removedAt: Object.fromEntries(removed.map(id => [id, times.get(id)])), missing, cliReady, at };
     }
-    const manager = codexConversationManager(null, codexHistoryScopes(), 'local');
-    if (!manager || manager.hostId !== 'local') return { ready: false };
-    const client = manager.requestClient, rows = [], active = new Set();
+    const scopes = codexHistoryScopes();
+    const client = codexConversationManager(null, scopes, 'local')?.requestClient || codexConnectedRpc('local', scopes);
+    if (typeof client?.sendRequest !== 'function') return { ready: false };
+    const requestCatalog = (method, params) => codexRpcCall(client, 'sendRequest', method, params, { priority: 'background', source: 'thread_list' });
+    const rows = [], active = new Set();
     const catalogRow = (row, archived) => ({ id: row.id, archived, path: row.path, title: row.name || '',
       workspace: localFilePath(row.cwd || ''), host: '', running: row.status?.type === 'active',
       waiting: row.status?.activeFlags?.includes('waitingOnUserInput') ? 'q:' : row.status?.activeFlags?.includes('waitingOnApproval') ? 'approval' : '',
@@ -154,18 +155,20 @@
     const request = Array.isArray(ids) ? { ids } : ids;
     let nextCursor = null;
     if (!request.threads) {
-      const page = await client.sendRequest('thread/list', { archived: false, cursor: request.cursor || null, limit: 100, modelProviders: null, sourceKinds: null, sortKey: 'updated_at', useStateDbOnly: true }, { priority: 'background', source: 'thread_list' });
+      const page = await requestCatalog('thread/list', { archived: false, cursor: request.cursor || null, limit: 100, modelProviders: null, sourceKinds: null, sortKey: 'updated_at', useStateDbOnly: true });
       for (const row of page.data) { active.add(row.id); rows.push(catalogRow(row, false)); }
       nextCursor = page.nextCursor;
     }
     const removed = [], unknown = [];
     await Promise.all((request.ids || []).filter(id => !active.has(id)).map(async id => {
       try {
-        const { thread } = await client.sendRequest('thread/read', { threadId: id, includeTurns: false }, { priority: 'background', source: 'thread_list' });
+        const { thread } = await requestCatalog('thread/read', { threadId: id, includeTurns: false });
         rows.push({ ...catalogRow(thread, /[\\/]archived_sessions[\\/]/.test(thread.path || '')), id });
       } catch (error) {
-        if (/thread.*not found|no rollout found|thread.*does not exist/i.test(String(error))) removed.push(id);
-        else if (/AppServerRequestError\(-32600\): thread not loaded:/i.test(String(error))) unknown.push(id);
+        const message = String(error);
+        if (/thread.*not found|no rollout found|thread.*does not exist/i.test(message)) removed.push(id);
+        // A zero-length rollout cannot supply metadata. Verify its archive state from its native path.
+        else if (/(?:AppServerRequestError\(-32600\): |^Error: )thread not loaded:|failed to read session metadata .*: rollout at .* is empty$/i.test(message)) unknown.push(id);
         else throw error;
       }
     }));
@@ -276,6 +279,7 @@
       const row = catalog.rows.find(row => row.id === id);
       if (!row && !catalog.complete && !catalog.removed?.includes(id)) throw new Error('原生会话清理状态尚未确认');
       return { exists: !!row, title: row?.title || '', archived: !!row?.archived, running: !!row?.running,
+        ...(app === 'cursor' ? { deletionBlocked: cursorSessionServices().data.allComposersData.allComposers.length <= 1 } : {}),
         context: row ? row.workspace ? { cwd: row.workspace, host: row.host || '' } : await nativeSessionContext(app, id) : null };
     };
     const before = await inspect();
@@ -314,7 +318,89 @@
     return workbench?.id && (matches(workbench.uri) || matches(folders[0]?.uri))
       ? workbench : cursorProjectPicker()?.recentProjects?.find(row => matches(row.workspaceIdentifier?.uri))?.workspaceIdentifier || null;
   };
+  const cursorFusionSettings = id => {
+    const services = cursorSessionServices();
+    const handle = services?.data.getHandleIfLoaded(id);
+    const modelConfig = services?.composer.composerChatService._modelConfigService;
+    const selected = handle && modelConfig?.getSelectedModelsForComposer(handle)[0];
+    const model = selected?.modelId || '';
+    const effort = selected?.parameters?.find(row => row.id === 'reasoning_effort')?.value || '';
+    return { model, effort, family: model, usage: null };
+  };
   const nativeSessionInfo = (app, id, catalog = false, previous = null) => {
+    if (app === 'codex' && catalog === 'requestReceipt') return (async () => {
+      if (!remoteContext || remoteContext.app !== app || remoteContext.threadId !== id) throw new Error('请求不属于这个任务 Binding');
+      const scopes = codexHistoryScopes(), host = codexRequestHost();
+      const client = codexNativeManager() || codexConnectedRpc(host, scopes);
+      if (!client) return null;
+      const conversation = await codexRpcCall(client, 'getConversation', id);
+      const state = codexHistoryState(conversation, false, scopes, id);
+      const entry = state.entries.find(entry => entry.turnId === previous?.turnId);
+      const source = entry && codexTurnSource(entry, scopes);
+      if (previous?.itemId) {
+        if (codexNativeRequests().some(request => request.id === previous.requestId
+            && request.params?.threadId === id && request.params?.turnId === previous.turnId)) return null;
+        const commands = (source?.rawItems || []).filter(item => item?.type === 'commandExecution' && item.id === previous.itemId);
+        if (commands.length !== 1) return null;
+        const item = commands[0];
+        return { type: item.type, id: item.id, status: item.status, exitCode: item.exitCode, turnId: entry.turnId };
+      }
+      const receipts = (source?.rawItems || []).filter(item => item?.type === 'userInputResponse'
+        && item.requestId === previous?.requestId && item.turnId === previous?.turnId
+        && item.id === 'user-input-response-' + previous.requestId && item.completed === true);
+      if (receipts.length !== 1 || JSON.stringify(receipts[0]).length > 64000) return null;
+      return receipts[0];
+    })();
+    if (app === 'codex' && catalog === 'pendingRequests') {
+      if (!remoteContext || remoteContext.app !== app || remoteContext.threadId !== id) throw new Error('请求不属于这个任务 Binding');
+      const client = codexNativeManager() || codexConnectedRpc(codexRequestHost());
+      const requests = codexNativeRequests().map(request => ({ id: request.id, method: request.method, params: request.params }));
+      if (requests.length > 20 || JSON.stringify(requests).length > 64000) throw new Error('Codex 原生请求过大，无法完整核验');
+      return { thread: id, requests, methods: ['replyWithUserInputResponse', 'replyWithCommandExecutionApprovalDecision']
+        .filter(method => typeof client?.[method] === 'function') };
+    }
+    if (app === 'devin' && catalog === 'cancelState') {
+      if (remoteContext && (remoteContext.app !== app || remoteContext.threadId !== id)) throw new Error('请求不属于这个任务 Binding');
+      return devinCancelState(id);
+    }
+    if (catalog === 'fusionState') {
+      const scopes = app === 'codex' ? codexHistoryScopes() : [];
+      const manager = app === 'codex' ? codexNativeManager() : null;
+      const questions = app === 'cursor' ? cursorNativeQuestions() : app === 'devin' ? devinQuestions(id)
+        : { codex: true, requests: codexRequestData() };
+      const waiting = nativeWaiting(app, id, manager) || {};
+      if (questions?.requests?.length) Object.assign(waiting, {
+        waiting: JSON.stringify([id, ...questions.requests.map(request => request.id)]),
+        waitingText: questions.requests.map(request => request.text).join('\n'),
+      });
+      const items = app === 'cursor' ? (waiting.waitingToolIds || []).filter(approvalId => approvalId !== questions?.id)
+        .map(approvalId => {
+          const { capability, terminal } = cursorPendingTool(id);
+          const tool = terminal?.toolCallId === approvalId ? terminal.tool : capability.getBubbleDataByToolCallId(approvalId);
+          const scope = JSON.stringify(tool?.params || {}), permissionKey = JSON.stringify({ name: tool?.name, params: tool?.params || {} });
+          return { i: approvalId, approvalId, permission: tool?.name || '', scope: scope.slice(0, 2000),
+            permissionKey: permissionKey.length <= 64000 ? permissionKey : null, b: ['Run', 'Skip'],
+            actions: [approvalId + ':accept', approvalId + ':reject'] };
+        }) : [];
+      let requestBinding = null;
+      if (app === 'cursor' && waiting.waitingToolIds?.length === 1) {
+        const { data, capability, decisions, terminal } = cursorPendingTool(id);
+        const requestId = waiting.waitingToolIds[0];
+        const bubbleId = terminal?.toolCallId === requestId ? terminal.bubbleId : capability.getPendingDecisionBubbleIdForToolCall(requestId);
+        const headers = data.fullConversationHeadersOnly || [], at = headers.findIndex(header => header.bubbleId === bubbleId);
+        const activeOwner = !!data.conversationActionManager && !data.conversationActionManager.signal.aborted;
+        // The current Cursor may remove a pending ask_question tool bubble
+        // from headers while still holding its unique live native decision.
+        const liveQuestion = questions?.id === requestId && decisions.length === 1 && activeOwner
+          && capability.getBubbleDataByToolCallId(requestId)?.name === 'ask_question';
+        const user = at >= 0 ? headers.slice(0, at).findLast(header => header.type === 1)
+          : bubbleId && liveQuestion ? headers.findLast(header => header.type === 1) : null;
+        if (user && bubbleId && data.chatGenerationUUID)
+          requestBinding = { bubbleId, messageId: user.bubbleId, generationId: data.chatGenerationUUID };
+      }
+      return { state: { ...waiting, thread: id }, questions, items, requestBinding,
+        ...(app === 'devin' ? { permissions: devinPermissionState(id) } : {}) };
+    }
     if (app === 'cursor' && catalog === 'projectPlacement') return cursorProjectPlacement(previous);
     if (app === 'cursor' && catalog === 'projectThread') return (async () => {
       const thread = agentStartupState(app, true)?.thread;
@@ -326,31 +412,43 @@
       const state = devinSessionData(id);
       return state?.loadStatus === 'failed' && state.loadErrorKind === 'session_not_found';
     }
-    if (app === 'codex' && catalog === 'creationReady') return !!codexConversationManager(id, codexHistoryScopes(), 'local');
-    if (app === 'codex' && catalog === 'goal') {
-      const host = remoteContext?.host || codexChatRows(true).find(row => row.id === id)?.host || 'local';
-      const manager = codexConversationManager(id, codexHistoryScopes(), host);
-      if (!manager) throw new Error('Codex 原生会话尚未就绪');
-      if (previous.method === 'thread/goal/set' && previous.params.status === 'active') {
-        const mode = manager.getConversation(id)?.latestCollaborationMode;
-        const settings = mode?.mode === 'plan' ? { collaborationMode: { ...mode, mode: 'default' } } : undefined;
-        const update = previous.params.objective
-          ? manager.setThreadGoal(id, nativeValue({ objective: previous.params.objective, ...(settings ? { threadSettings: settings } : {}) }))
-          : manager.setThreadGoalStatus(id, nativeValue({ status: 'active', ...(settings ? { threadSettings: settings } : {}) }));
-        return update.then(goal => ({ goal }));
-      }
-      return manager.requestClient.sendRequest(previous.method, nativeValue(previous.params));
+    if (app === 'codex' && ['creationReady', 'cancelReady'].includes(catalog)) {
+      const host = remoteContext?.host || 'local', scopes = codexHistoryScopes();
+      const manager = codexConversationManager(id, scopes, host), client = manager || codexConnectedRpc(host, scopes);
+      return catalog === 'creationReady'
+        ? typeof client?.startConversation === 'function' && typeof client?.prepareThreadStart === 'function'
+        : manager ? typeof manager.interruptConversation === 'function' : typeof client?.interruptConversationWithOutcome === 'function';
     }
+    if (app === 'codex' && catalog === 'goal') return (async () => {
+      const host = remoteContext?.app === 'codex' ? remoteContext.host || 'local' : codexChatRows(true).find(row => row.id === id)?.host || 'local';
+      const scopes = codexHistoryScopes(), manager = codexConversationManager(id, scopes, host);
+      const client = manager || codexConnectedRpc(host, scopes);
+      if (!client) throw new Error('Codex 原生会话尚未就绪');
+      if (previous.method === 'thread/goal/set' && previous.params.status === 'active') {
+        const mode = (await codexRpcCall(client, 'getConversation', id))?.latestCollaborationMode;
+        const settings = mode?.mode === 'plan' ? { collaborationMode: { ...mode, mode: 'default' } } : undefined;
+        const goal = previous.params.objective
+          ? await codexRpcCall(client, 'setThreadGoal', id, { objective: previous.params.objective, ...(settings ? { threadSettings: settings } : {}) })
+          : await codexRpcCall(client, 'setThreadGoalStatus', id, { status: 'active', ...(settings ? { threadSettings: settings } : {}) });
+        return { goal };
+      }
+      return manager ? manager.requestClient.sendRequest(previous.method, nativeValue(previous.params))
+        : codexRpcCall(client, 'sendRequest', previous.method, previous.params);
+    })();
     if (catalog === 'history' && (app === 'cursor' || app === 'devin')) return (async () => {
       const context = await nativeSessionContext(app, id);
       return nativeConversationChat(true, 160, previous, context);
     })();
-    if (catalog === 'receipt' && app === 'devin') return devinReadSession(id, (_, data) => {
+    if (catalog === 'receipt' && app === 'devin') {
+      // Send receipts read the already selected native store. Resuming here
+      // reloads an active prompt and can wait for generation or approval.
+      const data = devinSessionData(id);
+      if (!data || data.loadStatus === 'failed') throw new Error('Devin 原生会话尚未就绪');
       const messages = devinMessages(id, data);
       const first = Math.max(0, messages.length - 120);
       return { thread: id, draft: composerDraft(), queued: devinQueued(id),
         human: devinMessageItems(messages.slice(first), 'acp', first).filter(item => item.k === 'human') };
-    });
+    }
     if (app === 'codex' && catalog === 'toolDetails') {
       const scopes = codexHistoryScopes(), manager = codexConversationManager(id, scopes);
       const state = codexHistoryState(manager?.getConversation(id) || null, false, scopes, id), tools = new Set(previous);
@@ -400,14 +498,10 @@
       return manager?.getStreamRole(id)?.role === 'owner' ? { cwd: localFilePath(manager.getConversation(id).cwd) } : null;
     }
     if (app === 'codex' && ['modelSettings', 'modelPage', 'speedRequirements'].includes(catalog)) return (async () => {
-      const context = await nativeSessionContext(app, id);
-      const host = context.host || 'local', scopes = codexHistoryScopes(), manager = codexConversationManager(id, scopes, host);
-      const client = manager || codexConnectedRpc(host, scopes);
-      if (!client) throw new Error('Codex 原生会话连接尚未就绪');
-      if (catalog === 'modelPage') return codexRpcCall(client, 'sendRequest', 'model/list', previous);
-      if (catalog === 'speedRequirements') return codexRpcCall(client, 'sendRequest', 'configRequirements/read', {});
-      const conversation = await codexRpcCall(client, 'getConversation', id);
-      if (!conversation) throw new Error('Codex 会话尚未加载');
+      const owner = await codexModelOwner(id), client = owner.client;
+      if (catalog === 'modelPage') return codexRpcCall(owner.requestClient, 'sendRequest', 'model/list', previous);
+      if (catalog === 'speedRequirements') return codexRpcCall(owner.requestClient, 'sendRequest', 'configRequirements/read', {});
+      const conversation = owner.conversation;
       const settings = conversation.latestThreadSettings || {};
       const model = settings.model || conversation.latestModel;
       const picker = codexVisibleThread() === id ? codexSpeedPicker() : null;
@@ -423,21 +517,17 @@
       return { model, effort: settings.effort ?? conversation.latestReasoningEffort,
         serviceTier: settings.serviceTier ?? null, modelProvider: settings.modelProvider || conversation.modelProvider,
         speed,
-        ...(previous === true ? { account: await codexRpcCall(manager?.requestClient || client, 'sendRequest', 'account/read', { refreshToken: false }) } : {}) };
+        ...(previous === true ? { account: await codexRpcCall(owner.requestClient, 'sendRequest', 'account/read', { refreshToken: false }) } : {}) };
     })();
     if (catalog === 'cleanup' || catalog === 'name') return nativeSessionCleanup(app, id);
     if (catalog === 'settings') {
-      if (app === 'cursor') {
-        const services = cursorSessionServices(), handle = services.data.getHandleIfLoaded(id);
-        const selected = services.composer.composerChatService._modelConfigService.getSelectedModelsForComposer(handle)[0];
-        return { model: selected.modelId, effort: effortItems().find(row => row.checked)?.label || '', family: selected.modelId, usage: null };
-      }
-      if (app === 'codex') {
-        const value = codexConversationManager(id, codexHistoryScopes(), remoteContext?.host || 'local').getConversation(id);
+      if (app === 'cursor') return cursorFusionSettings(id);
+      if (app === 'codex') return (async () => {
+        const { conversation: value } = await codexModelOwner(id);
         const settings = value.latestThreadSettings || {};
         return { model: settings.model || value.latestModel, effort: settings.effort ?? value.latestReasoningEffort ?? '', family: settings.model || value.latestModel,
           usage: value.latestTokenUsageInfo || null, usageBasis: '原生会话用量资料；不等于单任务账单' };
-      }
+      })();
       const config = devinSessionRecord(id)?.configOptions.find(row => row.category === 'model');
       return { model: config?.currentValue || '', family: '', effort: '', usage: null,
         usageBasis: '原生 ACP 会话未提供可归因的任务账单；模型 ID 包含原生强度' };
@@ -473,16 +563,18 @@
     })();
     if (catalog === 'actions') return nativeSessionInfo(app, id);
     if (catalog === 'tools') return fusionNativeTools.requests(app, id);
+    if (catalog === 'toolReceipt' && app === 'codex') return fusionNativeTools.receipt(app, id, previous);
     if (catalog === 'fusionCall' && app === 'devin') return fusionDevinCall(id, previous);
+    if (catalog === 'fusionCall' && app === 'codex') return fusionNativeTools.identify(app, id, previous);
     if (catalog === 'draft' && app === 'codex') return previous && typeof previous === 'object'
-      ? codexConversationDraft(id, previous.text, previous.expected) : codexConversationDraft(id, previous === null ? undefined : previous);
+      ? codexConversationDraft(id, previous.text, previous.expected, previous.format) : codexConversationDraft(id, previous === null ? undefined : previous);
     if (catalog === 'clearDraft' && app === 'codex') return codexConversationDraft(id, '', previous);
     if (catalog === 'composer' && app === 'codex') return (async () => {
       const value = await codexComposerScope(id, false);
       if (!value) return null;
       const { scope, composer } = value;
       const draftEditedAt = doc.defaultView.__remoteAgentDraftEdits?.get(id) || 0;
-      if (previous === 'draft') return { prompt: scope.get(composer.text), draftEditedAt };
+      if (previous === 'draft') return codexConversationDraft(id, undefined, undefined, 'snapshot');
       const state = scope.get(composer.state);
       const ide = state.isAutoContextOn && codexQueryClient()?.getQueryData(['ide-context', null]);
       const activePath = ide?.activeFile?.path || '';
@@ -521,7 +613,7 @@
     if (app === 'cursor') {
       const services = cursorSessionServices();
       const session = services?.data.allComposersData.allComposers.find(c => c.composerId === id);
-      return session ? { title: session.name || 'New Agent', archived: !!session.isArchived, running: window.__SSG_COMPOSER_PROVIDER__?.getStates?.().some(c => c.id === id && c.state === 'generating') || (activeThread() === id && isBusy()), actions: ['rename', 'delete'] } : null;
+      return session ? { title: session.name || 'New Agent', archived: !!session.isArchived, running: cursorSessionRunning(id, undefined, activeThread() === id && isBusy()), actions: ['rename', 'delete'] } : null;
     }
     const session = devinSessionRecord(id);
     if (!session) return null;
@@ -530,48 +622,148 @@
       actions: ['rename', 'archive', 'delete'].filter(name => actions.some(a => a.label.toLowerCase() === name && !a.disabled)) };
   };
   const nativeCodexCreation = async (id, spec, prepare) => {
-    const manager = codexConversationManager(id, codexHistoryScopes(), remoteContext?.host || 'local');
-    if (!manager) throw new Error('当前 Codex 面板未提供 Fusion 所需的原生会话管理接口');
-    const host = manager.hostId;
-    const parent = manager.getConversation(id);
+    const scopes = codexHistoryScopes();
+    const host = remoteContext?.app === 'codex' ? remoteContext.host || 'local' : codexChatRows(true).find(row => row.id === id)?.host || 'local';
+    const manager = codexConversationManager(id, scopes, host), client = manager || codexConnectedRpc(host, scopes);
+    if (typeof client?.startConversation !== 'function' || typeof client?.prepareThreadStart !== 'function')
+      throw new Error('当前 Codex 面板未提供原生会话创建接口');
+    const parent = id ? await codexRpcCall(client, 'getConversation', id) : null;
     const { scope } = await codexComposerScope(codexVisibleThread() || '');
     const createInputs = await codexNativeModule('creation');
-    const reader = createInputs(scope, manager.hostId);
+    const reader = createInputs(scope, host);
     const root = host === 'local' ? localFilePath(spec.root || parent?.cwd) : spec.root || parent?.cwd;
     if (!root) throw new Error('新建原生会话前需要明确项目目录');
     const options = { input: [], cwd: root, workspaceRoots: [root], initialTitle: spec.title,
       ...(samePath(root, parent?.cwd, host === 'local') ? { permissionsConfig: parent.currentPermissions } : { useAppServerPermissionDefault: true }),
       collaborationMode: spec.model ? { mode: 'default', settings: { model: spec.model, reasoning_effort: spec.effort || null, developer_instructions: null } } : parent?.latestCollaborationMode,
-      additionalDeveloperInstructions: spec.instructions };
+      additionalDeveloperInstructions: spec.instructions,
+      ...(spec.mcp ? { config: { ['mcp_servers.' + spec.mcp.name]: { url: spec.mcp.url } } } : {}) };
+    if (spec.mcp && (host !== 'local' || spec.role !== 'main' || spec.mcp.name !== 'ra-fusion'))
+      throw new Error('Codex 会话级 Fusion MCP 仅用于 RA 创建的本机主控会话');
     const read = async (params, history) => {
       const inputs = await reader.readCreationInputs(params, history);
-      if (spec.tools?.length) {
+      if (spec.instructions) inputs.hasDeveloperInstructions = true;
+      if (spec.tools?.length && !spec.mcp) {
         const original = inputs.readDynamicTools;
         inputs.hasDeveloperInstructions = true;
         inputs.readDynamicTools = async value => [...await original(value), ...nativeValue(spec.tools)];
       }
       return inputs;
     };
-    if (prepare) {
-      const request = await manager.prepareThreadStart(options, read);
-      return { model: request.model, approvalPolicy: request.approvalPolicy, approvalsReviewer: request.approvalsReviewer,
+    if (prepare || spec.mcp) {
+      const request = await client.prepareThreadStart(nativeValue(options), (params, history) => read(params, history));
+      if (spec.mcp && (request.config?.['mcp_servers.' + spec.mcp.name]?.url !== spec.mcp.url
+          || request.dynamicTools?.some(tool => tool.name === 'ra_fusion')))
+        throw new Error('Codex 原生创建参数未保留会话级 Fusion MCP 配置');
+      if (prepare) return { ...(spec.mcp ? { mcp: { name: spec.mcp.name, configured: true, transport: 'http' } } : {}),
+        model: request.model, approvalPolicy: request.approvalPolicy, approvalsReviewer: request.approvalsReviewer,
         tools: request.dynamicTools?.map(tool => ({ name: tool.name, type: tool.type, namespace: tool.namespace || '',
           fields: Object.keys(tool), tools: tool.tools?.map(value => ({ name: value.name, type: value.type, fields: Object.keys(value) })) })),
-        handlerWritable: Object.getOwnPropertyDescriptor(manager.threadExecution, 'executeDynamicToolCall')?.writable };
+        handlerWritable: manager ? Object.getOwnPropertyDescriptor(manager.threadExecution, 'executeDynamicToolCall')?.writable : false };
     }
-    const created = await manager.startConversation(options, { readThreadCreationInputs: read });
-    if (created.status !== 'created') throw new Error('原生新会话结果待核对，不能重新创建');
+    // Keep native input callbacks intact: JSON cloning would silently drop them.
     const record = window.__remoteAgentNativeCreations?.get(spec.requestId);
+    const created = await client.startConversation(nativeValue(options), { readThreadCreationInputs: read,
+      afterConversationCreated: conversationId => { if (record) record.nativeThreadId = conversationId; } });
+    if (created.status !== 'created') throw new Error('原生新会话结果待核对，不能重新创建');
+    if (typeof created.conversationId !== 'string' || !created.conversationId || created.conversationId === id
+        || record?.nativeThreadId && record.nativeThreadId !== created.conversationId)
+      throw new Error('Codex 原生创建身份不一致，不能重新创建');
     if (record) record.nativeThreadId = created.conversationId;
-    return nativeSessionContext('codex', created.conversationId);
+    const context = await nativeSessionContext('codex', created.conversationId);
+    if ((context.host || 'local') !== host || !samePath(context.cwd, root, host === 'local')
+        || context.roots.length !== 1 || (context.roots[0].host || 'local') !== host
+        || !samePath(context.roots[0].root, root, host === 'local'))
+      throw new Error('Codex 新会话项目不一致，不能重新创建');
+    // An acknowledged empty native thread has no rollout to resume yet. Reuse
+    // only this exact created profile in the same native document/client.
+    if (spec.mcp) (doc.defaultView.__remoteAgentFusionCodexMcp ||= new Map()).set(
+      JSON.stringify([context.host || '', context.threadId]), {
+        client, document: doc, profile: JSON.stringify({ instructions: spec.instructions, mcp: spec.mcp }),
+        project: JSON.stringify({ host: context.host || '', cwd: context.cwd, roots: context.roots }),
+      });
+    return context;
   };
   const nativeSessionAction = async (app, id, action, name) => {
-    if (app === 'codex' && action === 'modelSettings') {
+    if (app === 'codex' && (action === 'question' || action === 'permission') && name?.requestKey) {
+      if (!remoteContext || remoteContext.app !== app || remoteContext.threadId !== id) throw new Error('请求不属于这个任务 Binding');
+      if (!['once', 'reject'].includes(name.decision)) throw new Error('仅支持单次原生请求决定');
       const context = await nativeSessionContext(app, id);
-      const host = context.host || 'local', scopes = codexHistoryScopes();
-      const client = codexConversationManager(id, scopes, host) || codexConnectedRpc(host, scopes);
-      if (!client) throw new Error('Codex 原生会话连接尚未就绪');
-      await codexRpcCall(client, 'updateThreadSettingsForNextTurn', id, name);
+      const turn = await codexFusionTurn(name.receipt);
+      if (context.host || context.roots.length !== 1 || !samePath(context.cwd, name.project)
+          || context.roots.some(root => root.host || !samePath(root.root, name.project))
+          || !turn?.current || turn.threadId !== id || turn.id !== name.messageId || turn.turnId !== name.turnId
+          || turn.lastUserId !== turn.id || typeof name.nativeInputKey !== 'string'
+          || !name.nativeInputKey || codexInputKey(turn.nativeInput) !== name.nativeInputKey
+          || !Array.isArray(turn.nativeIds) || !turn.nativeIds.length
+          || ![turn.id, id + ':user-message:' + turn.id, ...turn.nativeIds].includes(name.receipt))
+        throw new Error('Codex 原生请求不属于该任务的当前轮次');
+      const requests = codexNativeRequests().filter(request => request.params?.threadId === id && request.params?.turnId === name.turnId);
+      const request = requests[0];
+      if (requests.length !== 1 || request.id !== name.requestId || request.method !== name.method
+          || JSON.stringify({ id: request.id, method: request.method, params: request.params }) !== name.requestKey)
+        throw new Error('这个 Codex 原生请求已更新');
+      const client = codexNativeManager() || codexConnectedRpc(codexRequestHost()), params = request.params;
+      let method, response;
+      if (action === 'question' && request.method === 'item/tool/requestUserInput') {
+        method = 'replyWithUserInputResponse';
+        if (!Array.isArray(params.questions) || !params.questions.length || params.questions.length > 20
+            || new Set(params.questions.map(question => question.id)).size !== params.questions.length)
+          throw new Error('原生问题格式无效');
+        if (name.decision === 'once' && (!Array.isArray(name.answers) || name.answers.length !== params.questions.length))
+          throw new Error('回答数量与原生问题不匹配');
+        response = { answers: Object.fromEntries(params.questions.map((question, index) => {
+          const values = name.decision === 'reject' ? [] : name.answers[index], options = question.options || [];
+          if (name.decision === 'once' && (!Array.isArray(values) || values.length !== 1
+              || typeof values[0] !== 'string' || !values[0].trim() || values[0].length > 4000 || values[0].includes('\0')
+              || options.filter(option => option.label === values[0]).length > 1
+              || options.length && question.isOther !== true && !options.some(option => option.label === values[0])))
+            throw new Error('原生问题不接受这个回答');
+          return [question.id, { answers: values }];
+        })) };
+      } else if (action === 'permission' && request.method === 'item/commandExecution/requestApproval') {
+        method = 'replyWithCommandExecutionApprovalDecision';
+        const decisions = params.availableDecisions ?? ['accept', 'acceptForSession', 'decline', 'cancel'];
+        if (!Array.isArray(decisions)) throw new Error('原生命令决定列表无效');
+        response = name.decision === 'once' ? 'accept' : decisions.includes('decline') ? 'decline' : 'cancel';
+        if (turn.ended || !decisions.includes(response)
+            || !params.itemId || params.additionalPermissions != null || params.networkApprovalContext != null)
+          throw new Error('这条原生命令请求不支持此单次决定');
+      } else throw new Error('这个原生请求没有已验证的回复接口');
+      if (typeof client?.[method] !== 'function') throw new Error('Codex 原生请求接口尚未就绪');
+      const ack = await codexRpcCall(client, method, id, request.id, response);
+      if (ack === false || ack?.error || ack?.ok === false || ack?.accepted === false) return false;
+      // Command RPC completion only records an attempt. It carries no native decision receipt.
+      if (action === 'permission') return 'UNCONFIRMED';
+      // The RPC can return void for a missing request after a concurrent UI reply.
+      // Require the native completed receipt and exact answers, never absence alone.
+      for (let i = 0; i < 9; i++) {
+        const now = await codexFusionTurn(name.receipt);
+        if (!now?.current || now.threadId !== id || now.id !== name.messageId || now.turnId !== name.turnId
+            || now.lastUserId !== name.messageId || codexInputKey(now.nativeInput) !== name.nativeInputKey) return false;
+        if (!codexNativeRequests().some(item => item.id === request.id && item.params?.threadId === id
+            && item.params?.turnId === name.turnId)) {
+          const receipt = await nativeSessionInfo('codex', id, 'requestReceipt', { turnId: name.turnId, requestId: request.id });
+          const expectedQuestions = params.questions.map(question => ({ id: question.id, header: question.header,
+            options: (question.options || []).map(option => ({ description: option.description, label: option.label })), question: question.question }));
+          if (!receipt || receipt.type !== 'userInputResponse' || receipt.requestId !== request.id
+              || receipt.turnId !== name.turnId || receipt.completed !== true
+              || JSON.stringify(receipt.questions) !== JSON.stringify(expectedQuestions)
+              || !receipt.answers || Object.keys(receipt.answers).length !== params.questions.length
+              || params.questions.some(question => JSON.stringify(receipt.answers[question.id]) !== JSON.stringify(response.answers[question.id].answers)))
+            return false;
+          return true;
+        }
+        if (i < 8) await new Promise(resolve => setTimeout(resolve, 35));
+      }
+      return false;
+    }
+    if (app === 'codex' && action === 'modelSettings') {
+      const owner = await codexModelOwner(id);
+      owner.check();
+      const accepted = await codexRpcCall(owner.client, 'updateThreadSettingsForNextTurn', id, name);
+      if (accepted === false) throw new Error('Codex 原生设置未接受');
+      await owner.read();
       return nativeSessionInfo(app, id, 'modelSettings');
     }
     if (action === 'project' && app === 'cursor') {
@@ -592,10 +784,29 @@
       return devinSessionHandle(id).respond(entry.key, response);
     }
     if (action === 'permission' && app === 'devin') {
+      if (remoteContext && (remoteContext.app !== app || remoteContext.threadId !== id)) throw new Error('请求不属于这个任务 Binding');
+      if (name.permissionKey) {
+        const context = await nativeSessionContext(app, id);
+        const state = devinPermissionState(id);
+        if (!remoteContext || context.host || context.roots.length !== 1
+            || !samePath(context.cwd, name.project) || context.roots.some(root => root.host || !samePath(root.root, name.project))
+            || !state?.active || state.thread !== id || state.turnId == null || state.turnId === '' || state.turnId !== name.turnId
+            || state.pendingCount !== 1 || state.entries.length !== 1
+            || state.human?.i !== name.messageId || (state.human.t !== name.prompt
+              && (!name.prompt.includes('\n') || state.human.t !== name.prompt.replace(/\n/g, '\n\n\n')))
+            || JSON.stringify(state) !== name.permissionKey)
+          throw new Error('Devin 原生权限不属于该任务的当前轮次');
+      }
       const entry = devinPermissionEntries(id).find(entry => entry.id === name.id);
       if (!entry) throw new Error('这条权限请求已结束或不属于当前会话');
       const option = entry.row.request.params.options[name.n];
       if (!option) throw new Error('原生权限选项已变化');
+      if (name.permissionKey && (entry.key !== name.key || option.optionId !== name.optionId
+          || entry.row.request.params.options.length !== 6 || name.n !== (name.label === 'Allow' ? 0 : 5)
+          || !['Allow', 'Reject'].includes(option.name) || option.name !== name.label
+          || name.label === 'Allow' && option.kind !== 'allow_once'
+          || name.label === 'Reject' && option.kind !== 'reject_once'))
+        throw new Error('禁止持久化或不明确的原生权限决定');
       return devinSessionHandle(id).respond(entry.key, { outcome: { outcome: 'selected', optionId: option.optionId } });
     }
     if (app === 'devin' && ['rename', 'archive', 'delete'].includes(action)) {
@@ -721,11 +932,16 @@
       submissions.set(name.requestId, record);
       let submitted;
       if (app === 'codex') {
-        const manager = codexNativeManager(), conversation = manager.getConversation(id);
+        const host = remoteContext?.host || 'local';
+        const client = codexConversationManager(id, codexHistoryScopes(), host) || codexConnectedRpc(host);
+        if (!client) throw new Error('Codex 原生会话连接尚未就绪');
+        const conversation = await codexRpcCall(client, 'getConversation', id);
+        if (!conversation) throw new Error('Codex 原生会话尚未就绪');
         const settings = conversation.latestThreadSettings || {};
-        submitted = manager.sendFollowUpMessage(id, nativeValue({ prompt: name.text, model: settings.model || conversation.latestModel,
-          reasoningEffort: settings.effort ?? conversation.latestReasoningEffort, attachmentContext: name.composer }));
+        submitted = codexRpcCall(client, 'sendFollowUpMessage', id, { prompt: name.text, model: settings.model || conversation.latestModel,
+          reasoningEffort: settings.effort ?? conversation.latestReasoningEffort, attachmentContext: name.composer });
       } else if (app === 'cursor') {
+        if (remoteContext && !name.requireActive) Object.assign(record, { settings: cursorFusionSettings(id) });
         submitted = cursorSessionServices().composer.composerChatService.submitChatMaybeAbortCurrent(id, name.text,
           { ...(remoteContext ? { skipClearInput: true, skipFocusAfterSubmission: true, _internalPreserveDraft: true } : {}), ignoreQueuing: name.when === 'now' });
       } else {
@@ -741,23 +957,77 @@
         (window.__remoteAgentSubmitErrors ||= []).push({ requestId: name.requestId, message: String(error.message || error) });
         doc.defaultView.dispatchEvent(new doc.defaultView.Event('remote-agent-submit-error'));
       });
-      return true;
+      return record.settings ? { settings: record.settings } : true;
     }
     if (action === 'stop') {
-      if (app === 'codex') await codexNativeManager().interruptConversation(id, 'user-stop');
-      else if (app === 'cursor') await cursorSessionServices().composer.cancelChat(id);
+      if (app === 'codex') {
+        if (remoteContext && (remoteContext.app !== app || remoteContext.threadId !== id)) throw new Error('请求不属于这个任务 Binding');
+        const host = remoteContext?.app === 'codex' ? remoteContext.host || 'local' : codexChatRows(true).find(row => row.id === id)?.host || 'local';
+        const scopes = codexHistoryScopes(), manager = codexConversationManager(id, scopes, host);
+        const client = manager || codexConnectedRpc(host, scopes);
+        if (!client) throw new Error('Codex 原生停止接口尚未就绪');
+        const context = await nativeSessionContext(app, id);
+        const turn = await codexFusionTurn(name?.messageId || '');
+        if (!turn?.id || !turn.current || turn.ended || !turn.turnId || turn.threadId !== id
+            || (context.host || 'local') !== host
+            || name && !name.cancelKey && (remoteContext?.fusionController !== true
+              || name.threadId !== id || name.turnId !== turn.turnId || name.messageId !== turn.id)
+            || name?.cancelKey && (context.roots.length !== 1 || context.host
+              || !samePath(context.cwd, name.project) || context.roots.some(root => root.host || !samePath(root.root, name.project))
+              || typeof name.nativeInputKey !== 'string' || !name.nativeInputKey
+              || codexInputKey(turn.nativeInput) !== name.nativeInputKey || turn.turnId !== name.turnId
+              || JSON.stringify({ threadId: turn.threadId, id: turn.id, turnId: turn.turnId,
+                nativeInputKey: codexInputKey(turn.nativeInput), nativeIds: turn.nativeIds, lastUserId: turn.lastUserId }) !== name.cancelKey)
+            || (codexConversationManager(id, codexHistoryScopes(), host) || codexConnectedRpc(host)) !== client)
+          throw new Error('Codex 原生已不在该任务的精确轮次');
+        // Native RPC checks the expected turn again; never interrupt whichever turn is latest later.
+        if (!manager) {
+          if (typeof client.interruptConversationWithOutcome !== 'function') throw new Error('Codex 原生停止回执接口尚未就绪');
+          const ack = await codexRpcCall(client, 'interruptConversationWithOutcome', id, turn.turnId);
+          return ack?.status === 'accepted' && ack.interruptedTurnId === turn.turnId;
+        }
+        return await manager.interruptConversation(id, 'user-stop', turn.turnId) === turn.turnId;
+      }
+      if (app === 'devin' && name?.cancelKey) {
+        if (!remoteContext || remoteContext.app !== app || remoteContext.threadId !== id) throw new Error('请求不属于这个任务 Binding');
+        const context = await nativeSessionContext(app, id);
+        const handle = devinSessionHandle(id), state = devinCancelState(id, handle);
+        if (context.host || context.provider !== name.providerId || context.roots.length !== 1
+            || !samePath(context.cwd, name.project) || context.roots.some(root => root.host || !samePath(root.root, name.project))
+            || !state?.active || state.thread !== id || state.providerId !== name.providerId
+            || state.turnId !== name.turnId || state.human?.i !== name.messageId
+            || !devinNativePromptMatches(state.human.t, name.prompt)
+            || JSON.stringify(state) !== name.cancelKey
+            || typeof handle?.connection?.send !== 'function')
+          throw new Error('Devin 原生已不在该任务的精确在途轮次');
+        // No await or second handle lookup between this final native snapshot
+        // and dispatch to this exact session connection. Never answer a tool permission.
+        const ack = await handle.connection.send({ method: 'session/cancel', params: { sessionId: devinNativeId(id) } });
+        return ack === true || !!ack && !ack.error && (ack.accepted === true || ack.ok === true || ack.cancelled === true);
+      }
+      if (app === 'devin' && /^acp\d+$/.test(name?.messageId || '')) throw new Error('Devin ACP 取消缺少任务轮次证明');
+      if (name?.turnId) {
+        const turn = await codexFusionTurn(name.messageId, '', [], name.generationId || '');
+        if (turn.ended || !turn.current || turn.turnId !== name.turnId
+            || name.generationId && turn.generationId !== name.generationId) throw new Error('原生已不在该任务轮次');
+        if (app === 'cursor') {
+          const live = cursorSessionServices().data.getComposerDataIfLoaded(id);
+          if (turn.threadId !== id || turn.id !== name.messageId || !turn.generationId || live?.chatGenerationUUID !== turn.generationId
+              || live.fullConversationHeadersOnly?.findLast(header => header.type === 1)?.bubbleId !== name.messageId)
+            throw new Error('Cursor 原生已不在该任务轮次');
+        }
+      }
+      if (app === 'cursor') await cursorSessionServices().composer.cancelChat(id);
       else {
         const session = devinSessionRecord(id);
-        await devinSend(session.providerId,
+        const ack = await devinSend(session.providerId,
           { method: 'session/cancel', params: { sessionId: id } });
+        if (name?.turnId) return ack === true || !!ack && !ack.error && (ack.accepted === true || ack.ok === true || ack.cancelled === true);
       }
       return true;
     }
-    if (action === 'model' && app === 'codex') {
-      const model = codexPickerProps().modelOptions.find(row => row.model.id === name)?.model;
-      if (!model) throw new Error('模型不属于当前 Codex 原生候选');
-      return pickCodexModel(model.displayName || model.id);
-    }
+    if (action === 'model' && app === 'codex') return codexSetNativeModel(id, { model: name });
+    if (action === 'effort' && app === 'codex') return codexSetNativeModel(id, { effort: name });
     if (action === 'mode' && app === 'cursor') {
       const modes = cursorSessionServices(true), option = modes.getAllModes().find(mode => mode.name === name);
       if (!option) throw new Error('模式不属于该 Cursor 会话的原生候选');
@@ -787,6 +1057,43 @@
       await picker.onModelSelect(model); return true;
     }
     if (action === 'effort') return pickEffort(name);
+    if (action === 'terminalPermission' && app === 'cursor') {
+      const { terminal } = cursorPendingTool(id);
+      if (!terminal || terminal.bubbleId !== name?.item || !name.actionId) return false;
+      const button = name.label === 'Run' ? terminal.accept : name.label === 'Skip' ? terminal.reject : null;
+      const suffix = name.label === 'Run' ? ':accept' : ':reject';
+      if (!button || name.actionId !== button.dataset.remoteAction && name.actionId !== terminal.toolCallId + suffix) return false;
+      button.click();
+      return true;
+    }
+    if (['question', 'permission'].includes(action) && app === 'cursor' && remoteContext) {
+      if (remoteContext.app !== app || remoteContext.threadId !== id) throw new Error('请求不属于这个任务 Binding');
+      // MCP supplies an exact task turn. Recheck inside the native action after
+      // asynchronous context/turn reads, before touching selections or submitting.
+      if (name && typeof name === 'object' && name.messageId) {
+        const context = await nativeSessionContext(app, id);
+        const turn = await codexFusionTurn(name.messageId, '', [], name.generationId);
+        const { data: live, capability, decisions, terminal } = cursorPendingTool(id);
+        const headers = live?.fullConversationHeadersOnly || [];
+        const bubbleId = terminal?.toolCallId === name.id ? terminal.bubbleId : capability?.getPendingDecisionBubbleIdForToolCall(name.id);
+        const at = headers.findIndex(header => header.bubbleId === bubbleId);
+        if (context.host || context.roots.length !== 1 || !samePath(context.cwd, name.project)
+            || context.roots.some(root => root.host || !samePath(root.root, name.project))
+            // ended alone does not finish Cursor's pending ask_question. The
+            // unique live question and its exact raw ID/key are verified below.
+            || action === 'permission' && turn.ended
+            || !turn.current || turn.threadId !== id || turn.id !== name.messageId
+            || turn.turnId !== name.turnId || !name.generationId || turn.generationId !== name.generationId
+            || live?.chatGenerationUUID !== name.generationId
+            || !live.conversationActionManager || live.conversationActionManager.signal.aborted
+            || headers.findLast(header => header.type === 1)?.bubbleId !== name.messageId
+            || bubbleId !== name.bubbleId || (at >= 0
+              ? headers.slice(0, at).findLast(header => header.type === 1)?.bubbleId !== name.messageId
+              : capability?.getBubbleDataByToolCallId(name.id)?.name !== 'ask_question'))
+          throw new Error('Cursor 原生请求不属于该任务的当前轮次');
+        if (decisions.length !== 1 || decisions[0].toolCallId !== name.id) throw new Error('Cursor 原生请求不唯一');
+      }
+    }
     if (action === 'question' && app === 'cursor' && remoteContext) {
       if (remoteContext.app !== app || remoteContext.threadId !== id) throw new Error('请求不属于这个任务 Binding');
       const { capability, decisions } = cursorPendingTool(), questions = cursorNativeQuestions();
@@ -795,12 +1102,74 @@
       const pending = decisions.find(row => row.toolCallId === questions.id);
       if (!pending || !bubbleId) throw new Error('这个问题已不再等待回答');
       const bubble = capability.getBubbleDataByToolCallId(questions.id);
-      if (name.part === 'skip') { await capability.rejectToolCall(questions.id, nativeValue({ skipReason: 'user' })); return true; }
+      const confirmed = async (ack, requestId, expected = null) => {
+        if (!name.messageId) return true;
+        if (ack === false || !!ack && (ack.error || ack.accepted === false
+            || ack.ok === false || ack.submitted === false)) return false;
+        // These native methods synchronously consume the exact pending decision.
+        // There is no await between the final native check and invoking them.
+        // Absence alone is not an ACK: retain the exact bubble's recorded choice.
+        for (let i = 0; i < 9; i++) {
+          const now = cursorPendingTool(id), headers = now?.data?.fullConversationHeadersOnly || [];
+          if (headers.findLast(header => header.type === 1)?.bubbleId !== name.messageId) return false;
+          if (!now.decisions?.some(decision => decision.toolCallId === requestId)) {
+            const consumed = now.capability.getBubbleData(name.bubbleId);
+            if (!consumed || consumed.userDecision !== (name.part === 'skip' ? 'rejected' : 'accepted')
+                || JSON.stringify(consumed.params?.questions) !== JSON.stringify(bubble.params.questions)) return false;
+            if (expected && Object.keys(expected.currentSelections).some(key =>
+              JSON.stringify(consumed.additionalData?.currentSelections?.[key]) !== JSON.stringify(expected.currentSelections[key])
+              || expected.currentSelections[key].includes('__freeform_other__')
+                && consumed.additionalData?.freeformTexts?.[key] !== expected.freeformTexts[key])) return false;
+            return true;
+          }
+          if (i < 8) await new Promise(resolve => setTimeout(resolve, 35));
+        }
+        return false;
+      };
+      if (name.part === 'skip') {
+        const ack = await capability.rejectToolCall(questions.id, nativeValue({ skipReason: 'user' }));
+        return await confirmed(ack, questions.id);
+      }
+      if (name.part === 'answer' && name.messageId) {
+        if (!Array.isArray(name.answers) || name.answers.length !== questions.list.length
+            || bubble.params.questions.length !== questions.list.length) throw new Error('回答数量与原生问题不匹配');
+        const currentSelections = Object.create(null), freeformTexts = Object.create(null);
+        for (const [index, item] of questions.list.entries()) {
+          const question = bubble.params.questions[index], values = name.answers[index];
+          if (!question?.id || item.id !== question.id || !Array.isArray(values) || !values.length || values.length > 20
+              || !item.multi && values.length !== 1 || new Set(values).size !== values.length)
+            throw new Error('原生问题的回答格式不匹配');
+          const selected = [];
+          for (const value of values) {
+            if (typeof value !== 'string' || !value.trim() || value.length > 4000 || value.includes('\0')) throw new Error('回答无效');
+            const matches = question.options.filter(option => option.label === value);
+            if (matches.length > 1) throw new Error('原生问题有重名选项');
+            if (matches.length === 1) {
+              if (typeof matches[0].id !== 'string' || !matches[0].id || matches[0].id === '__freeform_other__')
+                throw new Error('原生问题选项标识无效');
+              selected.push(matches[0].id);
+            } else {
+              if (!item.options.some(option => option.free) || selected.includes('__freeform_other__')) throw new Error('原生问题不接受这个回答');
+              selected.push('__freeform_other__'); freeformTexts[question.id] = value;
+            }
+          }
+          currentSelections[question.id] = selected;
+        }
+        capability.setBubbleDataOrThrow(bubbleId, nativeValue({ additionalData: { currentSelections, freeformTexts } }));
+        const selected = cursorNativeQuestions();
+        if (selected?.id !== questions.id || !selected.canSubmit || selected.list.some((item, index) =>
+          item.id !== questions.list[index].id || item.options.some(option => option.sel !==
+            currentSelections[item.id].includes(option.free ? '__freeform_other__' : option.id))
+          || item.options.some(option => option.free && option.sel && option.value !== freeformTexts[item.id])))
+          throw new Error('原生问题回答未确认');
+        capability.setBubbleDataOrThrow(bubbleId, nativeValue({ status: 'completed', additionalData: { status: 'submitted' } }));
+        return await confirmed(await capability.acceptToolCall(questions.id), questions.id, { currentSelections, freeformTexts });
+      }
       if (name.part === 'submit') {
         if (!questions.canSubmit) throw new Error('请完成所有问题后再提交');
         capability.setBubbleDataOrThrow(bubbleId, nativeValue({ status: 'completed', additionalData: { status: 'submitted' } }));
-        await capability.acceptToolCall(questions.id);
-        return true;
+        const ack = await capability.acceptToolCall(questions.id);
+        return await confirmed(ack, questions.id);
       }
       if (name.part !== 'option') throw new Error('这个问题没有对应的操作');
       const question = bubble.params.questions[name.qi];
@@ -815,10 +1184,48 @@
       return true;
     }
     if (action === 'permission' && app === 'cursor' && remoteContext) {
-      const { capability, decisions } = cursorPendingTool();
+      if (name && typeof name === 'object' && name.messageId) {
+        if (!['once', 'reject'].includes(name.decision)) throw new Error('仅支持单次原生权限决定');
+        const { capability, decisions, terminal } = cursorPendingTool(id);
+        const bubble = terminal?.toolCallId === name.id ? terminal.tool : capability.getBubbleDataByToolCallId(name.id);
+        if (decisions.length !== 1 || decisions[0].toolCallId !== name.id || !bubble || bubble.name === 'ask_question'
+            || JSON.stringify({ name: bubble.name, params: bubble.params || {} }) !== name.permissionKey)
+          throw new Error('这个原生权限请求已更新');
+        if (terminal) {
+          if (terminal.bubbleId !== name.bubbleId) throw new Error('这个原生权限请求已更新');
+          (name.decision === 'once' ? terminal.accept : terminal.reject).click();
+          for (let i = 0; i < 9; i++) {
+            const { data } = cursorPendingTool(id);
+            if (data?.fullConversationHeadersOnly.findLast(header => header.type === 1)?.bubbleId !== name.messageId) return false;
+            const consumed = data.conversationMap[name.bubbleId]?.toolFormerData;
+            if (consumed?.toolCallId === name.id && consumed.result?.rejected === (name.decision === 'reject')
+                && JSON.stringify({ name: consumed.name, params: consumed.params || {} }) === name.permissionKey) return true;
+            if (i < 8) await new Promise(resolve => setTimeout(resolve, 50));
+          }
+          return false;
+        }
+        const ack = await (name.decision === 'once' ? capability.acceptToolCall(name.id) : capability.rejectToolCall(name.id));
+        if (ack === false || ack?.error || ack?.ok === false || ack?.accepted === false) return false;
+        for (let i = 0; i < 9; i++) {
+          const now = cursorPendingTool(id), headers = now?.data?.fullConversationHeadersOnly || [];
+          if (headers.findLast(header => header.type === 1)?.bubbleId !== name.messageId) return false;
+          if (!now.decisions.some(decision => decision.toolCallId === name.id)) {
+            const consumed = now.capability.getBubbleData(name.bubbleId);
+            return !!consumed && consumed.userDecision === (name.decision === 'once' ? 'accepted' : 'rejected')
+              && JSON.stringify({ name: consumed.name, params: consumed.params || {} }) === name.permissionKey;
+          }
+          if (i < 8) await new Promise(resolve => setTimeout(resolve, 35));
+        }
+        return false;
+      }
+      const { capability, decisions, terminal } = cursorPendingTool();
       const accept = name.endsWith(':accept'), reject = name.endsWith(':reject');
       if (!accept && !reject) throw new Error('未知的原生权限决定');
       const toolCallId = name.slice(0, -7);
+      if (terminal?.toolCallId === toolCallId) {
+        (accept ? terminal.accept : terminal.reject).click();
+        return true;
+      }
       const pending = decisions.find(decision => decision.toolCallId === toolCallId);
       if (!pending || capability.getBubbleDataByToolCallId(toolCallId)?.name === 'ask_question') throw new Error('这个原生权限请求已更新');
       if (accept) await capability.acceptToolCall(toolCallId);

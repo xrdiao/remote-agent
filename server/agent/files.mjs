@@ -1,3 +1,4 @@
+import { runAdapterMethod } from '../apps/index.mjs';
 // 文件：项目元数据、变更列表、打开与保存
 import path from 'node:path';
 import { workspaces, fileSize, parseRef, locateWritable, writeTextFile, resolveLocal } from '../../lib/files.mjs';
@@ -7,6 +8,8 @@ import { gitMarks, agentMarks, parseGitDiff, lastCommitMarks } from '../../lib/m
 import { IS_WIN, mod, pathKey, normPath, localFilePath } from '../../lib/platform.mjs';
 import { CDP_URL, EDITORS } from '../config.mjs';
 import { helpersCall } from '../page/build.mjs';
+import { ConversationRef } from '../session/binding.mjs';
+import { SourceRef } from '../session/source-ref.mjs';
 
 export const methods = {
   async showDocs(requestId) {
@@ -35,13 +38,13 @@ export const methods = {
   // Devin: the rows are readable while the list is folded (display:none), so reading does not toggle it.
   // Rows can mount late, so wait for as many as the bar counts. Actions open the list, then fold it again.
   async withFiles(fn, opts) {
-    return this.adapter.withFiles.call(this, fn, opts);
+    return runAdapterMethod(this, 'withFiles', fn, opts);
   },
   async listChanges() {
-    return this.adapter.listChanges.call(this);
+    return runAdapterMethod(this, 'listChanges');
   },
   async changeAction(i, name, act) {
-    return this.adapter.changeAction.call(this, i, name, act);
+    return runAdapterMethod(this, 'changeAction', i, name, act);
   },
 
 
@@ -158,7 +161,7 @@ export const methods = {
         return { marks: { add: git.add, mod: git.mod, del: git.del }, markSource: 'git', diff };
       }
     }
-    const agent = await this.adapter.fileAgentMarks.call(this, f, text, changes, diff);
+    const agent = await runAdapterMethod(this, 'fileAgentMarks', f, text, changes, diff);
     if (agent) return agent;
     // Devin's review panel still lists files whose changes were already committed; fall back
     // to the last commit touching the file (only for opens from the changes sheet).
@@ -169,7 +172,9 @@ export const methods = {
     }
     return null;
   },
-  async openFile(text, reviewDiff = '', fromChanges = false, requestId) {
+  async openFile(text, reviewDiff = '', fromChanges = false, requestId, options = {}) {
+    const binding = ConversationRef.capture(this);
+    const { resolve = ref => this.resolveFile(ref), theme = () => this.fileTheme(), root } = options;
     const emit = data => this.emit({ requestId, ...data });
     if (this.app === 'codex' && !this.codexBackend) {
       const run = (await this.cdp.evaluate(helpersCall('codexFacts()')))?.view?.run || '';
@@ -180,10 +185,14 @@ export const methods = {
     }
     emit({ t: 'file', loading: true, name: path.posix.basename(parseRef(text).p) });
     try {
-      const f = await this.resolveFile(text);
-      const body = await buildFilePreview(f, this.deviceId, () => this.fileTheme());
+      const f = await resolve(text);
+      binding.assertCurrent(this);
+      const body = await buildFilePreview(f, this.deviceId, theme);
+      binding.assertCurrent(this);
+      const source = new SourceRef('chat-file', { binding, root: root || (!f.host && body.editable ? locateWritable(f.path)?.root : '') });
+
       emit({ t: 'file', name: (f.host ? path.posix : path).basename(f.path), path: f.path,
-        size: f.size, ...(body.video || body.pdf ? {} : { host: f.host, line: f.line }), ...body });
+        size: f.size, root: source.root, ...(body.video || body.pdf ? {} : { host: f.host, line: f.line }), ...body });
       // Gutter marks come afterwards — the git calls shouldn't hold the first paint.
       if (body.text) {
         this.fileMarks(f, body.text, reviewDiff, fromChanges).then(marked => {
@@ -194,10 +203,10 @@ export const methods = {
       emit({ t: 'file', error: e.message, name: path.posix.basename(parseRef(text).p) });
     }
   },
-  async saveFile(filePath, text, host, requestId) {
+  async saveFile(filePath, text, host, requestId, root) {
     try {
       if (host) throw new Error('只支持修改本地文件');
-      const loc = locateWritable(filePath);
+      const loc = locateWritable(filePath, root);
       if (!loc) throw new Error('只能修改已打开过的项目里的文件');
       const size = await writeTextFile(loc.path, text);
       this.emit({ t: 'saved', requestId, ok: true, path: filePath, host: '', size });

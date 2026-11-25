@@ -1,12 +1,17 @@
+import { answerComposerQuestion, stopWindowThread, windowQueue } from './capabilities/window-actions.mjs';
+import { changeDesktopFiles, desktopUsageContext, showDesktopSettings, terminalProjectFromRoots } from './capabilities/desktop-editor.mjs';
+import { fusionModelMenu } from './capabilities/fusion-model-menu.mjs';
+import { withMentionLock } from './capabilities/mention-lock.mjs';
+import { ConversationRef, SessionBinding } from '../session/binding.mjs';
 import crypto from 'node:crypto';
 import path from 'node:path';
-import { windowRoots, editorRoots } from '../../lib/files.mjs';
+import { editorRoots } from '../../lib/files.mjs';
 import { agentMarks } from '../../lib/marks.mjs';
 import { IS_WIN, mod, localFilePath, samePath } from '../../lib/platform.mjs';
 import { listWindows } from '../windows.mjs';
 import { Cdp, cdpRead, awaitCdpRead } from '../cdp.mjs';
 import { PAGE_SRC, helpersCall } from '../page/build.mjs';
-import { FOCUS_COMPOSER } from '../agent/context.mjs';
+import { FOCUS_COMPOSER } from '../agent/primitives.mjs';
 
 // Shared across phone sessions: thread|start → end ms (null while the turn is still running).
 const devinTurnEnds = new Map();
@@ -121,6 +126,11 @@ export const adapter = {
     return this.devinQueueAction(id, action);
   },
 
+  changeAction: changeDesktopFiles,
+  terminalProject: terminalProjectFromRoots,
+  usageContext: desktopUsageContext,
+  showSettings: showDesktopSettings,
+
   async listChanges() {
     const s = await this.withFiles(async s => s);
     if (!s.count) {
@@ -205,11 +215,16 @@ export const adapter = {
   },
 
   async submitPrompt(now, busy, when, queued, _mentions, _receipt, _files, text, target) {
-    const id = this.threadId || '', action = queued || now || when === 'queue' ? 'queue' : 'submitPrompt';
+    const id = target.thread || '', action = queued || now || when === 'queue' ? 'queue' : 'submitPrompt';
     if (!id && action === 'submitPrompt') return this.submitPromptKey('Enter', queued);
-    return this.submitPromptKey(null, queued, () => this.cdp.evaluate(helpersCall(
+    return this.submitPromptKey(null, queued, () => target.cdp.evaluate(helpersCall(
       `nativeSessionAction('devin', ${JSON.stringify(id)}, ${JSON.stringify(action)}, ${JSON.stringify({ now: !!now, imageCount: target.imageCount })})`,
-    )), { ...target, text });
+    )), { ...target, text }, {
+      readEvidence: (cdp, target, timeout) => cdp.evaluate(helpersCall(
+        `nativeSessionInfo('devin', ${JSON.stringify(target.thread)}, 'receipt')`,
+      ), { timeout }),
+      allowRepeatedQueueText: true,
+    });
   },
 
   async fileAgentMarks(f, text) {
@@ -229,6 +244,7 @@ export const adapter = {
 };
 
 export const methods = {
+...fusionModelMenu,
 async resolveDevinProjectSession(root, threadId = '') {
   const native = threadId
     ? await this.cdp.evaluate(helpersCall(`nativeSessionInfo('devin', ${JSON.stringify(threadId)}, 'context')`))
@@ -727,13 +743,16 @@ async switchTab(title) {
 },
 
 async confirmDevinThread(id, statusMsg = '已切换 Agent', tries = 12, interval = 150) {
+  const origin = ConversationRef.capture(this);
   for (let i = 0; i <= tries; i++) {
     const thread = await this.cdp.evaluate(helpersCall('activeThread()'));
     if (thread === id) {
       if (!await this.cdp.evaluate(helpersCall('hasComposer()'))) continue;
       if (id) await this.cdp.evaluate(helpersCall(`nativeSessionInfo('devin', ${JSON.stringify(id)}, 'bind')`));
+      origin.assertCurrent(this);
+      cdpRead.getStore()?.throwIfAborted();
       if (this.threadId !== thread) this.clearViewState();
-      this.threadId = this.selectedThread = thread;
+      SessionBinding.commit(this, { threadId: thread, selectedThread: thread });
       this.publishThread(statusMsg);
       return true;
     }
@@ -912,18 +931,7 @@ async mentionUndo(typed, before) {
   }
 },
 
-async withMentionLock(seq, fn) {
-  const deadline = Date.now() + 20000;
-  while (this.mentionBusy) {
-    if (Date.now() > deadline) return null;
-    await new Promise(r => setTimeout(r, 80));
-    if (seq != null && this.mentionSeq !== seq) return null;
-  }
-  this.mentionBusy = true;
-  this.draftGeneration++;
-  try { return await fn(); } finally { this.mentionBusy = false; this.draftGeneration++; }
-},
-
+withMentionLock,
 
 // Type "@q" and click the option with this label (and folder) so Devin turns it into a chip. False = not found.
 async insertMention(m) {
@@ -967,4 +975,30 @@ devinGeneration(chat) {
 async typeWithMentions(text, mentions) {
   return this.typeWithNativeMentions(text, mentions, mention => this.insertMention(mention));
 }
+};
+
+export const nativeCapabilities = {
+  window: {
+    composer: {
+      interruptWhileBusy: true,
+      readAttachmentCount: cdp => cdp.evaluate(helpersCall('attachmentRows().length')),
+      typeDraft: adapter.typeDraft,
+      submitPrompt: adapter.submitPrompt,
+    },
+    actions: {
+      stop: stopWindowThread,
+      async question(qi, oi, part, text) {
+        if (part !== 'text') return answerComposerQuestion.call(this, qi, oi, part, text);
+        await this.assertSelectedThread();
+        await this.cdp.evaluate(helpersCall(`nativeSessionAction('devin', ${JSON.stringify(this.threadId || '')}, 'questionText', ${JSON.stringify({ text: String(text ?? '') })})`));
+        this.refreshSoon(300);
+      },
+      codexRequest: adapter.answerRequest,
+    },
+    queue: {
+      ...windowQueue,
+      edit(m) { return this.devinTakeOut(m.id); },
+      clear() { return this.devinClearQueue(); },
+    },
+  },
 };

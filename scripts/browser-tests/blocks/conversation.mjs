@@ -6,7 +6,7 @@ import path from 'node:path';
 async function withTools(c, app, inspect) {
   const target = await c.target(app, 'long');
   await c.open(target);
-  const ready = `windowReady&&!navigationPending&&!chatStale&&lastChat?.thread===${attr(target.thread)}`;
+  const ready = `windowReady&&!selectedConversation.navigation&&!chatStale&&lastChat?.thread===${attr(target.thread)}`;
   await c.b.wait(ready, '指定会话的执行记录就绪');
   const shown = await c.b.read('executionRecordsShown()');
   try {

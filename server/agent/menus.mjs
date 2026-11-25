@@ -1,6 +1,7 @@
+import { runAdapterMethod } from '../apps/index.mjs';
 // 菜单：模型/参数/设置/额度
 import { PAGE_SRC, helpersCall } from '../page/build.mjs';
-import { appPlans } from './context.mjs';
+import { appPlans } from './primitives.mjs';
 import { nativeWindow } from '../native-windows.mjs';
 
 export const methods = {
@@ -32,7 +33,7 @@ export const methods = {
     if (how === 'tab') await this.key('Ctrl+w', { cdp: editorCdp });
   },
   async showSettings(requestId = 0, section = '') {
-    return this.adapter.showSettings.call(this, requestId, section);
+    return runAdapterMethod(this, 'showSettings', requestId, section);
   },
   async closeDesktopSettings() {
     const owned = this.desktopSettingsOwned;
@@ -75,12 +76,12 @@ export const methods = {
     const cdp = this.cdp, sel = this.sel, selection = this.selectionKey(), app = this.app;
     const current = () => this.liveRead(cdp, sel) && this.app === app && this.selectionKey() === selection;
     let context;
-    try { context = await this.adapter.usageContext.call(this); }
+    try { context = await runAdapterMethod(this, 'usageContext'); }
     catch { context = undefined; }
     if (context !== undefined && cdp === this.cdp && current()) this.emit({ t: 'usage', sel: selection, context });
     if (!current()) return;
     try {
-      const account = await this.adapter.accountUsage.call(this, request, automatic);
+      const account = await runAdapterMethod(this, 'accountUsage', request, automatic);
       if (!current()) return;
       if (typeof account?.plan === 'string' && account.plan) appPlans[app] = account.plan;
       if (!account && !request.manual) { this.emit({ t: 'usage', sel: selection, ...(context === undefined ? {} : { context }) }); return; }
@@ -126,10 +127,10 @@ export const methods = {
   },
   async readMenu(kind, requestId) {
     if (this.app === 'devin' && kind === 'mode') return this.readWindowsDevinMode(requestId);
-    if (this.app === 'cursor' && (kind === 'model' || kind === 'effort' || kind === 'mode'))
+    if (this.app === 'cursor' && (kind === 'model' || kind === 'effort' || kind === 'mode' || kind === 'fast'))
       return this.readCursorMenu(kind, requestId);
     if (this.app === 'codex' && (kind === 'model' || kind === 'effort' || kind === 'fast'))
-      return this.adapter.readModelMenu.call(this, kind, requestId);
+      return runAdapterMethod(this, 'readModelMenu', kind, requestId);
     const sel = this.sel;
     if (kind === 'effort') {
       let items = await this.cdp.evaluate(helpersCall('effortItems(true)'));
@@ -263,10 +264,10 @@ export const methods = {
   },
   async pickMenu(kind, label, name) {
     if (this.app === 'devin' && kind === 'mode') return this.pickWindowsDevinMode(label);
-    if (this.app === 'cursor' && (kind === 'model' || kind === 'effort' || kind === 'mode'))
+    if (this.app === 'cursor' && (kind === 'model' || kind === 'effort' || kind === 'mode' || kind === 'fast'))
       return this.withCursorUiRead(() => this.pickCursorMenu(kind, label));
     if (this.app === 'codex' && (kind === 'model' || kind === 'effort' || kind === 'fast'))
-      return this.adapter.pickModelSetting.call(this, kind, label, name);
+      return runAdapterMethod(this, 'pickModelSetting', kind, label, name);
     if (kind === 'fast') {
       const on = label === 'on';
       if (!await this.cdp.evaluate(helpersCall(`pickFast(${on})`))) {
@@ -298,7 +299,7 @@ export const methods = {
     }
     if (kind === 'codex-run') return this.codexRunPick(String(label || ''));
     if (kind === 'codex-chat') return this.codexChatPick(String(label || ''), name ? String(name).slice(0, 80) : '');
-    if (kind === 'model' && await this.adapter.pickModelMenu.call(this, label)) return;
+    if (kind === 'model' && await runAdapterMethod(this, 'pickModelMenu', label)) return;
     await this.pressControl(kind);
     if (kind === 'model') {
       for (let i = 0; i < 8; i++) {

@@ -106,16 +106,68 @@
   const devinAgentRequests = id => {
     const rows = [...devinRequestRecords()].filter(([, row]) => !id || row.params.sessionId === id);
     const data = id && devinSessionData(id), turn = data?.currentTurnId;
-    if (turn && !rows.some(([, row]) => row.turnId === turn || row.method === 'session/prompt' && row.status === 'started')) {
+    if (turn != null && turn !== '' && !rows.some(([, row]) => row.turnId === turn || row.method === 'session/prompt' && row.status === 'started')) {
       const user = devinMessages(id).findLast(row => row.kind === 'user_message');
       const meta = user?.content?.find(block => block._meta?.['cognition.ai/clientMessageId'])?._meta;
       const at = user?.content?.[0]?._meta?.['cognition.ai/timestamp'];
       rows.push([turn, { id: turn, method: 'session/prompt', params: { sessionId: id,
         _meta: { 'cognition.ai/clientMessageId': meta?.['cognition.ai/clientMessageId'] } },
         status: data.promptInFlight ? 'started' : data.lastPromptStopReason || data.turnStats?.[turn]?.cause === 'complete' ? 'completed' : 'unknown',
+        ...(!data.promptInFlight && data.lastPromptStopReason ? { result: { stopReason: data.lastPromptStopReason } } : {}),
         startedAt: typeof at === 'number' ? at : Date.parse(at || '') || 0, completedAt: 0 }]);
     }
     return Object.fromEntries(rows);
+  };
+  const devinNativePromptMatches = (nativeText, submitted) => typeof nativeText === 'string' && typeof submitted === 'string'
+    && (nativeText === submitted || submitted.includes('\n') && nativeText === submitted.replace(/\n/g, '\n\n\n'));
+  const devinCancelState = (thread, handle = devinSessionHandle(thread)) => {
+    const data = handle?.store.getState(), session = devinSessionRecord(thread);
+    if (!data || !session) return null;
+    const messages = devinMessages(thread, data), index = messages.findLastIndex(message => message.kind === 'user_message');
+    const user = messages[index], human = index < 0 ? null
+      : devinMessageItems([user], 'acp', index).find(item => item.k === 'human');
+    const flights = Object.entries(devinAgentRequests(thread)).filter(([, row]) => row.method === 'session/prompt'
+      && row.params?.sessionId === thread && row.status === 'started');
+    const [key, request] = flights.length === 1 ? flights[0] : [];
+    const clientId = request?.params?._meta?.['cognition.ai/clientMessageId'];
+    const userClientId = user?.content?.find(block => block._meta?.['cognition.ai/clientMessageId'])?._meta['cognition.ai/clientMessageId'];
+    const prompt = request?.params?.prompt;
+    const promptMatches = prompt === undefined || Array.isArray(prompt) && prompt.every(block => block.type === 'text' && typeof block.text === 'string')
+      && devinNativePromptMatches(human?.t, prompt.map(block => block.text).join('\n'));
+    const pending = Object.entries(devinClientRequests(thread)).map(([key, row]) => ({ key, providerId: row.providerId,
+      id: row.request.id, method: row.request.method }));
+    // A devinSend request UUID is not the native currentTurnId. Before the RPC
+    // resolves it has no record.turnId; exact prompt + client-message ownership
+    // binds it instead. Freeze both identities, never equate or substitute them.
+    const requestIdentity = !!request && key === String(request.id);
+    const clientOwned = typeof clientId === 'string' && !!clientId && clientId === userClientId && Array.isArray(prompt) && promptMatches;
+    const turnOwned = key === String(data.currentTurnId) || request?.turnId === data.currentTurnId;
+    const ownedFlight = flights.length === 1
+      && requestIdentity && (request.turnId == null || request.turnId === data.currentTurnId)
+      && (turnOwned || clientOwned)
+      && (clientId == null || typeof clientId === 'string' && !!clientId && clientId === userClientId) && promptMatches;
+    const inFlight = data.promptInFlight === true && ownedFlight;
+    // A paused prompt needs its unique actual permission RPC. A stale or
+    // ambiguous outgoing record cannot be bypassed using that permission.
+    const waiting = data.promptInFlight === false && pending.length === 1
+      && pending[0].method === 'session/request_permission' && pending[0].providerId === session.providerId
+      && (flights.length === 0 || ownedFlight);
+    const nativeRequest = request ? { key, id: request.id, direction: 'outgoing_prompt', turnId: request.turnId ?? null,
+      clientMessageId: clientId ?? null, prompt: Array.isArray(prompt) ? prompt.map(block => block.text).join('\n') : null }
+      : waiting ? { key: pending[0].key, id: pending[0].id, direction: 'incoming_permission', turnId: data.currentTurnId } : null;
+    const identifier = value => typeof value === 'string' && value.length > 0 && value.length <= 4096
+      || typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
+    return { thread, providerId: session.providerId, turnId: data.currentTurnId,
+      active: identifier(data.currentTurnId) && String(data.currentTurnId).length <= 300
+        && !!nativeRequest?.key && identifier(nativeRequest.id) && !!human
+        && (inFlight || waiting) && [0, 1].includes(data.pendingPrompts)
+        && !data.optimisticMessages?.length && session.status !== 'unknown_error'
+        && data.turnStats?.[data.currentTurnId]?.cause !== 'complete',
+      human: human ? { i: human.i, t: human.t, clientMessageId: userClientId ?? null } : null,
+      request: nativeRequest,
+      stopReason: !data.promptInFlight && data.pendingPrompts === 0 && !data.optimisticMessages?.length
+        ? data.lastPromptStopReason ?? null : null,
+      pending };
   };
   const devinSend = async (provider, request, requestId = crypto.randomUUID()) => {
     const records = devinRequestRecords(), record = { id: requestId, method: request.method, params: request.params,
@@ -163,12 +215,22 @@
     }
     if (!handle) throw new Error('Devin 尚未在这个窗口提供该会话：' + id);
     try {
+      const { store } = handle;
       handle.resumeSession();
-      if (handle.store.getState().loadStatus === 'loading') await new Promise(resolve => {
-        const stop = handle.store.subscribe(state => { if (state.loadStatus !== 'loading') { stop(); resolve(); } });
-      });
-      const data = handle.store.getState();
-      if (data.loadStatus === 'failed') throw new Error('Devin 会话读取失败：' + data.loadErrorKind);
+      let data = store.getState();
+      if (data.loadStatus === 'loading') {
+        let stop, timer;
+        const timeout = 15000;
+        try {
+          data = await new Promise((resolve, reject) => {
+            const changed = state => { if (state.loadStatus !== 'loading') resolve(state); };
+            timer = setTimeout(() => reject(new Error(`Devin 原生会话 loadStatus=loading 超时（${timeout}ms，${id}）`)), timeout);
+            stop = store.subscribe(changed);
+            changed(store.getState());
+          });
+        } finally { clearTimeout(timer); stop?.(); }
+      }
+      if (data.loadStatus === 'failed') throw new Error(`Devin 原生会话 loadStatus=failed（${id}）：${data.loadErrorKind}`);
       return await read(handle, data);
     } finally { if (!ui) handle.release(); }
   };
@@ -724,6 +786,25 @@
   const devinPermissions = thread => devinPermissionEntries(thread).map(({ id, row }) => ({ id,
     text: [row.request.params.toolCall?.title, row.request.params.toolCall?._meta?.['cognition.ai/editableCommand'], row.request.params.toolCall?._meta?.['cognition.ai/permissionRule']].filter(Boolean).join('\n'),
     buttons: row.request.params.options.map(option => ({ label: option.name })), fields: [] }));
+  const devinPermissionState = thread => {
+    const data = devinSessionData(thread), session = devinSessionRecord(thread);
+    if (!data || !session) return null;
+    const messages = devinMessages(thread, data), index = messages.findLastIndex(message => message.kind === 'user_message');
+    const human = index < 0 ? null : devinMessageItems([messages[index]], 'acp', index).find(item => item.k === 'human');
+    const entries = devinPermissionEntries(thread), pendingCount = Object.keys(devinClientRequests(thread)).length;
+    return { thread, providerId: session.providerId, turnId: data.currentTurnId,
+      // ACP keeps one prompt in flight while a tool permission is pending
+      // (observed on the real local Devin). Older revisions may clear it.
+      // A new queued user is unsafe unless that one in-flight prompt owns it.
+      active: pendingCount === 1 && entries.length === 1 && session.status !== 'unknown_error'
+        && (data.pendingPrompts === 0 || data.pendingPrompts === 1 && data.promptInFlight === true)
+        && !data.optimisticMessages?.length,
+      pendingCount,
+      human: human ? { i: human.i, t: human.t } : null,
+      entries: entries.map(({ id, key, row }) => ({ id, key,
+        providerId: row.providerId, requestId: row.request.id,
+        toolCall: row.request.params.toolCall, options: row.request.params.options })) };
+  };
   const devinElicitationEntries = thread => Object.entries(devinClientRequests(thread))
     .filter(([, row]) => row.status === 'pending')
     .flatMap(([key, row]) => {
@@ -991,14 +1072,18 @@
     }
     found.props.onEnqueue();
     await new Promise(resolve => requestAnimationFrame(resolve));
-    devinCheckSession(id);
     const row = devinQueued(id).find(row => !before.has(row.id));
     if (!row) throw new Error('Devin 原生队列没有接受这条消息');
-    if (spec.now === true) {
-      if (!devinQueueTarget(row.id, 'send')) throw new Error('Devin 原生立即发送入口尚未就绪');
-      return { queued: true, now: true };
+    if (spec.now === true && activeThread() === id) {
+      try {
+        if (devinQueueTarget(row.id, 'send')) return { queued: true, now: true };
+      } catch {
+        // A native handler can throw after acting. Check the original queue before confirming it.
+        if (!devinQueued(id).some(item => item.id === row.id)) return { queued: true, now: true };
+      }
     }
-    return { queued: true, now: false, queueId: row.id, imageCount: row.imageCount };
+    return { queued: true, now: false, queueId: row.id, imageCount: row.imageCount,
+      ...(spec.now === true ? { message: '未能立即发送，消息仍在排队' } : {}) };
   };
   const devinNativeQuestionText = async (id, spec = {}) => {
     const text = String(spec.text ?? '');

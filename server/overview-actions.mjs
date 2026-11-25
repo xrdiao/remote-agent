@@ -4,12 +4,43 @@ import { favoriteSession } from '../lib/session-library.mjs';
 import { withTemporarySession } from './session.mjs';
 import { overviewSession } from './overview.mjs';
 import { NativeCdp, nativeWindowAt } from './native-windows.mjs';
+import { helpersCall } from './page/build.mjs';
+import { samePath } from '../lib/platform.mjs';
 import { catalogSessions, storedProjectSession } from './project-windows.mjs';
 import { manageFusionWorkbench } from './fusion/owner.mjs';
 import { manageOpenCodeSession } from './apps/opencode.mjs';
 import { codexBackend, CODEX_BACKEND } from './codex/state.mjs';
 import { adapter as codexAdapter } from './apps/codex.mjs';
 import { publishSessionChange } from '../lib/session-library.mjs';
+
+export async function inspectCodexOverviewSession(deviceId, request) {
+  if (request.computer !== computerId() || request.win !== 'codex') throw new Error('Codex 会话核对目标不一致');
+  const { session, target } = overviewSession(deviceId, request);
+  const { threadId, host, workspace } = session;
+  if (session.workspaceMissing) return { status: 'workspace-missing', threadId };
+  let state;
+  if (host) {
+    const source = target && nativeWindowAt(target.ws);
+    if (!source) throw new Error('Codex 原生会话目录尚未就绪');
+    state = await source.cdp.evaluate(helpersCall(`nativeSessionInfo('codex', ${JSON.stringify(threadId)}, 'cleanup')`,
+      { app: 'codex', threadId, host }));
+  } else {
+    await codexBackend.client.connect();
+    let thread;
+    try {
+      ({ thread } = await codexBackend.client.request('thread/read', { threadId, includeTurns: false }, { timeout: 8000 }));
+    } catch (error) {
+      if (/thread.*not found|no rollout found|thread.*does not exist/i.test(error.message)) return { status: 'missing', threadId };
+      throw error;
+    }
+    if (thread?.id !== threadId) throw new Error('Codex 原生目录返回了不同的会话');
+    state = { exists: true, archived: /[\\/]archived_sessions[\\/]/.test(thread.path || ''), context: { cwd: thread.cwd } };
+  }
+  if (!state.exists) return { status: 'missing', threadId };
+  if (state.archived) return { status: 'archived', threadId };
+  if (workspace && !samePath(state.context?.cwd || '', workspace, !host)) throw new Error('Codex 原生会话项目已变化');
+  return { status: 'available', threadId };
+}
 
 export async function manageOverviewSession(deviceId, body) {
   if (body.computer !== computerId()) throw new Error('所选电脑已变化，请刷新概览后重试');

@@ -4,6 +4,7 @@ import { OpenCodeClient, readEvents } from './client.mjs';
 import { cdpRead } from '../cdp.mjs';
 import { withOperation } from '../operations.mjs';
 import { readState, saveState } from '../../lib/auth.mjs';
+import { isAbortedOpenCodeRequest } from './requests.mjs';
 
 export class OpenCodeState {
   constructor(client = new OpenCodeClient(), automaticSessions = [], saveApprovals = () => {}) {
@@ -41,27 +42,33 @@ export class OpenCodeState {
 
   async initialize() {
     this.controller?.abort();
-    await this.client.request('/global/health');
     const controller = this.controller = new AbortController();
-    const response = await this.client.request('/global/event', { signal: controller.signal, response: true });
-    const pending = [];
-    let loading = true, streamError;
-    this.stream = (async () => {
-      for await (const event of readEvents(response)) {
-        if (loading) pending.push(event);
-        else this.apply(event.payload);
-      }
-      if (!controller.signal.aborted) throw new Error('OpenCode 事件连接已关闭');
-    })().catch(error => {
-      if (this.controller !== controller || controller.signal.aborted) return;
-      streamError = error;
-      this.connected = false;
-      this.error = error.message;
-      this.changed();
-    });
+    // Bound the whole initial snapshot, including SSE headers and paged bodies.
+    // Clear this timer after initialization: the established SSE stream is long-lived.
+    const deadline = setTimeout(() => controller.abort(new DOMException('OpenCode 初始化超时', 'TimeoutError')), 10000);
+    deadline.unref?.();
     try {
+      await this.client.request('/global/health', { signal: controller.signal });
+      const response = await this.client.request('/global/event', { signal: controller.signal, response: true });
+      const pending = [];
+      let loading = true, streamError;
+      this.stream = (async () => {
+        for await (const event of readEvents(response)) {
+          if (loading) pending.push(event);
+          else this.apply(event.payload);
+        }
+        if (!controller.signal.aborted) throw new Error('OpenCode 事件连接已关闭');
+      })().catch(error => {
+        if (this.controller !== controller || controller.signal.aborted) return;
+        streamError = error;
+        this.connected = false;
+        this.error = error.message;
+        this.changed();
+      });
       const [sessions, catalog, config] = await Promise.all([
-        this.client.sessions(), this.client.request('/config/providers'), this.client.request('/config'),
+        this.client.sessions(controller.signal),
+        this.client.request('/config/providers', { signal: controller.signal }),
+        this.client.request('/config', { signal: controller.signal }),
       ]);
       this.sessions = new Map(sessions.filter(row => !row.parentID && !row.time.archived).map(row => [row.id, { ...row, directory: localFilePath(row.directory) }]));
       this.childSessions = new Map(sessions.filter(row => row.parentID && !row.time.archived).map(row => [row.id, { ...row, directory: localFilePath(row.directory) }]));
@@ -70,21 +77,27 @@ export class OpenCodeState {
         for (const model of Object.values(provider.models)) this.models.set(`${provider.id}/${model.id}`, {
           ...model, providerID: provider.id, label: `${provider.name} / ${model.name}`,
         });
-      this.defaultModel = config.model;
+      const provider = catalog.providers.length === 1 ? catalog.providers[0] : null;
+      const nativeDefault = provider && `${provider.id}/${catalog.default?.[provider.id]}`;
+      this.defaultModel = config.model ?? (this.models.has(nativeDefault) ? nativeDefault : undefined);
       this.statuses.clear(); this.permissions.clear(); this.questions.clear();
       await Promise.all([...new Set(sessions.map(row => localFilePath(row.directory)))].map(async directory => {
         const [statuses, permissions, questions] = await Promise.all([
-          this.client.request('/session/status', { directory }), this.client.request('/permission', { directory }),
-          this.client.request('/question', { directory }),
+          this.client.request('/session/status', { directory, signal: controller.signal }),
+          this.client.request('/permission', { directory, signal: controller.signal }),
+          this.client.request('/question', { directory, signal: controller.signal }),
         ]);
         for (const [id, status] of Object.entries(statuses)) this.statuses.set(id, status);
         for (const request of permissions) this.permissions.set(request.id, request);
         for (const request of questions) this.questions.set(request.id, request);
       }));
+      // Pending requests can outlive aborted turns across a relay restart.
+      // Hydrate only their exact tool message and parent, within a short deadline.
+      await this.loadPendingRequestContexts('', controller.signal);
       loading = false;
       for (const event of pending) this.apply(event.payload);
       if (streamError) throw streamError;
-      if (controller.signal.aborted) return;
+      controller.signal.throwIfAborted();
       this.connected = true;
       this.error = '';
       for (const request of this.permissions.values()) this.approveAutomatically(request.id);
@@ -92,7 +105,7 @@ export class OpenCodeState {
     } catch (error) {
       controller.abort();
       throw error;
-    }
+    } finally { clearTimeout(deadline); }
   }
 
   close() { this.connected = false; this.controller?.abort(); }
@@ -124,15 +137,21 @@ export class OpenCodeState {
   approveAutomatically(id) {
     const request = this.permissions.get(id);
     if (!request || !this.automaticSessions.has(request.sessionID) || this.autoReplies.has(id)) return;
+    const signal = AbortSignal.timeout(10000);
+    let unconfirmed = false;
     const reply = this.client.request(`/permission/${id}/reply`, {
-      directory: this.sessions.get(request.sessionID).directory, method: 'POST', body: { reply: 'once' },
+      directory: this.sessions.get(request.sessionID).directory, method: 'POST', body: { reply: 'once' }, signal,
     }).then(() => {
       this.permissions.delete(id);
       this.approvalErrors.delete(id);
     }).catch(error => {
-      if (this.permissions.has(id)) this.approvalErrors.set(id, '自动审批失败：' + error.message);
+      unconfirmed = signal.aborted || !Number.isInteger(error?.status) || error.status >= 500;
+      if (this.permissions.has(id)) this.approvalErrors.set(id, unconfirmed
+        ? '自动审批结果未确认：请核对原生状态' : '自动审批失败：' + error.message);
     }).finally(() => {
-      this.autoReplies.delete(id);
+      // A timed-out POST may already have been accepted. Keep its request ID
+      // across reconnects and repeated permission events; never auto-submit it again.
+      if (!unconfirmed) this.autoReplies.delete(id);
       this.changed(request.sessionID);
     });
     this.autoReplies.set(id, reply);
@@ -140,7 +159,13 @@ export class OpenCodeState {
 
   async discover(report) {
     try {
-      await this.client.request('/global/health');
+      await this.client.request('/global/health', { signal: AbortSignal.timeout(1200) });
+      if (!this.connected && !this.connecting) {
+        this.connect().catch(error => {
+          this.error = error.message;
+          this.changed();
+        });
+      }
       report?.push({ app: 'opencode', windows: 1, address: this.client.url });
       return [{ id: 'opencode', app: 'opencode', title: 'OpenCode', kind: 'local' }];
     } catch (error) {
@@ -224,6 +249,48 @@ export class OpenCodeState {
     message.parts.set(part.id, part);
   }
 
+  async loadPendingRequestContexts(id = '', signal) {
+    const requests = [...this.permissions.values(), ...this.questions.values()].filter(request =>
+      (!id || request.sessionID === id) && this.sessions.has(request.sessionID)
+      && typeof request.tool?.messageID === 'string' && request.tool.messageID.length > 0 && request.tool.messageID.length <= 300
+      && typeof request.tool?.callID === 'string' && request.tool.callID.length > 0 && request.tool.callID.length <= 300
+      && !isAbortedOpenCodeRequest(request, this.messageRows(request.sessionID), request.sessionID));
+    if (!requests.length) return;
+    const deadline = AbortSignal.timeout(1500);
+    const bounded = signal ? AbortSignal.any([signal, deadline]) : deadline;
+    let next = 0;
+    await Promise.allSettled(Array.from({ length: Math.min(4, requests.length) }, async () => {
+      while (!bounded.aborted && next < requests.length) {
+        const request = requests[next++];
+        try { await this.loadRequestContext(request, bounded); } catch { /* Keep unverifiable requests visible. */ }
+      }
+    }));
+  }
+
+  async loadRequestContext(request, signal) {
+    const sessionID = request.sessionID, session = this.sessions.get(sessionID);
+    if (!session || signal?.aborted) return;
+    const revision = this.revision, directory = session.directory;
+    const read = id => this.client.request('/session/'+encodeURIComponent(sessionID)+'/message/'+encodeURIComponent(id), { directory, signal });
+    const assistant = await read(request.tool.messageID), info = assistant?.info;
+    if (info?.id !== request.tool.messageID || info.sessionID !== sessionID || info.role !== 'assistant'
+        || typeof info.parentID !== 'string' || !info.parentID || info.parentID.length > 300
+        || !Array.isArray(assistant.parts)) return;
+    const parent = await read(info.parentID);
+    if (parent?.info?.id !== info.parentID || parent.info.sessionID !== sessionID || parent.info.role !== 'user') return;
+    const tools = assistant.parts.filter(part => part.type === 'tool');
+    if (tools.some(part => !part.id || part.sessionID !== sessionID || part.messageID !== info.id)) return;
+    // Preserve newer stream events and cache only metadata/tool states needed
+    // for request identity. Text/reasoning is loaded by normal transcript reads.
+    for (const row of [parent, assistant]) {
+      const message = this.message(sessionID, row.info.id);
+      if (message.revision <= revision) message.info = row.info;
+    }
+    const message = this.message(sessionID, info.id);
+    for (const part of tools)
+      if ((message.parts.get(part.id)?.revision || 0) <= revision) this.outputPart(message, { ...part, revision }, undefined, false);
+  }
+
   async loadMessages(id, before, signal = cdpRead.getStore()) {
     const revision = this.revision;
     const directory = (this.sessions.get(id) || this.childSessions.get(id)).directory;
@@ -239,6 +306,7 @@ export class OpenCodeState {
     if (!previous?.first || first && ((first.time?.created || 0) < (previous.first.time?.created || 0)
       || (first.time?.created || 0) === (previous.first.time?.created || 0) && first.id.localeCompare(previous.first.id) < 0)
       || before && before === previous.before) this.historyPages.set(id, { first: first || previous?.first, before: page.before });
+    await this.loadPendingRequestContexts(id, signal);
     return page;
   }
 
@@ -343,8 +411,9 @@ export class OpenCodeState {
     if (todos.length) items.push({ i: id + ':tasks', k: 'tasks', total: todos.length,
       done: todos.filter(todo => todo.status === 'completed').length,
       items: todos.map(todo => ({ t: todo.content, status: todo.status === 'completed' ? 'done' : todo.status })) });
-    const permissions = [...this.permissions.values()].filter(p => p.sessionID === id);
-    const questions = [...this.questions.values()].filter(p => p.sessionID === id);
+    const active = request => request.sessionID === id && !isAbortedOpenCodeRequest(request, messages, id);
+    const permissions = [...this.permissions.values()].filter(active);
+    const questions = [...this.questions.values()].filter(active);
     for (const p of permissions) items.push({ i: 'permission:' + p.id, k: 'tool', src: 'opencode', kind: 'command',
       t: '请求批准：' + p.permission, cmd: p.patterns.join('\n'), output: [this.approvalErrors.get(p.id), p.metadata.diff].filter(Boolean).join('\n'),
       b: ['允许一次', '拒绝'], actions: ['once', 'reject'], keep: true });

@@ -17,12 +17,30 @@ export class NativeAgentProvider {
     return agent.call(context, `nativeSessionAction(${JSON.stringify(this.app)}, ${JSON.stringify(context.native.threadId)}, ${JSON.stringify(action)}, ${JSON.stringify(value)})`);
   }
   async create(agent, context, spec, controller, creation) {
-    if (this.transport === 'mcp' && spec.role === 'main') {
-      const channel = await this.mcpChannel(agent, context, creation, spec);
-      agent.publish(controller);
-      spec = { ...spec, mcp: channel.config };
-    }
-    return this.action(agent, context, 'create', spec);
+    if ((this.transport !== 'mcp' && this.app !== 'codex') || spec.role !== 'main') return this.action(agent, context, 'create', spec);
+    const channel = await this.mcpChannel(agent, context, creation, spec, mcp => agent.commit(controller, next => {
+      next.main.creations.find(row => row.id === creation.id).mcp = mcp;
+    }));
+    try { return await this.action(agent, context, 'create', { ...spec, mcp: channel.config }); }
+    finally { await channel.close(); }
+  }
+  submit(agent, context, value, beforeSubmit) {
+    beforeSubmit();
+    return this.action(agent, context, 'send', value);
+  }
+  stop(agent, context, native) { return this.action(agent, context, 'stop', native); }
+  async status(agent, context) {
+    const { state, questions, items } = await this.info(agent, context, 'fusionState');
+    return { state, chat: { questions, items } };
+  }
+  subscribe(context, changed) { return context.source.subscribe(changed, context.native, 'fusion-control'); }
+  interaction(agent, context, action) {
+    if (this.app === 'codex' && action.kind === 'codexRequest')
+      return agent.call(context, `codexRequestAction(${JSON.stringify(String(action.id))}, ${Number(action.n)}, ${JSON.stringify(action.fields || [])})`);
+    if (this.app === 'devin' && action.kind === 'codexRequest' || ['cursor', 'devin'].includes(this.app) && action.kind === 'question')
+      return this.action(agent, context, 'question', action);
+    if (this.app === 'cursor' && action.kind === 'button') return this.action(agent, context, 'permission', action.actionId);
+    throw new Error('该原生交互尚无不切换普通会话的后台接口');
   }
   models(agent, context) { return agent.call(context, 'modelItemsFast(true)', context.native.threadId || this.app === 'devin' ? context.native : null); }
   readTurn(agent, context, { id = '', attemptId = '', previous = [], generationId = '' } = {}) {
@@ -31,25 +49,26 @@ export class NativeAgentProvider {
   content(agent, context, history, before) {
     return agent.call(context, `extract(${history === true}, [], 80)`, { ...context.native, ...(before != null ? { before } : {}) });
   }
-  mcpChannel(agent, context, binding, spec) {
+  mcpChannel(agent, context, binding, spec, recordConfig) {
     return fusionMcp.bind(binding, {
       tools: spec.tools, instructions: spec.instructions,
       identify: args => this.info(agent, { ...context, native: { ...context.native,
-        threadId: binding.threadId || binding.nativeThreadId } }, 'fusionCall', args),
-      changed: () => context.fusionChanged?.(),
+        threadId: binding.threadId || binding.nativeThreadId } }, 'fusionCall', { ...args, ...(this.app === 'codex' ? { server: 'ra-fusion' } : {}) }),
+      changed: () => context.fusionChanged?.(), recordConfig,
     });
   }
   async bindController(agent, context, controller, spec) {
-    if (this.transport === 'mcp') {
-      const binding = controller.bindings.find(row => row.id === controller.main.bindingId);
-      context.fusionMcp = await this.mcpChannel(agent, context, binding, spec);
-      agent.publish(controller);
+    const binding = controller.bindings.find(row => row.id === controller.main.bindingId);
+    if (this.transport === 'mcp' || this.app === 'codex' && binding.mcp) {
+      context.fusionMcp ||= await this.mcpChannel(agent, context, binding, spec, mcp => agent.commit(controller, next => {
+        next.bindings.find(row => row.id === binding.id).mcp = mcp;
+      }));
       spec = { ...spec, mcp: context.fusionMcp.config };
     }
     return this.action(agent, context, 'bindTools', spec);
   }
   async unbindController(agent, context) {
-    try { return await this.action(agent, context, 'unbindTools'); }
+    try { return this.app === 'codex' && context.fusionMcp ? true : await this.action(agent, context, 'unbindTools'); }
     finally { await context.fusionMcp?.close(); context.fusionMcp = null; }
   }
   cleanupState(agent, context) { return this.info(agent, context, 'cleanup'); }
@@ -60,6 +79,9 @@ export class NativeAgentProvider {
   replyTool(agent, context, request, result) {
     return context.fusionMcp ? context.fusionMcp.reply(request.id, result)
       : this.action(agent, context, 'toolReply', { requestId: request.id, result });
+  }
+  toolReplyReceipt(agent, context, data) {
+    return this.info(agent, context, 'toolReceipt', { host: data.codexReceipt.host, transport: data.codexReceipt.transport, native: data.native });
   }
 }
 
@@ -73,6 +95,14 @@ export function nativeAgentProvider(app) {
   return provider;
 }
 export function nativeAgentProviders() { return [...providers.values()]; }
+
+export function fusionProviderFor(context, adapterRegistry) {
+  const transport = context.backend === CODEX_BACKEND ? 'backend' : context.app === 'opencode' ? 'api' : 'window';
+  if (adapterRegistry && !adapterRegistry[context.app]?.native[transport])
+    throw new Error('未登记 Fusion 原生传输');
+  if (transport === 'backend' && context.app === 'codex') return backgroundCodex;
+  return nativeAgentProvider(context.app);
+}
 
 for (const { app, name } of EDITORS)
   registerNativeAgentProvider(new NativeAgentProvider({ app, name, transport: app === 'devin' ? 'mcp' : 'native' }));
@@ -113,12 +143,12 @@ export const backgroundCodex = {
     const receipt = attemptId ? `${threadId}:user-message:${attemptId}` : id;
     const turn = generationId ? turns.find(row => row.id === generationId)
       : receipt ? turns.find(row => row.items.some(item => message(item) === receipt)) : turns.at(-1);
-    const user = turn?.items.find(item => message(item) && (!receipt || message(item) === receipt));
+    const user = turn?.items.find(item => message(item) && (!receipt || message(item) === receipt || message(item) === id));
     const ended = ['completed', 'failed', 'interrupted'].includes(turn?.status);
     const text = turn?.items.findLast(item => item.type === 'agentMessage' && item.text?.trim())?.text || '';
     return { threadId, id: user && message(user), ids: turns.flatMap(row => row.items.map(message).filter(Boolean)),
       turnId: turn?.id, generationId: turn?.id, accepted: !!user, current: turn === turns.at(-1),
-      ended, completed: turn?.status === 'completed' && !!text, text, error: turn?.error?.message };
+      ended, completed: turn?.status === 'completed', text, error: turn?.error?.message };
   },
   action(_agent, { native: { threadId } }, action, value) {
     if (action === 'send') return codexBackend.runCommand(threadId, () => codexBackend.send(threadId,
@@ -131,6 +161,19 @@ export const backgroundCodex = {
       thread.settings[field] = value;
       codexBackend.remember(thread);
     });
+  },
+  submit(_agent, { native: { threadId } }, value, beforeSubmit, changed) {
+    return codexBackend.runCommand(threadId, () => codexBackend.send(threadId,
+      [{ type: 'text', text: value.text, text_elements: [] }], 'idle', value.requestId, {
+        beforeSubmit, unknown(_error, awaitingReceipt) { if (!awaitingReceipt) changed(_error); },
+        acceptLate: () => changed(), rejectLate: changed,
+      }));
+  },
+  observe(context, action) { return codexBackend.withWriter(context.native.threadId, action); },
+  stop(agent, context, native) { return this.action(agent, context, 'stop', native.turnId); },
+  interaction(_agent, context, action, native) {
+    if (action.kind !== 'codexRequest') throw new Error('未知的 Codex 原生交互');
+    return this.answer(context.native.threadId, native.turnId, action);
   },
   async content(_agent, { native: { threadId } }, history, before) {
     const thread = await codexThread(threadId);
@@ -145,7 +188,7 @@ export const backgroundCodex = {
     return chat;
   },
   subscribe(context, changed) { return codexBackend.subscribe(context.native.threadId, changed); },
-  async snapshot(context) {
+  async status(_agent, context) {
     const threadId = context.native.threadId;
     const chat = await this.content(null, context, false);
     return { chat, state: { run: chat.run, waiting: chat.questions.requests[0]?.id || '', waitingText: chat.waitingText,
@@ -157,7 +200,8 @@ export const backgroundCodex = {
   },
   async cleanupState(_agent, { native: { threadId } }) {
     const thread = await codexThread(threadId);
-    return { exists: true, running: thread.turns.some(turn => turn.status === 'inProgress'), context: codexIdentity(thread) };
+    const archived = /[\\/]archived_sessions[\\/]/.test(thread.path || '');
+    return { exists: true, archived, running: thread.turns.some(turn => turn.status === 'inProgress'), context: codexIdentity(thread) };
   },
   async cleanup(_agent, { native: { threadId } }) {
     await codexBackend.manage(threadId, 'archive');

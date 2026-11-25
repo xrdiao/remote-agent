@@ -1,17 +1,21 @@
+import { ConversationRef, SessionBinding } from '../session/binding.mjs';
+import { bindConnectionDelivery } from '../session/connection-view.mjs';
 import path from 'node:path';
 import { localFilePath, samePath } from '../../lib/platform.mjs';
 import os from 'node:os';
 import { openCode } from '../opencode/state.mjs';
 import { cdpRead, awaitCdpRead } from '../cdp.mjs';
-import { safeHomePath, projectList, createProjectFolder } from '../agent/projects.mjs';
+import { safeHomePath, projectList, createProjectFolder } from '../agent/project-paths.mjs';
 import { rememberSelection } from '../../lib/auth.mjs';
 import { resolveLocal, writeTextFile } from '../../lib/files.mjs';
 import { publishSessionChange, rememberSessionMessage, removeLibrarySession, rememberSessionStatuses } from '../../lib/session-library.mjs';
 import { currentOperation, withOperation } from '../operations.mjs';
 import { createMessageID } from '../opencode/client.mjs';
-import { uploads, pendingUploads, uploadAttachments, removeUpload, updateUpload } from '../../lib/uploads.mjs';
+import { uploads, pendingUploads, uploadAttachments, removeUpload, updateUpload, consumePendingUploads } from '../../lib/uploads.mjs';
 import { openCodeAttachment } from '../opencode/attachments.mjs';
 import { watchChatUpdates } from '../agent/updates.mjs';
+import { markSendSubmitted } from '../ws/send-lifecycle.mjs';
+import { SourceRef, projectWritablePath } from '../session/source-ref.mjs';
 
 export const capabilities = {
   model: true, effort: true, fast: false, queue: false, steer: false, queueEdit: false,
@@ -24,12 +28,13 @@ function selection(s) {
     project: { root: s.openCodeDirectory, host: '' } };
 }
 
-function attached(s, initial = false) {
+function attached(s, initial = false, materializedFrom) {
   s.emit({ t: 'attached', ...selection(s), title: 'OpenCode', appName: 'OpenCode', project: path.basename(s.openCodeDirectory),
-    sel: s.selectionKey(), ready: true, initial });
+    sel: s.selectionKey(), ready: true, initial, materializedFrom });
 }
 
 const PAGE_SIZE = 30;
+const SEND_RECONCILE_MS = 15000;
 const COMPACT = { name: 'compact', description: '压缩当前会话的上下文' };
 async function commands(directory, signal) {
   const rows = await openCode.client.request('/command', { directory, signal });
@@ -61,7 +66,7 @@ function publish(s, sent) {
 }
 
 function confirmSend(s, requestID, pending) {
-  if (s.openCodeSends.get(requestID) !== pending) return;
+  if (!s.openCodeSends.has(pending.messageID)) return;
   const message = openCode.messages.get(pending.threadID)?.get(pending.messageID);
   if (message?.info.role !== 'user') return;
   const parts = [...message.parts.values()];
@@ -77,20 +82,29 @@ function confirmSend(s, requestID, pending) {
   finishSend(s, requestID, pending, { messageId: message.info.id });
 }
 
-function releasePending(s, requestID, pending) {
+function releasePending(s, pending) {
   pending.unsubscribe?.();
   clearTimeout(pending.reconcile);
-  s.openCodeSends.delete(requestID);
-  if (pending.operation) pending.operation.pending = false;
+  clearTimeout(pending.deadline);
+  pending.read?.abort();
+  s.openCodeSends.delete(pending.messageID);
+  pending.operation?.releaseReceipt();
+}
+
+function rejectSend(s, requestId, pending, message) {
+  releasePending(s, pending);
+  s.emit({ t: 'sendFailed', requestId, sel: pending.sel, materializedFrom: pending.materializedFrom, message });
+  if (pending.binding.isCurrent(s)) publish(s);
 }
 
 function finishSend(s, requestID, pending, result) {
-  releasePending(s, requestID, pending);
-  for (const [id, file] of pending.files)
-    if (uploads.get(id) === file && file.sel === pending.inputSelection) updateUpload(file, { pending: false });
+  releasePending(s, pending);
+  const consumedUploadIds = consumePendingUploads(pending.files, pending.inputSelection);
   if (s.openCodeDrafts?.get(pending.inputSelection) === pending.inputDraft) s.openCodeDrafts?.delete(pending.inputSelection);
-  s.emit({ t: 'attachments', sel: pending.sel, list: uploadAttachments(pending.sel) });
-  withOperation(pending.operation, () => s.emit({ t: 'sent', requestId: requestID, draft: pending.draft, sel: pending.sel, ...result, queued: false }));
+  if (pending.sel !== s.selectionKey() || pending.binding.isCurrent(s))
+    s.emit({ t: 'attachments', sel: pending.sel, list: uploadAttachments(pending.sel, s.deviceId) });
+  withOperation(pending.operation, () => s.emit({ t: 'sent', requestId: requestID, draft: pending.draft,
+    sel: pending.sel, ...result, queued: false, materializedFrom: pending.materializedFrom, consumedUploadIds }));
 }
 
 function watch(s) {
@@ -104,8 +118,8 @@ function watch(s) {
       return false;
     }
     if (s.threadId && !openCode.sessions.has(s.threadId)) {
-      s.threadId = s.selectedThread = '';
       s.clearViewState();
+      SessionBinding.commit(s, { threadId: '', selectedThread: '' });
       rememberSelection(s.deviceId, selection(s));
       attached(s);
       s.stopChatUpdates();
@@ -116,6 +130,7 @@ function watch(s) {
 }
 
 async function bind(s, req) {
+  const origin = ConversationRef.capture(s);
   await awaitCdpRead(openCode.connect());
   const native = req.threadId ? openCode.sessions.get(req.threadId) : null;
   if (req.threadId && !native) throw new Error('OpenCode 会话已不存在');
@@ -124,16 +139,11 @@ async function bind(s, req) {
   if (native && !samePath(native.directory, directory)) throw new Error('OpenCode 会话不属于所选项目');
   const thread = native || (req.newSession ? await createSession(directory) : [...openCode.sessions.values()]
     .filter(row => samePath(row.directory, directory)).sort((a, b) => b.time.updated - a.time.updated)[0]);
-  if (thread) await Promise.all([openCode.loadMessages(thread.id), openCode.loadTasks(thread.id)]);
-  cdpRead.getStore()?.throwIfAborted();
-  s.detach();
-  s.clearViewState();
-  s.app = s.targetId = 'opencode';
-  s.windowId = s.openCodeDirectory = directory;
-  s.threadId = s.selectedThread = thread?.id || '';
-  s.bindingReady = true;
-  s.selectionHome = false;
-  s.winTitle = 'OpenCode';
+  if (thread) await awaitCdpRead(Promise.all([openCode.loadMessages(thread.id), openCode.loadTasks(thread.id)]));
+  origin.assertCurrent(s);
+  const threadId = thread?.id || '';
+  s.replaceBinding({ app: 'opencode', targetId: 'opencode', windowId: directory, openCodeDirectory: directory,
+    threadId, selectedThread: threadId, bindingReady: true, selectionHome: false, winTitle: 'OpenCode' });
   s.openCodePages ||= new Map();
   if (thread) s.openCodePages.set(thread.id, viewPage(thread.id));
   rememberSelection(s.deviceId, selection(s));
@@ -163,22 +173,24 @@ export async function createSession(directory, body = {}) {
 }
 
 async function ensureSession(s) {
-  if (s.threadId) return;
-  const previous = s.selectionKey();
-  const native = await createSession(s.openCodeDirectory);
-  s.threadId = s.selectedThread = native.id;
+  const origin = ConversationRef.capture(s), previous = origin.key;
+  if (origin.threadId) return origin;
+  const native = await createSession(origin.openCodeDirectory);
+  origin.assertCurrent(s);
+  s.clearViewState();
+  SessionBinding.commit(s, { threadId: native.id, selectedThread: native.id });
   const selected = s.selectionKey(), draft = s.openCodeDrafts?.get(previous);
-  for (const [, file] of pendingUploads(previous)) updateUpload(file, { sel: selected });
+  for (const [, file] of pendingUploads(previous, s.deviceId)) updateUpload(file, { sel: selected });
   if (draft) {
     s.openCodeDrafts.delete(previous);
     s.openCodeDrafts.set(selected, draft);
   }
   s.openCodePages.set(native.id, viewPage(native.id));
-  s.clearViewState();
   s.stopChatUpdates();
   s.chatUpdatesStop = watch(s);
   rememberSelection(s.deviceId, selection(s));
-  attached(s);
+  attached(s, false, previous);
+  return ConversationRef.capture(s);
 }
 
 export async function manageOpenCodeSession(id, action, name) {
@@ -222,88 +234,110 @@ const routes = {
   async send(m) {
     if (m.submit === false) return routes.draft.call(this, m);
     cdpRead.getStore()?.throwIfAborted();
-    const model = openCode.selection(this.threadId || this.openCodeDirectory), native = openCode.models.get(model.key);
+    const origin = ConversationRef.capture(this), directory = origin.openCodeDirectory;
+    const model = openCode.selection(origin.threadId || directory), native = openCode.models.get(model.key);
     if (!native) throw new Error('请先选择可用的 OpenCode 模型');
-    const sel = this.selectionKey();
-    const files = pendingUploads(sel);
+    const files = pendingUploads(origin.key, this.deviceId);
     const signal = cdpRead.getStore(), match = /^\s*\/([^\s/]+)(?:\s+([\s\S]*))?$/.exec(m.text || '');
-    const command = match && (await commands(this.openCodeDirectory, signal)).find(row => row.name === match[1]);
+    const command = match && (await commands(directory, signal)).find(row => row.name === match[1]);
     if (command === COMPACT && (files.length || match[2]?.trim())) throw new Error('压缩命令不接受参数或附件');
     const parts = await Promise.all(files.map(([, file]) => openCodeAttachment(file, native)));
     if (!command && m.text?.trim()) parts.unshift({ type: 'text', text: m.text });
-    cdpRead.getStore()?.throwIfAborted();
-    await ensureSession(this);
+    signal?.throwIfAborted();
+    origin.assertCurrent(this);
+    const binding = await ensureSession(this);
+    binding.assertCurrent(this);
+    markSendSubmitted();
     this.draftEpoch = m.draftEpoch || this.draftEpoch;
-    const selectedScope = this.selectionKey();
+    const { threadId: threadID, key: selectedScope } = binding;
     const messageID = createMessageID();
     this.openCodeSends ||= new Map();
-    const pending = { messageID, threadID: this.threadId, text: m.text?.trim() ? m.text : '', draft: m.draft,
+    const pending = { binding, messageID, threadID, materializedFrom: origin.key !== binding.key ? origin.key : undefined, text: m.text?.trim() ? m.text : '', draft: m.draft,
       attachments: parts.filter(part => part.type === 'file').map(({ filename, mime }) => ({ filename, mime })),
       command: !!command, sel: selectedScope, files, inputSelection: selectedScope,
       inputDraft: this.openCodeDrafts?.get(selectedScope), operation: currentOperation() };
-    if (pending.operation) pending.operation.pending = true;
-    pending.unsubscribe = openCode.subscribe(id => { if (!id || id === pending.threadID) confirmSend(this, m.requestId, pending); });
-    this.openCodeSends.set(m.requestId, pending);
+    pending.operation?.expectReceipt();
+    const compact = command === COMPACT;
+    if (!compact)
+      pending.unsubscribe = openCode.subscribe(bindConnectionDelivery(id => {
+        if (!id || id === pending.threadID) confirmSend(this, m.requestId, pending);
+      }));
+    this.openCodeSends.set(messageID, pending);
+    const id = pending.threadID;
+    const selected = { providerID: native.providerID, modelID: native.id };
+    const variant = model.variant ? { variant: model.variant } : {};
+    const timeout = AbortSignal.timeout(30000);
+    const postSignal = signal ? AbortSignal.any([signal, timeout]) : timeout;
+    let summaryAccepted, unconfirmed;
     try {
-      cdpRead.getStore()?.throwIfAborted();
-      if (pending.operation) pending.operation.submitted = true;
-      if (cdpRead.getStore()) cdpRead.getStore().submitted = true;
-      const directory = this.openCodeDirectory, id = pending.threadID;
-      const selected = { providerID: native.providerID, modelID: native.id };
-      const variant = model.variant ? { variant: model.variant } : {};
-      if (command === COMPACT) {
-        if (!await openCode.client.request(`/session/${id}/summarize`, {
-          directory, method: 'POST', body: { ...selected, auto: false }, signal,
-        })) throw new Error('OpenCode 尚未接受压缩命令');
-        finishSend(this, m.requestId, pending, { hasUserMessage: false });
+      if (compact) {
+        summaryAccepted = await openCode.client.request(`/session/${id}/summarize`, {
+          directory, method: 'POST', body: { ...selected, auto: false }, signal: postSignal,
+        });
       } else if (command) {
         await openCode.client.request(`/session/${id}/command`, {
           directory, method: 'POST', body: {
             messageID, command: command.name, arguments: match[2] || '', model: `${native.providerID}/${native.id}`, ...variant, parts,
-          }, signal,
+          }, signal: postSignal,
         });
         confirmSend(this, m.requestId, pending);
       } else {
         await openCode.client.request(`/session/${id}/prompt_async`, {
-          directory, method: 'POST', body: { messageID, model: selected, ...variant, parts }, signal,
+          directory, method: 'POST', body: { messageID, model: selected, ...variant, parts }, signal: postSignal,
         });
       }
     } catch (error) {
-      if (!this.openCodeSends.has(m.requestId)) return;
-      releasePending(this, m.requestId, pending);
-      throw error;
+      if (!this.openCodeSends.has(messageID)) return;
+      if (error.status >= 400 && error.status < 500) return rejectSend(this, m.requestId, pending, error.message);
+      unconfirmed = error;
     }
-    if (this.openCodeSends.has(m.requestId)) {
-      this.emit({ t: 'sent', requestId: m.requestId, sel: pending.sel, pending: true });
-      pending.reconcile = setTimeout(async () => {
-        let message = '尚未读到与本次请求匹配的 OpenCode 原生记录';
-        try {
-          await openCode.loadMessages(pending.threadID, undefined, null);
-          openCode.changed(pending.threadID);
-        } catch (error) { message = error.message; }
-        if (this.openCodeSends.get(m.requestId) === pending)
-          withOperation(pending.operation, () => this.emit({ t: 'sent', requestId: m.requestId, sel: pending.sel, pending: true, message }));
-      }, 3000);
-      pending.reconcile.unref();
+    if (compact && !unconfirmed) {
+      if (!summaryAccepted) return rejectSend(this, m.requestId, pending, 'OpenCode 尚未接受压缩命令');
+      finishSend(this, m.requestId, pending, { hasUserMessage: false });
     }
-    publish(this);
+    if (this.openCodeSends.has(messageID)) {
+      this.emit({ t: 'sent', requestId: m.requestId, sel: pending.sel, materializedFrom: pending.materializedFrom, pending: true, message: unconfirmed?.message });
+      pending.deadline = setTimeout(() => {
+        releasePending(this, pending);
+        pending.operation?.finish();
+      }, SEND_RECONCILE_MS);
+      pending.deadline.unref();
+      // The summarize POST has no client message ID to correlate to a compaction record.
+      if (!compact) {
+        pending.reconcile = setTimeout(async () => {
+          pending.read = new AbortController();
+          try {
+            await openCode.loadMessages(id, undefined, pending.read.signal);
+            openCode.changed(id);
+          } catch (error) {
+            if (this.openCodeSends.has(messageID))
+              withOperation(pending.operation, () => this.emit({ t: 'sent', requestId: m.requestId, sel: pending.sel, materializedFrom: pending.materializedFrom, pending: true, message: error.message }));
+          }
+        }, 3000);
+        pending.reconcile.unref();
+      }
+    }
+    if (binding.isCurrent(this)) publish(this);
   },
   async stop() {
-    await openCode.client.request(`/session/${this.threadId}/abort`, { directory: this.openCodeDirectory, method: 'POST', signal: cdpRead.getStore() });
+    const response = await openCode.client.request(`/session/${this.threadId}/abort`, { directory: this.openCodeDirectory, method: 'POST', signal: cdpRead.getStore(), response: true });
+    return response.status === 204 || await response.json() === true;
   },
   async refresh() {
+    const binding = ConversationRef.capture(this), id = binding.threadId;
     await awaitCdpRead(openCode.connect());
-    if (this.threadId) await Promise.all([openCode.loadMessages(this.threadId), openCode.loadTasks(this.threadId)]);
-    publish(this);
+    if (id) await Promise.all([openCode.loadMessages(id), openCode.loadTasks(id)]);
+    if (binding.isCurrent(this)) publish(this);
   },
   async scrollChat(m) {
     if (!m.history) return;
-    const id = this.threadId, sel = this.selectionKey(), page = this.openCodePages.get(id);
+    const binding = ConversationRef.capture(this), { threadId: id, key: sel } = binding;
+    const page = this.openCodePages.get(id);
     let rows = openCode.messageRows(id).filter(row => page.start && beforeMessage(row, page.start));
     const cursor = openCode.historyPages.get(id)?.before;
     if (!rows.length && cursor) {
       await openCode.loadMessages(id, cursor);
-      if (this.threadId !== id || this.selectionKey() !== sel) return;
+      if (!binding.isCurrent(this)) return;
       rows = openCode.messageRows(id).filter(row => page.start && beforeMessage(row, page.start));
     }
     rows = rows.slice(-60);
@@ -315,18 +349,19 @@ const routes = {
     this.emit({ t: 'historyDone', sel, requestId: m.requestId, earlier: hasEarlier(id, page) });
   },
   async toolDetails(m) {
-    if (m.sel !== this.selectionKey()) return;
-    const id = this.threadId, page = this.openCodePages.get(id);
+    const binding = ConversationRef.capture(this), id = binding.threadId;
+    if (m.sel !== binding.key) return;
+    const page = this.openCodePages.get(id);
     if (m.open) {
       const part = openCode.messageRows(id).flatMap(row => [...row.parts.values()]).find(part => part.id === m.i);
       const childId = part?.state?.metadata?.sessionId;
       if (childId) {
-        const child = await openCode.client.request(`/session/${childId}`, { directory: this.openCodeDirectory, signal: cdpRead.getStore() });
+        const child = await openCode.client.request(`/session/${childId}`, { directory: binding.openCodeDirectory, signal: cdpRead.getStore() });
         if (child.parentID !== id) throw new Error('子 Agent 不属于当前会话');
         openCode.childSessions.set(childId, { ...child, directory: localFilePath(child.directory) });
         await Promise.all([openCode.loadMessages(childId), openCode.loadTasks(childId)]);
       }
-      if (m.sel !== this.selectionKey()) return;
+      if (!binding.isCurrent(this)) return;
     }
     if (m.open) page.tools.add(m.i);
     else page.tools.delete(m.i);
@@ -342,25 +377,25 @@ const routes = {
   },
   async attachments(m) {
     const sel = m.sel || this.selectionKey();
-    this.emit({ t: 'attachments', sel, list: uploadAttachments(sel) });
+    this.emit({ t: 'attachments', sel, list: uploadAttachments(sel, this.deviceId) });
     return { ok: true };
   },
   async image(m) {
     const upload = uploads.get(m.uploadId);
-    if (!upload) throw new Error('图片上传已失效');
+    if (!upload || upload.deviceId !== this.deviceId) throw new Error('图片上传已失效');
     if (m.sel && upload.sel && m.sel !== upload.sel) throw new Error('上传所属会话不匹配');
     updateUpload(upload, { pending: true });
     const sel = this.selectionKey();
-    this.emit({ t: 'attachments', sel, list: uploadAttachments(sel) });
+    this.emit({ t: 'attachments', sel, list: uploadAttachments(sel, this.deviceId) });
     return m.uploadId;
   },
   async removeAttachment(m) {
     const sel = m.sel || this.selectionKey();
     const f = uploads.get(m.id);
-    if (f && f.pending && f.sel === sel) {
+    if (f && f.deviceId === this.deviceId && f.pending && f.sel === sel) {
       removeUpload(m.id);
     }
-    this.emit({ t: 'attachments', sel, list: uploadAttachments(sel) });
+    this.emit({ t: 'attachments', sel, list: uploadAttachments(sel, this.deviceId) });
     return { ok: true };
   },
   async usage(m) {
@@ -401,17 +436,19 @@ const routes = {
     try {
       if (m.sel !== this.selectionKey() || request?.sessionID !== this.threadId) throw new Error('审批已处理或会话已切换');
       if (!['once', 'reject'].includes(m.actionId)) throw new Error('未知的 OpenCode 审批操作');
-      await openCode.client.request(`/permission/${id}/reply`, { directory: this.openCodeDirectory, method: 'POST', body: { reply: m.actionId }, signal: cdpRead.getStore() });
+      const result = await openCode.client.request(`/permission/${id}/reply`, { directory: this.openCodeDirectory, method: 'POST', body: { reply: m.actionId }, signal: cdpRead.getStore() });
       openCode.permissions.delete(id); openCode.approvalErrors.delete(id); openCode.changed(this.threadId);
+      return result;
     } finally { this.emit({ t: 'clickDone', sel: m.sel, item: m.item, actionId: m.actionId }); }
   },
   async opencodeQuestion(m) {
     const request = openCode.questions.get(m.id);
     if (m.sel !== this.selectionKey() || request?.sessionID !== this.threadId) throw new Error('提问已处理或会话已切换');
-    await openCode.client.request(`/question/${m.id}/${m.reject ? 'reject' : 'reply'}`, {
+    const result = await openCode.client.request(`/question/${m.id}/${m.reject ? 'reject' : 'reply'}`, {
       directory: this.openCodeDirectory, method: 'POST', signal: cdpRead.getStore(), ...(m.reject ? {} : { body: { answers: m.answers } }),
     });
     openCode.questions.delete(m.id); openCode.changed(this.threadId);
+    return result;
   },
   sessionActions(m) { this.emit({ t: 'sessionActions', app: 'opencode', id: m.id, requestId: m.requestId, actions: ['rename', 'archive', 'delete'] }); },
   async sessionManage(m) { await manageOpenCodeSession(m.id, m.action, m.name); return list(this); },
@@ -421,17 +458,19 @@ const routes = {
     return list(this);
   },
   file(m) {
-    const context = Object.create(this);
-    context.emit = this.emit.bind(this);
-    context.resolveFile = ref => resolveLocal({ root: this.openCodeDirectory, host: '' }, ref);
-    context.fileTheme = async () => this.dark === false ? 'light-plus' : 'dark-plus';
-    return context.openFile(m.path, m.diff || '', m.changes === true, m.requestId);
+    const root = this.openCodeDirectory;
+    return this.openFile(m.path, m.diff || '', m.changes === true, m.requestId, {
+      root, resolve: ref => resolveLocal({ root, host: '' }, ref),
+      theme: async () => this.dark === false ? 'light-plus' : 'dark-plus',
+    });
   },
   async saveFile(m) {
-    const file = await resolveLocal({ root: this.openCodeDirectory, host: '' }, m.path);
-    const relative = path.relative(localFilePath(this.openCodeDirectory), localFilePath(file.path));
-    if (relative === '..' || relative.startsWith('..' + path.sep) || path.isAbsolute(relative)) throw new Error('只能修改当前项目里的文件');
-    const size = await writeTextFile(file.path, m.text);
+    const binding = ConversationRef.capture(this);
+    const source = new SourceRef('chat-file', { binding, root: binding.openCodeDirectory });
+    if (m.host || m.root && !samePath(m.root, source.root)) throw new Error('文件来源项目已切换，请重新打开');
+    const file = await resolveLocal({ root: source.root, host: '' }, m.path);
+    const target = await projectWritablePath(source, file.path);
+    const size = await writeTextFile(target, m.text);
     this.emit({ t: 'saved', requestId: m.requestId, path: m.path, host: '', ok: true, size });
   },
   async changes() {
@@ -454,12 +493,19 @@ export const adapter = {
   terminalProject() { return { root: this.openCodeDirectory, host: '' }; },
   async setMode() {
     if (this.mode !== 'chat') return;
+    const binding = ConversationRef.capture(this), generation = this.chatWatchGeneration;
     await awaitCdpRead(openCode.connect());
-    this.chatUpdatesStop = watch(this);
+    if (!binding.isCurrent(this) || generation !== this.chatWatchGeneration || this.mode !== 'chat'
+        || !this.connectionView.matchesDelivery()) return;
+    if (this.connectionView.acceptsDelivery()) this.chatUpdatesStop = watch(this);
     publish(this);
   },
   detach() {
     this.openCodePages?.get(this.threadId)?.tools.clear();
     this.stopChatUpdates();
   },
+};
+
+export const nativeCapabilities = {
+  api: { routes },
 };

@@ -41,6 +41,7 @@ import java.net.URI;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import okhttp3.Call;
 import okhttp3.Callback;
@@ -69,8 +70,7 @@ public final class PhoneProjectionService extends Service {
     private JSONObject conversation;
     private URI relay;
     private Call ticketRequest;
-    private WebSocket control;
-    private volatile WebSocket media;
+    private final PhoneLink link = new PhoneLink();
     private String requested, controllerName, status = "将手机设为可被控后，从电脑浏览器发起连接。";
     private Runnable onChange;
     private boolean sharingAccepted, treeQueued, receiverRegistered, agent;
@@ -146,7 +146,7 @@ public final class PhoneProjectionService extends Service {
     }
 
     private void requestLink(boolean resume) {
-        if (config == null || ticketRequest != null || control != null) return;
+        if (config == null || ticketRequest != null || link.control != null) return;
         try {
             String path = "/api/phone";
             byte[] body = (resume ? packet("role", "resume", "session", requested) : packet("role", "host"))
@@ -172,7 +172,7 @@ public final class PhoneProjectionService extends Service {
                         main.post(() -> {
                             if (ticketRequest != waiting) return;
                             ticketRequest = null;
-                            control = openSocket(ticket, false);
+                            link.control = openSocket(ticket, false);
                         });
                     } catch (Exception error) {
                         main.post(() -> linkFailed(waiting, resume, response.code()));
@@ -201,33 +201,41 @@ public final class PhoneProjectionService extends Service {
     private WebSocket openSocket(String ticket, boolean video) {
         String destination = "wss://" + relay.getRawAuthority() + "/phone";
         Request request = new Request.Builder().url(destination).build();
-        String hello = video ? packet("type", "hello", "ticket", ticket)
-                : packet("type", "hello", "ticket", ticket, "agentVersion", 3, "capture", sharingAccepted);
+        int generation = link.generation;
         return http.newWebSocket(request, new WebSocketListener() {
+            private final AtomicBoolean closing = new AtomicBoolean();
+
             @Override public void onOpen(WebSocket socket, Response response) {
-                socket.send(hello);
+                main.post(() -> {
+                    if (closing.get() || !link.current(socket, video, generation)) return;
+                    socket.send(video ? packet("type", "hello", "ticket", ticket)
+                            : packet("type", "hello", "ticket", ticket, "agentVersion", 3, "capture", sharingAccepted));
+                });
             }
             @Override public void onMessage(WebSocket socket, String text) {
                 if (!video) main.post(() -> {
-                    if (control != socket) return;
+                    if (!link.current(socket, false, generation)) return;
                     try { receive(new JSONObject(text)); }
                     catch (JSONException error) { finish("中继返回了无效的远控消息。"); }
                 });
             }
             @Override public void onClosing(WebSocket socket, int code, String reason) {
                 socket.close(code, null);
-                disconnected(socket, video, code, "closed");
+                connectionEnded(socket, code, "closed");
             }
-            @Override public void onClosed(WebSocket socket, int code, String reason) { disconnected(socket, video, code, "closed"); }
+            @Override public void onClosed(WebSocket socket, int code, String reason) { connectionEnded(socket, code, "closed"); }
             @Override public void onFailure(WebSocket socket, Throwable error, Response response) {
-                disconnected(socket, video, response == null ? 0 : response.code(), error.getClass().getSimpleName());
+                connectionEnded(socket, response == null ? 0 : response.code(), error.getClass().getSimpleName());
+            }
+            private void connectionEnded(WebSocket socket, int code, String reason) {
+                if (closing.compareAndSet(false, true)) disconnected(socket, video, generation, code, reason);
             }
         });
     }
 
-    private void disconnected(WebSocket socket, boolean video, int code, String reason) {
+    private void disconnected(WebSocket socket, boolean video, int generation, int code, String reason) {
         main.post(() -> {
-            if (socket != (video ? media : control)) return;
+            if (!link.current(socket, video, generation)) return;
             Log.i(TAG, (video ? "Screen" : "Control") + " connection ended (" + code + ", " + reason + ")");
             if (code == 4004) {
                 finish("远控已结束。");
@@ -240,7 +248,8 @@ public final class PhoneProjectionService extends Service {
             live = false;
             online = false;
             framesReady = false;
-            discardSockets();
+            cancelTree();
+            link.close();
             retryLink();
         });
     }
@@ -269,7 +278,7 @@ public final class PhoneProjectionService extends Service {
             case "started" -> {
                 if (!sharingAccepted || projection == null) { finish("屏幕共享尚未授权。"); return; }
                 online = resumable = true;
-                media = openSocket(message.getString("ticket"), true);
+                link.media = openSocket(message.getString("ticket"), true);
                 agent = message.optBoolean("agent");
                 live = true;
                 refreshGeometry();
@@ -431,7 +440,7 @@ public final class PhoneProjectionService extends Service {
     private void frame(ImageReader reader, Geometry captured) {
         if (!framesReady) return;
         try (Image image = reader.acquireLatestImage()) {
-            WebSocket socket = media;
+            WebSocket socket = link.media;
             long now = SystemClock.elapsedRealtime();
             if (image == null || !live || captured != geometry || socket == null || socket.queueSize() > 0 || now - lastFrameAt < 100) return;
             lastFrameAt = now;
@@ -445,7 +454,7 @@ public final class PhoneProjectionService extends Service {
                 if (paddedWidth != width) cropped = Bitmap.createBitmap(padded, 0, 0, width, height);
                 ByteArrayOutputStream encoded = new ByteArrayOutputStream();
                 cropped.compress(Bitmap.CompressFormat.JPEG, 62, encoded);
-                if (!live || captured != geometry || socket != media || encoded.size() > MAX_FRAME - 4 || locked()) return;
+                if (!live || captured != geometry || socket != link.media || encoded.size() > MAX_FRAME - 4 || locked()) return;
                 byte[] bytes = ByteBuffer.allocate(encoded.size() + 4).putInt(captured.revision).put(encoded.toByteArray()).array();
                 socket.send(ByteString.of(bytes));
             } finally {
@@ -464,10 +473,17 @@ public final class PhoneProjectionService extends Service {
         else service.scheduleTree();
     }
 
+    private final Runnable publishQueuedTree = () -> { treeQueued = false; publishTree(); };
+
     private void scheduleTree() {
         if (!live || treeQueued) return;
         treeQueued = true;
-        main.postDelayed(() -> { treeQueued = false; publishTree(); }, 120);
+        main.postDelayed(publishQueuedTree, 120);
+    }
+
+    private void cancelTree() {
+        main.removeCallbacks(publishQueuedTree);
+        treeQueued = false;
     }
 
     private void publishTree() {
@@ -486,42 +502,64 @@ public final class PhoneProjectionService extends Service {
     }
     private void handleAction(JSONObject message) throws JSONException {
         if (!live) return;
-        int id = message.getInt("id");
-        if (locked()) { ack(id, false, "locked"); pauseProjection("locked", "手机已锁屏。解锁后可重新授权。"); return; }
+        long id = message.getLong("id");
+        if (id <= 0 || link.isPending(id)) return;
+        String previous = link.reply(id);
+        if (previous != null) { send(previous); return; }
+        PhoneLink.Action action = link.begin(id);
+        if (action == null) {
+            send(packet("type", "ack", "id", id, "ok", false, "reason", "outcomeUnknown"));
+            return;
+        }
+        if (locked()) { ack(action, false, "locked"); pauseProjection("locked", "手机已锁屏。解锁后可重新授权。"); return; }
         PhoneAccessibilityService access = PhoneAccessibilityService.current();
         if (access == null) { pauseProjection("accessibility", "无障碍服务已关闭。启用后可重新授权。"); return; }
-        switch (message.getString("kind")) {
-            case "inspect" -> { publishTree(); ack(id, true, ""); }
-            case "apps" -> {
-                if (agent) send(packet("type", "ack", "id", id, "ok", true, "apps", access.apps()));
-                else ack(id, false, "unsupported");
+        String kind = message.getString("kind");
+        if (access.gestureInProgress() && !"apps".equals(kind)) {
+            ack(action, false, "busy");
+            return;
+        }
+        switch (kind) {
+            case "inspect" -> {
+                publishTree();
+                ack(action, true, "");
             }
-            case "launch" -> ack(id, agent && access.launch(message.getString("app")), "unsupported");
-            case "system" -> ack(id, access.systemAction(message.getString("action")), "unsupported");
-            case "node" -> ack(id, access.nodeAction(message.getInt("revision"), message.getInt("node"),
+            case "apps" -> {
+                if (agent) sendAck(action, packet("type", "ack", "id", id, "ok", true, "apps", access.apps()));
+                else ack(action, false, "unsupported");
+            }
+            case "launch" -> ack(action, agent && access.launch(message.getString("app")), "unsupported");
+            case "system" -> ack(action, access.systemAction(message.getString("action")), "unsupported");
+            case "node" -> ack(action, access.nodeAction(message.getInt("revision"), message.getInt("node"),
                     message.getString("action"), message.optString("text")), "stale");
             case "gesture" -> {
                 Geometry bounds = geometry;
                 if (bounds == null || bounds.revision != message.getInt("revision") ||
-                        displays.getDisplay(Display.DEFAULT_DISPLAY).getRotation() != bounds.rotation) { ack(id, false, "stale"); return; }
+                        displays.getDisplay(Display.DEFAULT_DISPLAY).getRotation() != bounds.rotation) { ack(action, false, "stale"); return; }
                 if (agent && message.has("window") && !access.isActiveWindow(message.getInt("window"), message.getString("app"))) {
-                    ack(id, false, "stale"); return;
+                    ack(action, false, "stale"); return;
                 }
-                access.gesture(coordinate(message, "x", bounds.width), coordinate(message, "y", bounds.height),
+                boolean dispatched = access.gesture(coordinate(message, "x", bounds.width), coordinate(message, "y", bounds.height),
                         coordinate(message, "endX", bounds.width), coordinate(message, "endY", bounds.height),
-                        message.getInt("duration"), ok -> { if (live) ack(id, ok, "unsupported"); });
+                        message.getInt("duration"), ok -> ack(action, ok, ok ? "" : "outcomeUnknown"));
+                if (!dispatched) ack(action, false, "unsupported");
             }
+            default -> ack(action, false, "unsupported");
         }
     }
 
     private static float coordinate(JSONObject message, String name, int pixels) throws JSONException {
         return (float) (message.getDouble(name) * (pixels - 1));
     }
-    private void ack(int id, boolean ok, String reason) {
-        send(packet("type", "ack", "id", id, "ok", ok, "reason", reason));
+    private void ack(PhoneLink.Action action, boolean ok, String reason) {
+        sendAck(action, packet("type", "ack", "id", action.id(), "ok", ok, "reason", reason));
+    }
+    private void sendAck(PhoneLink.Action action, String result) {
+        if (!live || !link.finish(action, result)) return;
+        send(result);
         scheduleTree();
     }
-    private void send(String message) { if (control != null) control.send(message); }
+    private void send(String message) { if (link.control != null) link.control.send(message); }
     private static String packet(Object... fields) {
         JSONObject result = new JSONObject();
         try { for (int i = 0; i < fields.length; i += 2) result.put((String) fields[i], fields[i + 1]); }
@@ -531,6 +569,8 @@ public final class PhoneProjectionService extends Service {
 
     private void releaseProjection() {
         live = false;
+        link.abandonAction();
+        cancelTree();
         agent = false;
         framesReady = false;
         sharingAccepted = false;
@@ -548,14 +588,6 @@ public final class PhoneProjectionService extends Service {
         stopForeground(STOP_FOREGROUND_REMOVE);
     }
 
-    private void discardSockets() {
-        WebSocket host = control, video = media;
-        control = null;
-        media = null;
-        if (host != null) host.close(1000, null);
-        if (video != null) video.close(1000, null);
-    }
-
     private void pauseProjection(String reason, String message) {
         if (!sharingAccepted) return;
         if (!resumable) { finish(message); return; }
@@ -563,8 +595,8 @@ public final class PhoneProjectionService extends Service {
         // Queue the pause on the control socket before releasing the screen upload.
         send(packet("type", "projectionPaused", "reason", reason));
         releaseProjection();
-        WebSocket video = media;
-        media = null;
+        WebSocket video = link.media;
+        link.media = null;
         if (video != null) video.close(1000, null);
         change(message);
     }
@@ -574,7 +606,7 @@ public final class PhoneProjectionService extends Service {
         main.removeCallbacks(reconnect);
         if (ticketRequest != null) { ticketRequest.cancel(); ticketRequest = null; }
         send(packet("type", "stop"));
-        discardSockets();
+        link.close();
         releaseProjection();
         requested = null;
         controllerName = null;

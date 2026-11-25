@@ -11,7 +11,7 @@ const tool = (name, description, inputSchema = schema(), readOnlyHint = true) =>
   annotations: { readOnlyHint, openWorldHint: true } });
 
 export const phoneTools = [
-  tool('phone_observe', 'Read the current Android accessibility snapshot: visible text, element hierarchy, window information, numbered controls and screen geometry. Supply since only if you already have that tree revision.', schema({ since: integer })),
+  tool('phone_observe', 'Read the current Android accessibility snapshot: visible text, element hierarchy, window information, numbered controls and screen geometry. Call this again after an uncertain action, then decide the next step from the current state. Supply since only if you already have that tree revision.', schema({ since: integer })),
   tool('phone_apps', 'List apps that can be launched on this authorized Android phone.'),
   tool('phone_act', 'Execute up to 12 steps in order and return the resulting snapshot. Select a control by one or more exact matching fields, or use its id AND revision. When changing screens use expect (app, visible text substring, target, or changed). A failed action or expectation stops the batch. Tap and swipe take normalized coordinates and the screen revision from phone_screenshot.',
     schema({ steps: { type: 'array', items: step, minItems: 1, maxItems: 12 } }, ['steps']), false),
@@ -87,15 +87,21 @@ function waitFor(ctx, read, timeout, signal, label) {
 const observation = (ctx, signal) => waitFor(ctx, ctx.state, 6000, signal,
   'No structured phone state received. Confirm the phone is connected and uses the current Android build.');
 
-async function action(ctx, content, signal) {
-  const ack = await ctx.act(content, signal);
-  if (ack.reason === 'outcomeUnknown') throw Error('手机未确认操作结果。连接恢复后请先检查手机状态，再决定下一步。');
-  if (!ack.ok) throw Error(`Phone action ${ack.reason || 'failed'}`);
+async function action(act, content, signal) {
+  signal.throwIfAborted();
+  const ack = await act(content);
+  signal.throwIfAborted();
+  if (!ack.ok) {
+    const message = ['outcomeUnknown', 'observationRequired'].includes(ack.reason)
+      ? '手机操作结果未确定。请先调用 phone_observe 核对状态，再决定下一步。'
+      : `Phone action ${ack.reason || 'failed'}`;
+    throw Object.assign(Error(message), { operationId: ack.operationId, reason: ack.reason });
+  }
   return ack;
 }
 
-async function execute(ctx, steps, signal) {
-  const completed = [];
+async function execute(ctx, steps, signal, act) {
+  const acknowledged = [], verified = [];
   for (const [index, value] of steps.entries()) {
     signal.throwIfAborted();
     const before = await observation(ctx, signal);
@@ -117,20 +123,29 @@ async function execute(ctx, steps, signal) {
         const { x, y, endX = x, endY = y } = value;
         content = { kind: 'gesture', revision: value.screen, x, y, endX, endY, duration: value.action === 'tap' ? 60 : 240 };
       }
-      await action(ctx, content, signal);
-      completed.push(value.action);
+      const beforeDispatch = ctx.state()?.revision;
+      const ack = await action(act, content, signal);
+      acknowledged.push({ step: index + 1, action: value.action, operationId: ack.operationId });
       const expect = value.action === 'launch' ? { ...value.expect, app: value.app } : value.expect;
-      if (expect) await waitFor(ctx, () => {
-        const state = ctx.state();
-        return state && meets(state, expect, before.revision) ? state : null;
-      }, 5500, signal, 'Expected phone state did not appear');
+      if (expect) {
+        await waitFor(ctx, () => {
+          const state = ctx.state();
+          return state && meets(state, expect, beforeDispatch) ? state : null;
+        }, 5500, signal, 'Expected phone state did not appear');
+        verified.push(index + 1);
+      }
     } catch (error) {
       signal.throwIfAborted();
-      return { error: error.message, step: index + 1, completed, state: ctx.state() };
+      return { error: error.message, step: index + 1, operationId: error.operationId, acknowledged, verified, state: ctx.state() };
     }
   }
-  await action(ctx, { kind: 'inspect' }, signal);
-  return { completed, state: await observation(ctx, signal) };
+  try {
+    await action(act, { kind: 'inspect' }, signal);
+    return { acknowledged, verified, state: await observation(ctx, signal) };
+  } catch (error) {
+    signal.throwIfAborted();
+    return { error: error.message, acknowledged, verified, state: ctx.state() };
+  }
 }
 
 function listNodes(state, root) {
@@ -161,7 +176,7 @@ function listSwipe(state, root) {
     endY: (y1 + length * .24) / height, duration: 320, window: state.window, app: state.app };
 }
 
-async function readList(ctx, args, signal) {
+async function readList(ctx, args, signal, act) {
   const initial = await observation(ctx, signal);
   let state = initial, pages = 0, reason = 'limit';
   const text = new Set(), limit = args.pages ?? 3;
@@ -173,8 +188,11 @@ async function readList(ctx, args, signal) {
     if (pages === limit) break;
     const swipe = listSwipe(state, page.root);
     if (!swipe) { reason = 'listBoundsUnavailable'; break; }
-    const ack = await ctx.act(swipe, signal);
-    if (!ack.ok) { reason = ack.reason; break; }
+    try { await action(act, swipe, signal); }
+    catch (error) {
+      signal.throwIfAborted();
+      return { error: error.message, reason: error.reason, operationId: error.operationId, app: initial.app, pages, text: [...text].slice(0, 200) };
+    }
     const next = await waitFor(ctx, () => {
       const latest = ctx.state();
       if (!latest || latest.revision === state.revision) return null;
@@ -190,10 +208,14 @@ async function readList(ctx, args, signal) {
 }
 
 export async function runPhoneTool(ctx, name, args, callerSignal) {
-  const signal = AbortSignal.any([callerSignal, ctx.signal]);
+  const signal = ctx.begin(callerSignal);
   signal.throwIfAborted();
   if (name === 'phone_observe') {
     if (!shape(args, ['since']) || args.since !== undefined && !Number.isSafeInteger(args.since)) throw Error('Invalid observation arguments');
+    if (ctx.needsObservation()) {
+      await ctx.exclusive(signal, act => action(act, { kind: 'inspect' }, signal));
+      return observation(ctx, signal);
+    }
     const state = await observation(ctx, signal);
     return state.revision === args.since ? { unchanged: true, revision: state.revision, app: state.app, screen: state.screen } : state;
   }
@@ -204,14 +226,15 @@ export async function runPhoneTool(ctx, name, args, callerSignal) {
   }
   if (name === 'phone_apps') {
     if (!shape(args, [])) throw Error('Invalid app list arguments');
-    return ctx.exclusive(async () => ({ apps: (await action(ctx, { kind: 'apps' }, signal)).apps }));
+    return ctx.exclusive(signal, async act => ({ apps: (await action(act, { kind: 'apps' }, signal)).apps }));
   }
   if (name === 'phone_act') {
     if (!shape(args, ['steps']) || !Array.isArray(args.steps) || args.steps.length < 1 || args.steps.length > 12) throw Error('Expected 1 to 12 steps');
     args.steps.forEach(validateStep);
-    return ctx.exclusive(() => execute(ctx, args.steps, signal));
+    return ctx.exclusive(signal, act => execute(ctx, args.steps, signal, act));
   }
+  if (name !== 'phone_read_list') throw Error('未知的手机操作工具');
   if (!shape(args, ['target', 'pages']) || args.target !== undefined && !validTarget(args.target, false) ||
       args.pages !== undefined && (!Number.isInteger(args.pages) || args.pages < 1 || args.pages > 5)) throw Error('Invalid list arguments');
-  return ctx.exclusive(() => readList(ctx, args, signal));
+  return ctx.exclusive(signal, act => readList(ctx, args, signal, act));
 }

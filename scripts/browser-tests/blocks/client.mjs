@@ -11,8 +11,16 @@ export default [
     try {
       for (let i = 0; i < 3; i++) { await b.menu('theme'); visited.push(await b.read("store.get('theme')||'dark'")); }
       c.equal(new Set(visited).size, 3, '深浅与跟随系统均能切换');
-      await b.menu('lang'); c.check(await b.read('I18N.lang') !== original.lang, '语言设置已改变');
-      await b.menu('lang'); c.equal(await b.read('I18N.lang'), original.lang, '语言恢复');
+      await b.menu('lang');
+      // Language selection reloads the PWA. Wait for the new page AND the
+      // authenticated original relay, rather than racing the old DOM.
+      await b.wait(`I18N.lang!==${JSON.stringify(original.lang)}&&authed&&ws?.readyState===1
+        &&!document.querySelector('#sheet.open')`, '语言切换与配对重连', 20000);
+      c.check(await b.read('I18N.lang') !== original.lang, '语言设置已改变');
+      await b.menu('lang');
+      await b.wait(`I18N.lang===${JSON.stringify(original.lang)}&&authed&&ws?.readyState===1
+        &&!document.querySelector('#sheet.open')`, '语言恢复与配对重连', 20000);
+      c.equal(await b.read('I18N.lang'), original.lang, '语言恢复');
     } finally {
       for (let i = 0; i < 3 && await b.read("store.get('theme')||'dark'") !== original.theme; i++) await b.menu('theme');
       if (await b.read('I18N.lang') !== original.lang) await b.menu('lang');

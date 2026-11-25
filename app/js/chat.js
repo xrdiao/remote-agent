@@ -82,7 +82,7 @@ function finishOpenCodeQuestion(message) {
   const pending = openCodeQuestionSubmissions.get(message.requestId);
   if (!pending || message.id != null && pending.id !== message.id) return;
   openCodeQuestionSubmissions.delete(message.requestId);
-  desktopRequests.delete(pending.operationId);
+  desktopOperations.remove(pending.operationId);
   if (message.ok) clearQuestionDraft(pending.id, pending.scope);
   if (pending.scope !== questionScope() || pending.sel !== viewSel) return;
   const form = [...list.querySelectorAll('[data-opencode-question]')].find(form => form.dataset.opencodeQuestion === pending.id);
@@ -446,7 +446,6 @@ function noteSwitch(chat) {
 
 let lastChat = null, mirroredDraft = '';
 const submittedMessages = [], messageTimes = new Map(), generationClocks = new Map();
-const messageScope = () => [currentComputer()?.id || '', currentApp, currentComputer()?.windowId || ''].join('|');
 const generationKey = chat => messageScope() + '|' + (chat?.thread || '');
 let activeGeneration = '';
 function withMessageTimes(chat) {

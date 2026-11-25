@@ -2,8 +2,8 @@ const peerTaskStates = { running: '任务运行中', stopping: '正在停止任�
   cancelled: '任务已停止', timeout: '任务超时且已停止', unknown: '任务结果待确认' };
 
 function peerRelay(computer) {
-  const owner = loadComputers().find(row => row.id === computer.id);
-  const linked = computerSockets.get(computer.key);
+  const owner = computer && loadComputers().find(row => row.id === computer.id && row.key === computer.key);
+  const linked = owner && linkForComputerKey(owner.key);
   const relay = linked?.authed ? linked.relay : owner?.relay;
   if (!owner || !relay) throw new Error(I18N.tr('电脑未连接'));
   return { ...owner, relay };
@@ -36,16 +36,17 @@ function showDeviceControl() {
     <p class="hint">${tr('选择被控设备')}</p>
     <button class="opt" type="button" data-device-computer>${tr('电脑')}</button>
     <button class="opt" type="button" data-device-phone>${tr('手机')}</button>`);
-  $('sheet').querySelector('[data-device-computer]').onclick = showPeerTasks;
-  $('sheet').querySelector('[data-device-phone]').onclick = showPhoneControl;
+  $('sheet').querySelector('[data-device-computer]').onclick = () => showPeerTasks();
+  $('sheet').querySelector('[data-device-phone]').onclick = () => showPhoneControl();
 }
 
-function showPeerTasks() {
+function showPeerTasks(sourceId = currentComputer()?.id) {
   const tr = I18N.tr;
   const computers = loadComputers().filter(row => row.id && (!row.discovery || new URL(row.discovery).origin === location.origin));
   const header = `<h3>${tr('电脑互控')}</h3>`;
   if (computers.length < 2) return openSheet('peer-workspace', header + `<p class="hint">${tr('请先从同一个网页入口配对两台电脑。')}</p>`);
-  const initial = computers.find(row => row.id === currentComputer()?.id) || computers[0];
+  const initial = sourceId == null ? computers[0] : computers.find(row => row.id === sourceId);
+  if (!initial) return openSheet('peer-workspace', header + `<p class="hint">${esc(tr('所选电脑未在此网页入口配对。'))} · ${esc(sourceId)}</p>`);
   openSheet('peer-workspace', header + `<form id="peerWorkspace">
     <label class="opt"><span class="lbl">${tr('发起电脑')}</span><select name="source">${peerOptions(computers, initial.id)}</select></label>
     <label class="opt"><span class="lbl">${tr('目标电脑')}</span><select name="target">${peerOptions(computers.filter(row => row.id !== initial.id), '', computers)}</select></label>

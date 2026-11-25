@@ -45,6 +45,18 @@ const savedUrl = () => String(readState().relayUrl || '').replace(/\/$/, '');
 const savedPid = () => { try { return Number(fs.readFileSync(pidPath, 'utf8').trim()); } catch { return 0; } };
 const logText = () => { try { return fs.readFileSync(logPath, 'utf8'); } catch { return ''; } };
 const loggedUrl = () => logText().match(/https:\/\/[a-z0-9-]+\.trycloudflare\.com/)?.[0] || '';
+// The Cloudflare edge may be connected before its new random hostname propagates
+// through the recursive DNS cache. Do not churn a live connection every 60 s.
+export function tunnelTransportConnected(log) {
+  const lines = String(log).split(/\r?\n/);
+  let active = false;
+  for (const line of lines) {
+    if (/Registered tunnel connection/.test(line)) active = true;
+    if (/Unregistered tunnel connection|no more connections active|Tunnel server stopped/.test(line)) active = false;
+  }
+  return active;
+}
+
 async function tunnelReady(url) {
   if (!url) return false;
   try {
@@ -88,7 +100,14 @@ function publishTunnel(state) {
 function announceTunnel(state) {
   if (state.announced) return;
   state.announced = true;
+  const old = savedUrl();
   rememberTunnel(state.url, state.pid);
+  if (old && old !== state.url && quickUrl(old)) {
+    const warning = { previous: old, current: state.url, at: Date.now(),
+      requiresClientUpdate: true, explanation: 'Quick Tunnel 域名已变化；旧地址上的 MCP OAuth 客户端须更新 Server URL 并重新授权。要保持固定地址需要 Named Tunnel。' };
+    fs.writeFileSync(path.join(DATA_DIR, 'tunnel-address-change.json'), JSON.stringify(warning, null, 2), { mode: 0o600 });
+    console.warn('!! Cloudflare Quick Tunnel 地址已变化；请更新 ChatGPT 自定义 MCP 地址后重新配对。');
+  }
   console.log(`\n公网地址：${state.url}`);
   if (PUBLISH_REPO) publishTunnel(state);
   else {
@@ -137,7 +156,16 @@ async function checkTunnel() {
     if (tunnel !== state) return;
     if (ready && state.url) { state.unhealthyAt = 0; announceTunnel(state); return; }
     state.unhealthyAt ||= Date.now();
-    // Let cloudflared recover brief network interruptions before replacing its origin.
+    if (state.owned && tunnelTransportConnected(logText())) {
+      // Registered transport but public hostname not yet ready: the route can
+      // return Cloudflare 530 or NXDOMAIN until the DNS record is visible.
+      if (!state.propagationNotice && Date.now() - state.unhealthyAt >= 15000) {
+        console.log('!! Cloudflare 已连接，但临时域名尚不可访问；等待 DNS / Edge 路由传播，不强制换地址。');
+        state.propagationNotice = true;
+      }
+      return;
+    }
+    // Only replace a transport that is genuinely disconnected for a minute.
     if (state.owned && Date.now() - state.unhealthyAt >= 60000) {
       console.log('!! 隧道持续未就绪，正在重新建立连接。');
       state.restarting = true;

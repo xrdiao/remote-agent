@@ -22,16 +22,16 @@ export class OpenCodeClient {
       if (value != null) url.searchParams.set(key, value);
     const result = await fetch(url, { method, signal,
       ...(body !== undefined ? { headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) } : {}) });
-    if (!result.ok) throw new Error(`OpenCode ${result.status}: ${await result.text()}`);
+    if (!result.ok) throw Object.assign(new Error(`OpenCode ${result.status}: ${await result.text()}`), { status: result.status });
     if (response) return result;
     return result.status === 204 ? null : result.json();
   }
 
-  async sessions() {
+  async sessions(signal) {
     const rows = [];
     let cursor;
     do {
-      const result = await this.request('/experimental/session', { query: { limit: 100, cursor }, response: true });
+      const result = await this.request('/experimental/session', { query: { limit: 100, cursor }, signal, response: true });
       rows.push(...await result.json());
       cursor = result.headers.get('x-next-cursor');
     } while (cursor);

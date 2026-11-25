@@ -1,16 +1,14 @@
 import fs from 'node:fs';
-import crypto from 'node:crypto';
 import { computerId } from '../../lib/auth.mjs';
 import { workspaces } from '../../lib/files.mjs';
 import { safeHomePath, projectList, createProjectFolder } from '../agent/projects.mjs';
-import { fusionRuns, fusionViewers, fusionLive, savedFusion, findFusionRun, allFusionRuns, newFusionRun, fusionProject,
-  publishFusion, subscribeFusion, fusionSummary, fusionEvent, NATIVE_UNSETTLED, assertFusionReady } from './state.mjs';
-import { fusionRunner } from './runner.mjs';
+import { fusionState, savedFusion, findFusionRun, allFusionRuns, newFusionRun, fusionProject,
+  commitFusion, fusionEvent, assertFusionReady } from './state.mjs';
+import { fusionBindingView, fusionControllerView, fusionRunView, safeFusionControllerView } from './presenter.mjs';
+import { fusionRunner, fusionRuntime } from './runner.mjs';
 import { FUSION_TIERS, validateExecution } from './cost.mjs';
-import { fusionPendingReviews } from './control.mjs';
 import { nativeAgentProvider } from './providers.mjs';
 import { FusionAgent } from './agent.mjs';
-import { indexFusionRun } from './run-index.mjs';
 
 function requestedRun(session, message) {
   if (message.computer && message.computer !== computerId()) throw new Error('Fusion 请求不属于这台电脑');
@@ -30,175 +28,6 @@ function mainOf(value) {
   if (!value?.app || !nativeAgentProvider(value.app).controller) throw new Error('请选择提供原生主控工具的软件');
   return { app: value.app, model: String(value.model || ''), effort: String(value.effort || '') };
 }
-function nativeInteractions(run) {
-  return run.tasks.flatMap(task => {
-    const attempt = run.attempts.findLast(row => row.taskId === task.id);
-    const live = attempt && !attempt.endedAt && fusionLive.get(attempt.bindingId);
-    if (!live) return [];
-    const requests = live.chat?.questions?.codex ? live.chat.questions.requests || [] : [];
-    const questions = live.chat?.questions?.codex ? null : live.chat?.questions;
-    const openCodeQuestions = attempt.app === 'opencode' ? live.chat.items.filter(row => row.k === 'opencodeQuestion') : [];
-    const items = (live.chat?.items || []).flatMap(item => {
-      const key = item.btnItem || item.i, waiting = live.state?.waiting;
-      if (attempt.app === 'cursor') {
-        if (!item.approvalId || !live.state?.waitingToolIds?.includes(item.approvalId)) return [];
-        const buttons = (item.b || []).flatMap((label, n) => {
-          const actionId = item.actions?.[n];
-          return [item.approvalId + ':accept', item.approvalId + ':reject'].includes(actionId) ? [{ label, n, actionId }] : [];
-        });
-        return buttons.length ? [{ i: item.i, btnItem: key, buttons }] : [];
-      }
-      if (typeof waiting !== 'string' || !waiting.startsWith(key + ':')) return [];
-      const labels = waiting.slice(key.length + 1).split('/');
-      const buttons = (item.b || []).flatMap((label, n) => labels.includes(label) ? [{ label, n, actionId: item.actions?.[n] || '' }] : []);
-      return buttons.length ? [{ i: item.i, btnItem: key, buttons }] : [];
-    });
-    if (!requests.length && !questions?.list?.length && !items.length && !openCodeQuestions.length) return [];
-    return [{ id: attempt.id, taskId: task.id, workId: task.workId, goal: task.goal, app: attempt.app,
-      attemptId: attempt.id, bindingId: attempt.bindingId, native: attempt.native, items, requests, questions,
-      ...(openCodeQuestions.length ? { openCodeQuestions } : {}) }];
-  });
-}
-function taskSummaries(run, taskId, index) {
-  const assignments = index('assignments', 'taskId');
-  const attempts = index('attempts', 'taskId');
-  const works = index('works');
-  return run.tasks.map(task => {
-    const assignment = assignments.get(task.id), attempt = attempts.get(task.id), work = works.get(task.workId);
-    const needsUser = task.status === 'awaiting_user' && !attempt?.endedAt
-      || run.questions.some(row => row.taskId === task.id && !row.answeredAt);
-    const state = needsUser ? 'wait' : ['failed', 'unknown', 'stopped'].includes(task.status) ? 'err'
-      : task.status === 'accepted' ? 'done' : ['running', 'preparing', 'submitting', 'stopping'].includes(task.status) ? 'run' : 'idle';
-    return { id: task.id, workId: task.workId, goal: task.goal, status: task.status, access: task.access,
-      dependsOn: task.dependsOn, workerId: task.workerId, executor: task.executor,
-      app: assignment?.app, model: assignment?.model, effort: assignment?.effort, state, needsUser,
-      attemptCount: task.attemptIds.length, attemptId: attempt?.id, bindingId: attempt?.bindingId,
-      updated: Math.max(task.updated || 0, attempt?.endedAt || attempt?.acceptedAt || attempt?.created || 0, task.reviews.at(-1)?.at || 0,
-        ...task.inputs.map(row => row.deliveredAt || row.created || 0),
-        ...run.events.filter(row => row.taskId === task.id || row.data?.taskId === task.id).map(row => row.at)),
-      ...(task.id === taskId ? { summary: taskProgress(attempt, work, task) } : {}) };
-  });
-}
-function taskProgress(attempt, work, task) {
-  const before = attempt?.baseline, after = attempt?.changes;
-  // A directory snapshot has no per-file hashes for tracked descendants. Do not present a guessed count.
-  const files = before?.available && after?.available && ![...before.files, ...after.files].some(row => row.directory)
-    ? after.files.filter(row => {
-      const old = before.files.find(value => value.path === row.path);
-      return old && (row.exists !== old.exists || row.sha256 !== old.sha256);
-    }).length : null;
-  return { text: (attempt?.result?.error || attempt?.result?.text || '').slice(0, 400), files,
-    durationMs: attempt?.durationMs ?? null, submission: attempt?.submission || 'not_submitted',
-    acceptedAt: attempt?.acceptedAt, endedAt: attempt?.endedAt, completed: attempt?.result?.completed ?? null,
-    reviewedAt: attempt?.reviewedAt, delivered: work?.status === 'completed' && task.status === 'accepted' };
-}
-function mainCommandOrigin(run, action, field, id) {
-  const command = run.commands.find(row => row.action === action && row.result[field] === id);
-  if (!command) return;
-  return { ...command.native,
-    messageId: run.attempts.find(row => row.kind === 'main' && row.native?.turnId === command.native.turnId)?.native.messageId };
-}
-function taskBoard(run, tasks) {
-  return { tasks, nativeInteractions: nativeInteractions(run),
-    agents: run.agents.map(({ id, label, bindingId }) => ({ id, label, bindingId })),
-    assignments: run.tasks.map(task => run.assignments.findLast(row => row.taskId === task.id)).filter(Boolean)
-      .map(({ taskId, app, model, effort }) => ({ taskId, app, model, effort })),
-    dispatches: run.commands.filter(row => row.action === 'dispatch' || row.action === 'continue_task' && run.tasks.find(task => task.id === row.result.taskId)?.executor !== 'main').map(row => ({
-      id: row.id, action: row.action, native: { ...row.native,
-        messageId: run.attempts.find(attempt => attempt.kind === 'main' && attempt.native?.turnId === row.native.turnId)?.native.messageId }, at: row.appliedAt,
-      tasks: (row.result.tasks || [row.result]).map(({ taskId, attemptId }) => ({ taskId, attemptId })) })),
-    questions: run.questions.map(row => ({ ...row, native: mainCommandOrigin(run, 'ask_user', 'questionId', row.id),
-      answerNative: run.events.find(event => event.id === row.inputId)?.data.native })),
-    works: run.works.map(work => ({ id: work.id, title: work.title, goal: work.goal, status: work.status, project: work.project,
-      planId: work.planId, plans: work.plans.filter(row => row.id === work.planId).map(row => ({ ...row,
-        native: mainCommandOrigin(run, 'plan', 'planId', row.id) })),
-      deliveries: work.deliveries.map((row, index) => ({ index, summary: row.summary })) })) };
-}
-function controllerView(run, tasks, index) {
-  const { app, model, effort, bindingId, windowId, preparing, error, projectTrust } = run.main;
-  const counts = { run: 0, wait: 0, done: 0, err: 0, idle: 0 };
-  for (const task of tasks) counts[task.state]++;
-  const attention = run.questions.filter(row => !row.answeredAt).map(row => ({ kind: 'question', workId: row.workId,
-    taskId: row.taskId, questionId: row.id, text: row.text.slice(0, 200) }));
-  for (const work of run.works) {
-    const plan = work.plans.find(row => row.id === work.planId);
-    if (plan && !plan.confirmed && !plan.decision) attention.push({ kind: 'plan', workId: work.id, planId: plan.id, text: work.title });
-  }
-  for (const task of tasks.filter(row => row.needsUser)) if (!attention.some(row => row.taskId === task.id))
-    attention.push({ kind: 'native', workId: task.workId, taskId: task.id, text: task.goal });
-  const tasksById = new Map(tasks.map(task => [task.id, task])), worksById = index('works');
-  const attemptsById = index('attempts');
-  const executing = run.attempts.filter(row => !row.endedAt && (row.status === 'queued' || NATIVE_UNSETTLED.includes(row.status)));
-  const unknown = executing.find(row => row.status === 'unknown');
-  const pending = tasks.length ? fusionPendingReviews(run, index).filter(row => !['stopped', 'cancelled'].includes(tasksById.get(row.taskId)?.status)) : [];
-  const failure = pending.find(row => row.outcome === 'failed');
-  const currentAttempt = unknown || executing.findLast(row => row.kind === 'main') || executing.at(-1)
-    || attemptsById.get((failure || pending[0])?.attemptId);
-  const currentTask = tasks.find(row => row.needsUser) || tasksById.get(currentAttempt?.taskId);
-  const currentWork = worksById.get(currentAttempt?.workExecutions?.at(-1)?.workId || currentAttempt?.workId);
-  const currentInput = currentAttempt?.kind === 'main' ? run.events.findLast(event => event.type === 'user_input'
-    && (currentAttempt.native?.turnId && event.data.native?.turnId === currentAttempt.native.turnId || currentAttempt.eventIds?.includes(event.id))) : null;
-  const current = currentTask ? { text: currentTask.goal,
-    status: currentAttempt?.taskId === currentTask.id ? currentAttempt.status : currentTask.status, needsUser: currentTask.needsUser }
-    : currentAttempt ? { text: currentWork?.title || currentInput?.data.text?.slice(0, 200) || run.title,
-      status: currentAttempt.status, needsUser: false } : null;
-  const state = attention.length || run.status === 'awaiting_user' ? 'wait'
-    : ['blocked', 'stopped'].includes(run.status) ? 'err' : ['recovering', 'stopping'].includes(run.status) ? 'run'
-      : unknown ? 'err' : executing.length || preparing ? 'run' : failure ? 'err'
-        : run.works.length && run.works.every(row => row.status === 'completed') ? 'done' : pending.length ? 'run' : 'idle';
-  const settled = !run.main.preparing && !['running', 'recovering', 'stopping', 'awaiting_user'].includes(run.status)
-    && !run.attempts.some(row => row.status === 'queued' || NATIVE_UNSETTLED.includes(row.status));
-  const resultKey = settled && ['done', 'err'].includes(state) ? crypto.createHash('sha256').update(JSON.stringify([
-    state, run.status, run.blockedReason, run.attempts.map(row => [row.id, row.status, row.endedAt]),
-    run.works.map(work => [work.id, work.status, work.deliveries.map(row => [row.mainAttemptId, row.nativeTurnId, row.endedAt])]),
-  ])).digest('hex') : '';
-  const binding = run.bindings.find(row => row.id === bindingId);
-  const nativeWindowId = binding && (binding.app === 'codex' || binding.windowId.startsWith(binding.app + ':')
-    ? binding.windowId : `${binding.app}:${binding.windowId}`);
-  const target = binding ? { computer: run.computer, win: binding.app === 'codex' ? 'codex' : nativeWindowId,
-    windowId: nativeWindowId, threadId: binding.threadId, project: { root: binding.project.root, host: binding.host || '' } } : null;
-  return { ...fusionSummary(run), main: { app, model, effort, bindingId, windowId, preparing, error, projectTrust, target },
-    internalInputs: run.attempts.filter(row => row.kind === 'main' && row.origin === 'events' && row.native?.messageId)
-      .map(row => ({ threadId: row.native.threadId, messageId: row.native.messageId })),
-    overview: { state, resultKey, counts, apps: [...new Set([app, ...tasks.map(row => row.app)].filter(Boolean))], attention,
-      current } };
-}
-export function fusionControllerView(run) {
-  const index = indexFusionRun(run);
-  return controllerView(run, taskSummaries(run, undefined, index), index);
-}
-export function fusionRunView(run, view) {
-  const index = indexFusionRun(run);
-  const tasks = taskSummaries(run, view.kind === 'task' ? view.taskId : undefined, index);
-  const base = { ...controllerView(run, tasks, index), revision: run.revision };
-  if (view.kind === 'config') return { ...base, budget: run.budget,
-    capabilities: [...new Set(run.capabilities.map(row => row.app))].map(app => {
-      const row = run.capabilities.find(row => row.app === app);
-      return { app, models: row.models };
-    }) };
-  if (view.kind === 'input') return { ...base, questions: run.questions.filter(row => row.id === view.questionId) };
-  if (view.kind === 'tasks') return { ...base, ...taskBoard(run, tasks) };
-  const task = run.tasks.find(row => row.id === view.taskId);
-  if (view.kind === 'inputs') return { inputs: task.inputs,
-    assignments: run.assignments.filter(row => row.taskId === task.id).map(({ id, input, created }) => ({ id, input, created })) };
-  if (view.kind === 'reviews') return { reviews: task.reviews };
-  if (view.kind === 'attempt') {
-    const { prompt, beforeIds, ...attempt } = run.attempts.find(row => row.id === view.attemptId);
-    return { ...attempt, cost: run.assignments.find(row => row.id === attempt.assignmentId)?.cost,
-      events: run.events.filter(row => row.data?.attemptId === attempt.id) };
-  }
-  if (view.kind === 'delivery') return run.works.find(row => row.id === view.workId).deliveries[view.index];
-  if (view.kind !== 'task') throw new Error('未知 Fusion 视图');
-  const agent = run.agents.find(row => row.id === task.workerId);
-  const attempts = run.attempts.filter(row => row.taskId === task.id), latest = attempts.at(-1);
-  const bindingId = latest?.bindingId || agent?.bindingId;
-  return { ...base, board: taskBoard(run, tasks), tasks: [tasks.find(row => row.id === task.id)],
-    agents: agent ? [{ id: agent.id, bindingId: agent.bindingId }] : [],
-    bindings: run.bindings.filter(row => row.id === bindingId),
-    attempts: attempts.map(attempt => ({ id: attempt.id, taskId: attempt.taskId, bindingId: attempt.bindingId,
-      app: attempt.app, model: attempt.model, effort: attempt.effort, status: attempt.status })) };
-
-}
 function fusionView(message, kind = 'config') {
   return { kind: message.view || kind, subscriptionId: message.subscriptionId || message.requestId,
     taskId: message.taskId, workId: message.workId, questionId: message.questionId,
@@ -210,51 +39,44 @@ function emitFusionView(session, run, message, type = 'fusionState') {
     view, run: fusionRunView(run, view), ...(run.main.projectTrust ? { projectTrust: run.main.projectTrust } : {}) });
 }
 async function prepare(session, run, message, project = false) {
-  if (run.main.preparing) throw new Error('主 Agent 正在准备，请等待当前操作结果');
   const runner = fusionRunner(run);
-  run.main.preparing = true; publishFusion(run);
-  try {
-    if (project || !run.main.windowId) {
-      const result = await runner.agent.prepareProject(run, message);
-      if (result.trust || result.declined) {
-        run.main.projectTrust = result.trust || null;
-        run.main.error = result.declined ? '项目保持限制模式，尚未启用主 Agent' : '';
-        return;
+  await runner.setup(async () => {
+    try {
+      if (project || !run.main.windowId) {
+        const result = await runner.agent.prepareProject(run, message);
+        if (result.trust || result.declined) {
+          runner.commit(next => {
+            next.main.projectTrust = result.trust || null;
+            next.main.error = result.declined ? '项目保持限制模式，尚未启用主 Agent' : '';
+          });
+          return;
+        }
       }
+      const snapshot = await runner.agent.capabilities(run, run.main.app);
+      runner.commit(next => {
+        delete next.main.projectTrust;
+        next.capabilities.unshift(snapshot);
+        next.main.error = '';
+      });
+    } catch (error) {
+      if (error.fusionStoreError) throw error;
+      runner.commit(next => { next.main.error = error.message; });
     }
-    delete run.main.projectTrust;
-    const snapshot = await runner.agent.capabilities(run, run.main.app);
-    run.capabilities.unshift(snapshot);
-    run.main.error = '';
-  } catch (error) { run.main.error = error.message; }
-  finally {
-    run.main.preparing = false; publishFusion(run);
-    emitFusionView(session, run, message);
-  }
+  });
+  emitFusionView(session, run, message);
 }
-subscribeFusion(run => {
-  for (const viewer of fusionViewers) {
-    viewer.emit({ t: 'fusionUpdate', computer: run.computer, run: fusionControllerView(run) });
-    if (run.removedAt) {
-      if (viewer.fusionDetail?.runId === run.id) viewer.fusionDetail = null;
-      if (viewer.fusionRun?.id === run.id) viewer.fusionRun = null;
-      continue;
-    }
-    if (viewer.fusionDetail?.runId === run.id) {
-      const view = viewer.fusionDetail.view;
-      viewer.emit({ t: 'fusionState', computer: run.computer, runId: run.id, view, run: fusionRunView(run, view) });
-    }
-  }
-});
 export async function manageFusionWorkbench(body) {
   const run = requestedRun({}, { computer: body.computer, runId: body.threadId });
   if (body.action === 'rename') {
     const title = String(body.name || '').trim().slice(0, 80);
     if (!title) throw new Error('工作台名称不能为空');
-    const renamed = await fusionRunner(run).agent.renameMain(run, title);
-    run.title = renamed.title; publishFusion(run);
+    const runner = fusionRunner(run);
+    await runner.setup(async () => {
+      const renamed = await runner.agent.renameMain(run, title);
+      runner.commit(next => { next.title = renamed.title; });
+    });
   } else if (body.action === 'favorite') {
-    run.favorite = body.favorite === true; publishFusion(run);
+    commitFusion(run, next => { next.favorite = body.favorite === true; });
   } else if (body.action === 'stop') await fusionRunner(run).stop();
   else if (body.action === 'remove') await fusionRunner(run).remove();
   else throw new Error('不支持的工作台操作');
@@ -269,23 +91,21 @@ export const FUSION_OWNER = {
       return project && [project.id, project];
     }).filter(Boolean)).values()];
     this.emit({ t: 'fusionWorkspace', computer: computerId(), requestId: message.requestId,
-      current: fusionRuns[this.deviceId]?.current || '',
-      runs: allFusionRuns().map(fusionControllerView).sort((a, b) => b.updated - a.updated),
-      projects, apps: await new FusionAgent().softwareCapabilities(),
+      current: savedFusion(this.deviceId).current || '',
+      runs: allFusionRuns().map(run => safeFusionControllerView(run)).filter(Boolean).sort((a, b) => b.updated - a.updated),
+      projects, apps: await new FusionAgent({ adapterRegistry: fusionRuntime.adapterRegistry }).softwareCapabilities(),
       ...(message.path !== undefined ? { browse: projectList(message.path) } : {}) });
   },
   fusionCreate(message, emit = true) {
     assertFusionReady();
     if (message.computer !== computerId()) throw new Error('新建主工作台前必须明确执行电脑');
     if (!message.requestId) throw new Error('新建主工作台缺少请求身份');
-    const previous = fusionRuns[this.deviceId]?.runs.find(run => run.createRequestId === message.requestId);
+    const previous = savedFusion(this.deviceId).runs.find(run => run.createRequestId === message.requestId);
     if (previous) return previous;
     const tier = message.tier || 'balanced';
     if (!FUSION_TIERS[tier]) throw new Error('请选择省钱、均衡或性能档位');
-    const run = newFusionRun(this.deviceId, projectOf(message.project), mainOf(message.main), tier);
-    run.createRequestId = message.requestId;
-    const saved = savedFusion(this.deviceId); saved.runs.push(run); saved.current = run.id;
-    publishFusion(run);
+    const run = fusionState.create({ ...newFusionRun(this.deviceId, projectOf(message.project), mainOf(message.main), tier),
+      createRequestId: message.requestId });
     if (emit) emitFusionView(this, run, message, 'fusionCreated');
     return run;
   },
@@ -297,7 +117,7 @@ export const FUSION_OWNER = {
       run = requestedRun(this, message);
       if (run.main.bindingId) throw new Error('主会话保留实际项目；其他项目可在主对话建立工作项');
     } else {
-      const previous = fusionRuns[this.deviceId]?.runs.find(value => value.createRequestId === message.requestId);
+      const previous = savedFusion(this.deviceId).runs.find(value => value.createRequestId === message.requestId);
       if (previous) return emitFusionView(this, previous, message, 'fusionCreated');
       const root = message.action === 'newProject' ? createProjectFolder(message.parent, String(message.name || '').trim()) : message.path;
       run = this.fusionCreate({ ...message, project: { root, host: '' } }, false);
@@ -318,47 +138,54 @@ export const FUSION_OWNER = {
   },
   async fusionConfigure(message) {
     const run = requestedRun(this, message), runner = fusionRunner(run);
-    const previous = JSON.stringify({ tier: run.tier, budget: run.budget });
-    if (message.main) {
-      const main = mainOf(message.main);
-      validateExecution(run, main);
-      if (run.main.bindingId && main.app !== run.main.app) throw new Error('更换主软件请新建工作台，已有主会话保留');
-      if (run.main.bindingId && (main.model !== run.main.model || main.effort !== run.main.effort))
-        throw new Error('已启用主 Agent 的模型与强度请使用普通原生模型菜单修改');
-      if (main.app !== run.main.app) {
-        runner.agent.releaseMainProject(run); run.main.windowId = ''; run.main.error = ''; run.main.projectTrust = null;
+    await runner.setup(async () => {
+      const previous = JSON.stringify({ tier: run.tier, budget: run.budget });
+      const main = message.main && mainOf(message.main);
+      if (main) {
+        validateExecution(run, main);
+        if (run.main.bindingId && main.app !== run.main.app) throw new Error('更换主软件请新建工作台，已有主会话保留');
+        if (run.main.bindingId && (main.model !== run.main.model || main.effort !== run.main.effort))
+          throw new Error('已启用主 Agent 的模型与强度请使用普通原生模型菜单修改');
       }
-      Object.assign(run.main, main);
-    }
-    if (message.tier) {
-      if (!FUSION_TIERS[message.tier]) throw new Error('未知成本档位');
-      run.tier = message.tier;
-    }
-    if (message.budget !== undefined) {
-      if (message.budget !== null && (!(message.budget.limit > 0) || !message.budget.unit)) throw new Error('显式预算需要正数限额和原生单位');
-      run.budget = message.budget;
-    }
-    publishFusion(run);
-    if (message.enable) {
-      if (!run.main.model) throw new Error('请先选择主模型与思考强度');
-      await runner.agent.prepareMain(run);
-      const renamed = await runner.agent.renameMain(run, run.title);
-      run.title = renamed.title; publishFusion(run);
-      await runner.start();
-    } else if (run.main.bindingId && previous !== JSON.stringify({ tier: run.tier, budget: run.budget })) {
-      fusionEvent(run, 'configuration', { tier: run.tier, budget: run.budget });
-      publishFusion(run); runner.wake();
-    }
+      const switching = main && main.app !== run.main.app;
+      if (switching && run.main.creations?.some(row => ['creating', 'unknown'].includes(row.status)))
+        throw new Error('原生创建结果待核对，暂时无法更换主软件');
+      runner.commit(next => {
+        if (switching) Object.assign(next.main, { windowId: '', error: '', projectTrust: null });
+        if (main) Object.assign(next.main, main);
+        if (message.tier) {
+          if (!FUSION_TIERS[message.tier]) throw new Error('未知成本档位');
+          next.tier = message.tier;
+        }
+        if (message.budget !== undefined) {
+          if (message.budget !== null && (!(message.budget.limit > 0) || !message.budget.unit)) throw new Error('显式预算需要正数限额和原生单位');
+          next.budget = message.budget;
+        }
+        if (!message.enable && next.main.bindingId && previous !== JSON.stringify({ tier: next.tier, budget: next.budget }))
+          fusionEvent(next, 'configuration', { tier: next.tier, budget: next.budget });
+      });
+      if (switching) runner.agent.releaseMainProject(run);
+      if (message.enable) {
+        if (!run.main.model) throw new Error('请先选择主模型与思考强度');
+        await runner.agent.prepareMain(run);
+        const renamed = await runner.agent.renameMain(run, run.title);
+        if (renamed.title !== run.title) runner.commit(next => { next.title = renamed.title; });
+        await runner.start();
+      } else runner.wake();
+    });
     emitFusionView(this, run, message);
   },
   fusionPrepare(message) {
-    const run = requestedRun(this, message);
+    const run = requestedRun(this, message), runner = fusionRunner(run);
+    if (runner.settingUp) throw new Error('主 Agent 正在准备，请等待当前操作结果');
     if (message.main) {
       if (run.main.bindingId) throw new Error('已有主会话保留，请使用普通原生模型菜单');
       const main = mainOf(message.main);
       if (main.app !== run.main.app) {
-        fusionRunner(run).agent.releaseMainProject(run);
-        Object.assign(run.main, main, { windowId: '', error: '', projectTrust: null });
+        if (run.main.creations?.some(row => ['creating', 'unknown'].includes(row.status)))
+          throw new Error('原生创建结果待核对，暂时无法更换主软件');
+        runner.commit(next => Object.assign(next.main, main, { windowId: '', error: '', projectTrust: null }));
+        runner.agent.releaseMainProject(run);
       }
     }
     return prepare(this, run, message);
@@ -377,12 +204,12 @@ export const FUSION_OWNER = {
   fusionResume(message) { return fusionRunner(requestedRun(this, message)).resume(); },
   async fusionNative(message) {
     const run = requestedRun(this, message);
-    await fusionRunner(run).agent.nativeAction(run, message.attemptId, message.action);
+    await fusionRunner(run).agent.nativeAction(run, message.attemptId, message.action, message.requestId);
   },
   async fusionContent(message) {
     const run = requestedRun(this, message);
-    const result = await fusionRunner(run).agent.readBinding(run, message.bindingId, message.history, message.before);
-    this.emit({ t: 'fusionContent', computer: run.computer, runId: run.id, requestId: message.requestId, ...result });
+    const { binding, chat } = await fusionRunner(run).agent.readBinding(run, message.bindingId, message.history, message.before);
+    this.emit({ t: 'fusionContent', computer: run.computer, runId: run.id, requestId: message.requestId, binding: fusionBindingView(binding), chat });
   },
   fusionEmit() {
     if (this.app !== 'fusion') return;

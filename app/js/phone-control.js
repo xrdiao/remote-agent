@@ -39,58 +39,80 @@ function phoneSocket(relay, ticket) {
   return socket;
 }
 
-function showPhoneControl() {
+function showPhoneControl(sourceId) {
+  closePhoneControl();
   const tr = I18N.tr;
-  const computers = loadComputers().filter(computer => computer.token);
+  const scoped = sourceId !== undefined;
+  const computers = loadComputers().filter(computer => computer.token && (!scoped ||
+    computer.id === sourceId && (!computer.discovery || new URL(computer.discovery).origin === location.origin)));
   const nativeHost = typeof window.AgentRemoteApp?.openPhoneControl === 'function';
   openSheet('phone-control', `<h3>${tr('手机控制')}</h3>
     <div class="phone-picker">
-      <label>中继<select data-phone-relay></select></label>
-      ${nativeHost ? '<button type="button" data-phone-host>使用这台手机</button>' : ''}
-      <button type="button" data-phone-refresh>刷新手机</button>
+      <label>${tr('发起电脑')}<select data-phone-relay${scoped || !computers.length ? ' disabled' : ''}></select></label>
+      ${nativeHost && computers.length ? `<button type="button" data-phone-host>${tr('使用这台手机')}</button>` : ''}
+      <button type="button" data-phone-refresh${computers.length ? '' : ' disabled'}>${tr('刷新手机')}</button>
     </div>
+    <p class="hint ra-identity" data-phone-source></p>
     <div data-phone-list></div>
     <p class="hint" data-phone-status role="status"></p>`);
   const sheet = $('sheet'), select = sheet.querySelector('[data-phone-relay]'), status = sheet.querySelector('[data-phone-status]');
-  const list = sheet.querySelector('[data-phone-list]');
+  const list = sheet.querySelector('[data-phone-list]'), identity = sheet.querySelector('[data-phone-source]');
+  const open = () => sheetKind === 'phone-control' && sheet.classList.contains('open') && list.isConnected;
   for (const computer of computers) select.add(new Option(computer.name, computer.id));
-  if (computers.some(row => row.id === currentComputer()?.id)) select.value = currentComputer().id;
-  const carrier = () => peerRelay(computers.find(row => row.id === select.value));
+  const initial = scoped ? sourceId : currentComputer()?.id;
+  if (computers.some(row => row.id === initial)) select.value = initial;
+  const selected = () => computers.find(row => row.id === (scoped ? sourceId : select.value));
+  const carrier = () => peerRelay(selected());
+  const showIdentity = computer => {
+    identity.textContent = [computer?.name, computer?.id || sourceId,
+      computer?.device && `${tr('配对设备 ID')} ${computer.device}`].filter(Boolean).join(' · ');
+  };
   let request = 0;
   const refresh = async () => {
+    if (!open()) return;
     const generation = ++request;
     list.replaceChildren();
-    if (!computers.length) { status.textContent = '请先在此浏览器配对一台中继电脑。'; return; }
+    const computer = selected();
+    showIdentity(computer);
+    if (!computer) {
+      status.textContent = tr(scoped ? '所选电脑未在此网页入口配对。' : '请先在此浏览器配对一台中继电脑。');
+      return;
+    }
     status.textContent = '正在查找手机…';
     try {
-      const relay = carrier(), { phones, conversations } = await phoneRequest(relay);
-      if (!list.isConnected || generation !== request) return;
+      const relay = carrier();
+      showIdentity(relay);
+      const { phones, conversations } = await phoneRequest(relay);
+      const current = () => open() && generation === request && selected()?.id === relay.id;
+      if (!current()) return;
       if (!Array.isArray(conversations)) throw new Error('请更新当前中继以使用手机控制会话。');
+      if (conversations.some(target => target.computer !== relay.id)) throw new Error(tr('返回结果的电脑身份不匹配'));
       status.textContent = phones.length || conversations.length ? '' : '请在 Android App 里选择同一中继并设为可被控。';
       for (const target of conversations) {
         const button = document.createElement('button');
         button.type = 'button';
         button.className = 'opt';
         button.textContent = `${target.name} · ${tr('打开会话')}`;
-        button.onclick = () => openPhoneConversation(target);
+        button.onclick = () => { if (current()) openPhoneConversation(relay, target); };
         list.append(button);
       }
       for (const phone of phones) {
         const button = document.createElement('button');
         button.type = 'button';
         button.className = 'opt';
-        button.textContent = phone.conversation ? phone.name : `${phone.name} · ${tr('请更新 Android App')}`;
+        button.innerHTML = `<span class="lbl">${esc(phone.name)}<span class="sub ovRaw">${esc(phone.id)}</span></span>`;
+        if (!phone.conversation) button.querySelector('.sub').textContent += ' · ' + tr('请更新 Android App');
         button.disabled = !phone.conversation;
-        button.onclick = () => requestPhoneConversation(relay, phone);
+        button.onclick = () => { if (current()) requestPhoneConversation(relay, phone); };
         list.append(button);
       }
-    } catch (error) { if (status.isConnected && generation === request) status.textContent = error.message; }
+    } catch (error) { if (open() && generation === request) status.textContent = error.message; }
   };
   select.onchange = refresh;
   sheet.querySelector('[data-phone-refresh]').onclick = refresh;
   const host = sheet.querySelector('[data-phone-host]');
   if (host) host.onclick = () => {
-    if (!computers.length) return;
+    if (!open() || !selected()) return;
     try {
       openPhoneHost(carrier());
     } catch (error) { status.textContent = error.message; }
@@ -102,11 +124,14 @@ function openPhoneHost({ id, relay, token }, session) {
   window.AgentRemoteApp.openPhoneControl(JSON.stringify({ id, relay, token, session }));
 }
 
-function openPhoneConversation(target) {
+function openPhoneConversation(relay, target) {
+  if (target?.computer !== relay.id) return false;
   openWin(JSON.stringify({ ...target, phoneConversation: true }));
+  return true;
 }
 
 async function requestPhoneConversation(relay, phone) {
+  closePhoneControl();
   openSheet('phone-control', `<h3>${esc(phone.name)}</h3><p class="hint" data-phone-status role="status">正在连接…</p>`);
   const status = $('sheet').querySelector('[data-phone-status]');
   const request = phoneConversationRequest = {};
@@ -126,7 +151,7 @@ async function requestPhoneConversation(relay, phone) {
       const message = JSON.parse(data);
       if (message.type === 'waiting') status.textContent = '等待手机用户接受并共享屏幕…';
       if (message.type === 'started') status.textContent = '正在创建手机控制会话…';
-      if (message.type === 'conversation') openPhoneConversation(message.target);
+      if (message.type === 'conversation' && !openPhoneConversation(relay, message.target)) finish(I18N.tr('返回结果的电脑身份不匹配'));
       if (message.type === 'conversationError') finish(message.message);
       if (message.type === 'ended') finish(message.reason === 'rejected' ? '手机拒绝了本次请求。'
         : message.reason === 'approvalExpired' ? '手机未在有效时间内确认。' : '手机远控已结束。');
@@ -212,15 +237,23 @@ async function connectPhoneView(phone) {
       status.textContent = error.message;
     }
   };
+  const observationRequired = '请先读控件并核对当前手机状态，再决定下一步。';
+  const updateControls = () => {
+    commands.disabled = view.state !== 'ready' || !!view.agentBusy || !!view.pending;
+    for (const control of commands.querySelectorAll('button, input')) {
+      control.disabled = !!view.observationRequired && control.dataset.phoneAction !== 'inspect';
+    }
+  };
   const sendAction = content => {
     if (!active() || view.state !== 'ready' || view.pending || view.agentBusy || view.control?.readyState !== WebSocket.OPEN) return;
+    if (view.observationRequired && content.kind !== 'inspect') return;
     const id = ++view.id;
     commands.disabled = true;
     status.textContent = '手机正在处理操作…';
-    view.pending = { id, timer: setTimeout(() => {
+    view.pending = { id, kind: content.kind, timer: setTimeout(() => {
       if (!active()) return;
       view.pending = null;
-      commands.disabled = view.state !== 'ready' || !!view.agentBusy;
+      updateControls();
       status.textContent = '手机未确认操作，请先核对当前画面。';
     }, 6500) };
     view.control.send(JSON.stringify({ type: 'action', id, ...content }));
@@ -238,11 +271,11 @@ async function connectPhoneView(phone) {
   let pointer;
   const updateState = state => {
     view.state = state;
-    commands.disabled = state !== 'ready' || !!view.agentBusy || !!view.pending;
+    updateControls();
     reauthorize.hidden = state !== 'permission' || !view.canReshare || typeof window.AgentRemoteApp?.openPhoneControl !== 'function';
-    status.textContent = phoneConnectionLabels[state] || '正在连接…';
+    status.textContent = state === 'ready' && view.observationRequired ? observationRequired : phoneConnectionLabels[state] || '正在连接…';
     if (state !== 'ready') {
-      view.screen = view.tree = view.frame = view.next = pointer = null;
+      view.screen = view.tree = view.frame = view.next = view.input = pointer = null;
       sheet.querySelector('[data-phone-nodes]').replaceChildren();
       sheet.querySelector('[data-phone-app]').textContent = '';
       text.reset();
@@ -255,7 +288,7 @@ async function connectPhoneView(phone) {
     return { x: clamp((event.clientX - rect.left) / rect.width), y: clamp((event.clientY - rect.top) / rect.height) };
   };
   canvas.onpointerdown = event => {
-    if (!active() || !view.frame || view.frame !== view.screen || view.pending || view.agentBusy || event.button !== 0 || pointer) return;
+    if (!active() || !view.frame || view.frame !== view.screen || view.pending || view.agentBusy || view.observationRequired || event.button !== 0 || pointer) return;
     canvas.setPointerCapture(event.pointerId);
     pointer = { id: event.pointerId, revision: view.frame, start: performance.now(), ...point(event) };
   };
@@ -303,6 +336,7 @@ async function connectPhoneView(phone) {
       return row;
     });
     sheet.querySelector('[data-phone-nodes]').replaceChildren(...rows);
+    updateControls();
   };
 
   async function draw() {
@@ -341,8 +375,14 @@ async function connectPhoneView(phone) {
       const message = JSON.parse(data);
       if (message.type === 'agentBusy') {
         view.agentBusy = message.busy === true;
-        commands.disabled = view.state !== 'ready' || view.agentBusy || !!view.pending;
-        if (view.state === 'ready') status.textContent = view.agentBusy ? 'Agent 正在操作手机…' : 'Agent 本次操作已结束。';
+        updateControls();
+        if (view.state === 'ready') status.textContent = view.agentBusy ? 'Agent 正在操作手机…'
+          : view.observationRequired ? observationRequired : 'Agent 本次操作已结束。';
+      }
+      if (message.type === 'observationRequired') {
+        view.observationRequired = message.required === true;
+        updateControls();
+        if (view.state === 'ready') status.textContent = view.observationRequired ? observationRequired : '已重新读取手机状态。';
       }
       if (message.type === 'started') {
         view.canReshare = message.canReshare;
@@ -366,12 +406,17 @@ async function connectPhoneView(phone) {
       }
       if (message.type === 'tree') renderNodes(message);
       if (message.type === 'ack' && view.pending?.id === message.id) {
-        clearTimeout(view.pending.timer);
+        const { kind, timer } = view.pending;
+        clearTimeout(timer);
         view.pending = null;
-        commands.disabled = view.state !== 'ready' || !!view.agentBusy;
-        if (view.state === 'ready') status.textContent = message.ok ? '手机已确认操作。'
-          : message.reason === 'stale' ? '界面已变化，请查看最新画面后重试。'
-            : message.reason === 'outcomeUnknown' ? '手机未确认操作结果，请先查看最新画面。' : '手机没有完成本次操作。';
+        updateControls();
+        if (view.state === 'ready') {
+          if (view.observationRequired || message.reason === 'observationRequired') status.textContent = observationRequired;
+          else if (message.ok) status.textContent = kind === 'inspect' ? '已读取手机状态。' : '手机已确认操作，请核对实际结果。';
+          else if (message.reason === 'stale') status.textContent = '界面已变化，请查看最新画面后重试。';
+          else if (message.reason === 'outcomeUnknown') status.textContent = '手机未确认操作结果，请先查看最新画面。';
+          else status.textContent = '手机未确认操作成功。';
+        }
       }
       if (message.type === 'ended') end(message.reason === 'rejected' ? '手机拒绝了本次请求。'
         : message.reason === 'approvalExpired' ? '手机未在有效时间内确认。' : '手机远控已结束。');

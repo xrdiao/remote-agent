@@ -38,9 +38,11 @@ export default [
       if (!capability.available) throw new Unavailable(capability.reason);
       const choices = await c.menu(kind);
       if (kind === 'effort' && !choices.length) {
-        const actual = await c.b.read("capabilityState('effort')");
-        c.check(!actual.available && !!actual.reason, '空强度列表具有原生不可用原因');
-        evidence[kind] = { available: false, reason: actual.reason }; await c.b.dismiss(); continue;
+        const actual = await c.b.read("({capability:capabilityState('effort'),text:document.querySelector('#sheet')?.textContent||'',back:!!document.querySelector('#sheet [data-model-back]')})");
+        c.check(actual.text.includes('这个模型没有可选的思考强度') && actual.back,
+          '真实空强度列表明确说明当前模型没有候选，并提供返回模型入口');
+        evidence[kind] = { available: false, reason: actual.capability.reason || '原生模型未返回思考强度候选' };
+        await c.b.dismiss(); continue;
       }
       c.check(choices.length > 0, kind + ' 存在实际候选');
       evidence[kind] = choices.map(row => row.label); await c.b.dismiss();

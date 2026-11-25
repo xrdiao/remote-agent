@@ -15,7 +15,8 @@ async function sample(c) {
   return c.data.get('files');
 }
 async function browse(c, root) {
-  await c.b.home(); await c.b.click('#ovLevels [data-v="projects"]');
+  await c.b.home(); await c.b.click('#ovTabs [data-v="sessions"]');
+  await c.b.click('#ovFilters [data-v="projects"]');
   await c.b.click(`[data-ov="computer-editor"]${by('data-id', c.computer)}`);
   await c.b.fill('#computerFilePath', root); await c.b.click('#computerFilePathForm button[type="submit"]');
   await c.b.wait(`computerFiles?.directory?.path===${attr(root.replaceAll(path.sep, '/'))}&&!computerFiles.message`, '文件目录读取');

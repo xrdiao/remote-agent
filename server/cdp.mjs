@@ -43,7 +43,8 @@ export class Cdp {
       ws.onclose = () => {
         if (!opened) { cleanup(); reject(new Error(`CDP connect failed: ${this.wsUrl}`)); return; }
         const error = this.closeReason || new Error('CDP closed');
-        for (const { reject } of this.pending.values()) reject(error);
+        const transportError = Object.assign(new Error(error.message, { cause: error }), { code: 'CDP_TRANSPORT' });
+        for (const { reject } of this.pending.values()) reject(transportError);
         this.pending.clear();
         this.onclose?.(error);
       };
@@ -74,7 +75,7 @@ export class Cdp {
       const cleanup = () => { clearTimeout(timer); signal?.removeEventListener('abort', cancel); };
       const fail = error => { if (this.pending.delete(id)) { cleanup(); reject(error); } };
       const cancel = () => fail(signal.reason);
-      const timer = setTimeout(() => fail(new Error('CDP 调用超时: ' + method)), timeoutMs);
+      const timer = setTimeout(() => fail(Object.assign(new Error('CDP 调用超时: ' + method), { code: 'CDP_TRANSPORT' })), timeoutMs);
       this.pending.set(id, {
         resolve: v => { cleanup(); resolve(v); },
         reject: e => { cleanup(); reject(e); },

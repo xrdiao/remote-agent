@@ -1,5 +1,7 @@
 # Remote Agent
 
+> **隔离重构分支跨会话交接：**[HANDOFF.md](HANDOFF.md)。当前 v525 仅在隔离 QA 中验证，未合并或部署。
+
 **把手机变成 Cursor、Devin 和 Codex 的遥控器。**
 
 Remote Agent（RA）在自己的电脑上运行中继（relay），通过 Chrome 开发者工具协议（CDP）连接桌面 Agent。手机可查看流式回复、继续会话、回答提问和处理执行审批，也能编辑文件、操作独立终端、传输文件。Fusion 提供持续主工作台，让主 Agent 管理多个工作项并调用原生子 Agent。
@@ -153,7 +155,7 @@ npm run pair -- --temporary
 
 ## OpenCode 本地 Agent
 
-RA 可以直接连接 **OpenCode 1.15.5 的后台服务**，无需打开 OpenCode 桌面窗口或终端交互界面。OpenCode 负责模型调用、文件工具和命令执行，RA 提供手机端的项目与会话、流式回复、工具记录、审批及提问回复。
+RA 可以直接连接 **OpenCode 的后台服务**（本轮原生验证使用 1.18.0），无需打开 OpenCode 桌面窗口或终端交互界面。OpenCode 负责模型调用、文件工具和命令执行，RA 提供手机端的项目与会话、流式回复、工具记录、审批及提问回复。
 
 先在 OpenCode 中配置可用模型。例如本机 Bonsai 2 使用 `local-bonsai/bonsai2-27b`，推理接口为 `http://127.0.0.1:18080/v1`。保持模型服务运行，在手机菜单「Agent 管理」中勾选 OpenCode，点击「启动所选 Agent」，即可在电脑后台启动；也可以在电脑上执行：
 
@@ -171,7 +173,7 @@ RA 默认连接 `http://127.0.0.1:4096`；OpenCode 使用其他地址时，在�
 
 顶部上下文显示最近一次有效模型调用的 token 用量占比，点击可看实际 token 数、模型上限、实际模型和调用时间。统计包含输入、输出、推理和缓存 token，不累计整个会话；生成期间保留上次调用数据，尚无统计时显示「尚未统计」及已知上限。本机 Bonsai 上限从 OpenCode 模型配置读取，为 131072 tokens（128K）。
 
-文件预览与高亮、RA 独立终端沿用现有入口。当前接入文本对话与工具执行，OpenCode 尚未接入 Fusion。原生审批、问题和会话数据以 OpenCode 后台为准。
+文件预览与高亮、RA 独立终端沿用现有入口。OpenCode 支持普通会话和 Fusion 子 Agent；跨电脑派工使用单独授权的 RA Peer 工作区。原生审批、问题和会话数据以 OpenCode 后台为准。
 
 OpenCode 聊天附件中的文本、代码文件直接读取；Excel（`.xlsx`）、Word（`.docx`）、PowerPoint（`.pptx`）和 PDF 通过 `officeparser` 提取文字，再以 OpenCode 原生文本附件输入。旧 Word（`.doc`）先由本机 LibreOffice 转换；使用该格式需安装 LibreOffice。解析失败时不会向会话写入附件，上传项保留，可移除或重试。扫描 PDF 没有可提取文字时会提示改为图片发送，不自动启用 CPU OCR。
 
@@ -179,7 +181,7 @@ PNG、JPEG、GIF、WebP 保留图片输入，需要 OpenCode 所选模型和推�
 
 ## Fusion
 
-Fusion 是 RA 的持续主工作台。你始终与一个原生主 Agent 对话，由它理解需求、规划和验收，并在需要时调用原生子 Agent。**主 Agent 与子 Agent 的原生 provider 支持 Cursor、Devin 和 Codex，具体候选以当前电脑的模型菜单为准；OpenCode 尚未接入 Fusion。**Codex 可使用 RA 后台会话，Cursor／Devin 使用可用的原生窗口。候选可选不代表所有执行分支均已验收；当前后台问卷与正文读取／终态核对的已知缺口见[合并修复方案](docs/testing/backend-runtime-fixes-v450-20261112.md)。Devin 自己模型菜单中的 Fusion 是另一项原生能力。
+Fusion 是 RA 的持续主工作台。你始终与一个原生主 Agent 对话，由它理解需求、规划和验收，并在需要时调用原生子 Agent。**主 Agent 支持 Cursor、Devin 和 Codex；子 Agent 还支持 OpenCode，跨电脑派工须使用已授权的 RA Peer 工作区。实际候选以当前电脑的能力和模型菜单为准。**Codex 可使用 RA 后台会话，Cursor／Devin 使用可用的原生窗口。候选可选不代表所有执行分支均已验收；当前后台问卷与正文读取／终态核对的已知缺口见[合并修复方案](docs/testing/backend-runtime-fixes-v450-20261112.md)。Devin 自己模型菜单中的 Fusion 是另一项原生能力。
 
 ### 开始使用
 

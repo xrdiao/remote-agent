@@ -83,6 +83,11 @@ export const fusionOpenCode = {
       parts: [{ type: 'text', text: value.text }],
     } });
   },
+  submit(agent, context, value, beforeSubmit) {
+    beforeSubmit();
+    return this.action(agent, context, 'send', value);
+  },
+  stop(agent, context) { return this.action(agent, context, 'stop'); },
   subscribe(context, changed) {
     return openCode.subscribe(id => {
       if (!openCode.connected) changed(new Error(openCode.error || 'OpenCode 事件连接已关闭'));
@@ -105,19 +110,19 @@ export const fusionOpenCode = {
     Object.assign(chat, { earlier: start > 0 || !!openCode.historyPages.get(id)?.before, before: all[start]?.info.id });
     return chat;
   },
-  async snapshot(context) {
+  async status(_agent, context) {
     const chat = await this.content(null, context);
     const question = chat.items.find(row => row.k === 'opencodeQuestion');
     const permission = chat.items.find(row => row.i.startsWith('permission:'));
     return { chat, state: { waiting: question?.requestID || (permission && `${permission.i}:${permission.b.join('/')}`) || '',
       waitingText: chat.waitingText } };
   },
-  async interaction(context, action, expectedTurn) {
+  async interaction(_agent, context, action, native) {
     const { threadId, cwd: directory } = context.native;
     const question = action.kind === 'opencodeQuestion';
     const id = question ? action.id : String(action.item).slice('permission:'.length);
     const pending = (question ? openCode.questions : openCode.permissions).get(id);
-    if (pending?.sessionID !== threadId || (await this.readTurn(null, context)).turnId !== expectedTurn)
+    if (pending?.sessionID !== threadId || (await this.readTurn(null, context)).turnId !== native.turnId)
       throw new Error('OpenCode 原生交互已处理或不属于此子任务');
     if (question) return openCode.client.request(`/question/${id}/${action.reject ? 'reject' : 'reply'}`, {
       directory, method: 'POST', ...(action.reject ? {} : { body: { answers: action.answers } }),
@@ -126,7 +131,7 @@ export const fusionOpenCode = {
     return openCode.client.request(`/permission/${id}/reply`, { directory, method: 'POST', body: { reply: action.actionId } });
   },
   cleanupState(_agent, context) {
-    return { exists: true, context: context.native, running: !context.archived
+    return { exists: true, archived: context.archived, context: context.native, running: !context.archived
       && ['busy', 'retry'].includes(openCode.statuses.get(context.native.threadId)?.type) };
   },
   async cleanup(_agent, context) {

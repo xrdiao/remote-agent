@@ -4,7 +4,7 @@ import { watchChat } from './agent/updates.mjs';
 import { PAGE_SRC, helpersCall } from './page/build.mjs';
 import { editorRoots } from '../lib/files.mjs';
 import { bindOperation, publishDesktopState, withOperation } from './operations.mjs';
-import { AgentContext } from './agent/context.mjs';
+import { tapCss } from './agent/primitives.mjs';
 import { projectSessionIds, reconcileSessionCatalog, updateProjectWindowTargets } from './project-windows.mjs';
 import { codexSessionStates } from './windows.mjs';
 import { rememberSessionStatuses, sessionId } from '../lib/session-library.mjs';
@@ -255,17 +255,43 @@ export class NativeWindow {
   }
   async composerCall(call, context) {
     await this.connect();
-    if (!this.contexts.has(this.composerRealm)) {
-      this.composerRealmRead ||= (async () => {
-        await this.cdp.send('Runtime.enable');
-        const { root } = await this.cdp.send('DOM.getDocument');
-        const { nodeId } = await this.cdp.send('DOM.querySelector', { nodeId: root.nodeId, selector: '#active-frame' });
-        const { node } = await this.cdp.send('DOM.describeNode', { nodeId });
-        this.composerRealm = [...this.contexts.values()].find(value => value.auxData.isDefault && value.auxData.frameId === node.frameId).id;
-      })().finally(() => { this.composerRealmRead = null; });
-      await this.composerRealmRead;
+    // A living old execution context does not prove that it still owns the
+    // native webview. Resolve this exact window's current frame for every call.
+    await this.cdp.send('Runtime.enable', {}, 3000);
+    // DOM.getDocument invalidates frontend node IDs used by concurrent calls.
+    const { result, exceptionDetails } = await this.cdp.send('Runtime.evaluate', {
+      expression: "document.querySelector('#active-frame')",
+    }, 3000);
+    if (exceptionDetails || !result.objectId) throw new Error('当前 Codex 原生窗口没有就绪的会话 frame');
+    let node;
+    try {
+      ({ node } = await this.cdp.send('DOM.describeNode', { objectId: result.objectId }, 3000));
+    } finally {
+      await cdpRead.run(null, () => this.cdp.send('Runtime.releaseObject', { objectId: result.objectId }, 3000)).catch(() => {});
     }
-    return this.cdp.evaluate(helpersCall(call, context), { contextId: this.composerRealm });
+    const realms = [...this.contexts.values()].filter(value => value.auxData?.isDefault && value.auxData.frameId === node.frameId);
+    if (realms.length !== 1) throw new Error('Codex 原生会话 frame 身份尚未唯一确认');
+    const realm = this.composerRealm = realms[0].id;
+    const check = context?.threadId ? `
+      const expected = ${JSON.stringify(context)};
+      let timer;
+      const actual = await Promise.race([
+        ${helpersCall("nativeSessionInfo('codex', " + JSON.stringify(context.threadId) + ", 'context')", context.host === undefined ? null : context)},
+        new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('Codex 会话身份核对超时')), 3000); }),
+      ]).finally(() => clearTimeout(timer));
+      if (actual?.app !== 'codex' || actual.threadId !== expected.threadId
+          || expected.host !== undefined && (actual.host || '') !== (expected.host || '')
+          || expected.cwd !== undefined && actual.cwd !== expected.cwd
+          || expected.roots !== undefined && JSON.stringify(actual.roots) !== JSON.stringify(expected.roots))
+        throw new Error('Codex 原生 frame 中的会话或项目与请求 Binding 不一致');` : '';
+    return this.cdp.evaluate(`(async () => {
+      const exactDocument = document, exactFrame = window.frameElement;
+      ${check}
+      if (document !== exactDocument || window.closed
+          || exactFrame && (!exactFrame.isConnected || exactFrame.contentDocument !== exactDocument || exactFrame.contentWindow !== window))
+        throw new Error('Codex 原生会话 frame 已更换，操作未提交');
+      return ${helpersCall(call, context)};
+    })()`, { contextId: realm, timeout: 15000 });
   }
   async start(win) {
     this.win = win;
@@ -520,11 +546,23 @@ export class NativeWindow {
     return result;
   }
   registerSend(request, finish) {
-    this.sends.set(request.requestId, { ...request, finish: bindOperation(finish) });
+    const row = { ...request, finish: bindOperation(finish) };
+    const unregister = () => {
+      if (this.sends.get(request.requestId) !== row) return false;
+      this.sends.delete(request.requestId);
+      clearTimeout(deadline);
+      return true;
+    };
+    row.settle = (accepted, error, outcome) => {
+      if (unregister()) row.finish(accepted, error, outcome);
+    };
+    const deadline = setTimeout(() => row.settle(null, '尚未读到本次发送的 Codex 原生回执', 'unknown'), 60000);
+    deadline.unref();
+    this.sends.set(request.requestId, row);
     this.revision++;
     this.updatedAt = 0;
     this.readReceipts().catch(() => {});
-    return () => this.sends.delete(request.requestId);
+    return unregister;
   }
   async readReceipts() {
     if (this.win?.app !== 'codex' || !this.sends.size) return;
@@ -550,7 +588,7 @@ export class NativeWindow {
       if (!read.controller.signal.aborted) for (const request of this.sends.values()) {
         if (request.readError === error.message) continue;
         request.readError = error.message;
-        request.finish(null, error.message, true);
+        request.finish(null, error.message, 'pending');
       }
       throw error;
     }).finally(() => {
@@ -576,20 +614,21 @@ export class NativeWindow {
         if (!request.beforeTurns.has(run.id) && !claimed.has(run.id)
             && (request.expected ? run.t.trim() === request.expected : request.hasAttachments)) messages.set(run.i, run);
       }
-      const queued = state.queued.filter(row => !request.beforeQueues.has(row.id) && !claimed.has(row.id)
+      // Steer can temporarily occupy the native admission queue. Only an
+      // accepted user message confirms Steer; a queue row cannot confirm it.
+      const queued = request.action === 'steer' ? [] : state.queued.filter(row => !request.beforeQueues.has(row.id) && !claimed.has(row.id)
         && (request.queueExpected ? row.t.trim() === request.queueExpected : request.hasAttachments));
       if (messages.size + queued.length === 1) {
         const row = queued[0] || messages.values().next().value;
         claimed.add(row.id);
         for (const nativeId of row.nativeIds || []) claimed.add(nativeId);
         while (claimed.size > 400) claimed.delete(claimed.values().next().value);
-        this.sends.delete(id);
-        request.finish({ queued: !!queued.length, thread: state.thread, ...(queued.length
+        request.settle({ queued: !!queued.length, thread: state.thread, ...(queued.length
           ? { queueId: row.id, ...(row.messageId ? { messageId: row.messageId } : {}) }
           : { messageId: row.i }) });
       } else {
         const error = result.errors?.find(error => error.requestId === id);
-        if (error) { this.sends.delete(id); request.finish(null, error.message); }
+        if (error) request.settle(null, error.message);
       }
     }
   }
@@ -623,7 +662,7 @@ export class NativeWindow {
         if (!pos) return;
         controller.signal.throwIfAborted();
         controller.submitted = true;
-        await cdpRead.run(null, () => AgentContext.prototype.tapCss.call({ cdp }, pos.x, pos.y));
+        await cdpRead.run(null, () => tapCss(cdp, pos.x, pos.y));
         attempt.count++;
         for (const [deviceId, setting] of settings) publishDesktopState(deviceId, { t: 'codexRetryState', sel: setting.sel, count: attempt.count, limit });
       } finally { cdp.close(); }
@@ -650,8 +689,7 @@ export class NativeWindow {
     this.clients.clear();
     for (const client of clients) client.onclose?.(error);
     this.listeners.clear();
-    for (const request of this.sends.values()) request.finish(null, error.message, true);
-    this.sends.clear();
+    for (const request of this.sends.values()) request.settle(null, error.message, 'unknown');
     this.retrySettings.clear();
     this.runStates.clear();
     for (const view of this.conversations.values()) { view.stop?.(); view.observer?.close(); }

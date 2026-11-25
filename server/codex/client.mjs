@@ -50,7 +50,8 @@ export class CodexClient extends EventEmitter {
         this.child = null;
         this.ready = false;
         lines.close();
-        for (const pending of this.pending.values()) pending.reject(error);
+        const disconnected = Object.assign(new Error(error.message, { cause: error }), { code: 'CODEX_RPC_DISCONNECTED' });
+        for (const pending of this.pending.values()) pending.reject(disconnected);
         this.pending.clear();
         this.emit('disconnected', error);
       };
@@ -82,12 +83,19 @@ export class CodexClient extends EventEmitter {
   }
 
   write(packet) { this.child.stdin.write(JSON.stringify(packet) + '\n'); }
-  request(method, params = {}, { onLateResult, timeout = REQUEST_TIMEOUT_MS } = {}) {
+  request(method, params = {}, { onLateResult, onLateError = () => {}, lateSignal, timeout = REQUEST_TIMEOUT_MS } = {}) {
     const id = ++this.nextId;
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
-        if (onLateResult) this.pending.set(id, { resolve: onLateResult, reject() {} });
-        else this.pending.delete(id);
+        if (onLateResult && !lateSignal?.aborted) {
+          const cancel = () => this.pending.delete(id);
+          const finishLate = callback => value => {
+            lateSignal?.removeEventListener('abort', cancel);
+            callback(value);
+          };
+          lateSignal?.addEventListener('abort', cancel, { once: true });
+          this.pending.set(id, { resolve: finishLate(onLateResult), reject: finishLate(onLateError) });
+        } else this.pending.delete(id);
         reject(Object.assign(new Error(`Codex 后台尚未确认 ${method} 的结果，请先核对原生状态`), { code: 'CODEX_RPC_TIMEOUT' }));
       }, timeout);
       timer.unref();

@@ -14,6 +14,14 @@ import { generatedImageSource } from './images.mjs';
 export const CODEX_BACKEND = 'backend';
 export const codexAccountKey = value => value ? JSON.stringify([value.account?.type || '', value.userId || '',
   value.workspaceRouting?.chatgptAccountId || '']) : '';
+const phoneRestrictions = {
+  sandbox: 'read-only', approvalPolicy: 'never',
+  config: { features: { shell_tool: false, unified_exec: false, plugins: false },
+    shell_environment_policy: { inherit: 'none' } },
+};
+const phoneToolFailure = error => ({
+  success: false, contentItems: [{ type: 'inputText', text: error.message }],
+});
 const textInput = input => input.filter(part => part.type === 'text').map(part => part.text).join('\n');
 const busyTurn = thread => thread?.turns.findLast(turn => turn.status === 'inProgress');
 const mergeTurnItems = (first, second) => [...new Map([...first, ...second].map(item => [item.id, item])).values()];
@@ -24,8 +32,13 @@ const requestKey = row => (row.method === 'item/tool/requestUserInput' ? 'async:
 const threadSettings = ({ thread, sandbox, reasoningEffort, ...settings }) => ({ ...settings, sandboxPolicy: sandbox, effort: reasoningEffort });
 const reasoningText = item => (item.summary?.length ? item.summary : item.content || []).join('\n');
 export const isCompletedFileChange = item => item.type === 'fileChange' && item.status === 'completed' && item.changes.length > 0;
+export const codexChildThreadIds = item => {
+  if (item?.type === 'collabAgentToolCall') return item.receiverThreadIds || [];
+  if (item?.type === 'subAgentActivity' && item.agentThreadId) return [item.agentThreadId];
+  return [];
+};
 const chatTypes = new Set(['userMessage', 'todo-list', 'imageGeneration', 'imageView', 'contextCompaction',
-  'commandExecution', 'fileChange', 'collabAgentToolCall', 'mcpToolCall']);
+  'commandExecution', 'fileChange', 'collabAgentToolCall', 'subAgentActivity', 'mcpToolCall']);
 
 function readCatalog(file) {
   if (!file || !fs.existsSync(file)) return [];
@@ -54,9 +67,11 @@ export class CodexState extends EventEmitter {
     this.threads = new Map();
     this.childChats = new Map();
     this.requests = new Map();
+    this.answeredRequests = new WeakSet();
     this.phoneTools = new Map();
     this.phoneCalls = new Map();
     this.queues = new Map();
+    this.submissions = new Map();
     this.drafts = new Map();
     this.draftTimes = new Map();
     this.nativeDrafts = new Map();
@@ -77,8 +92,9 @@ export class CodexState extends EventEmitter {
     client.on('notification', packet => this.notification(packet));
     client.on('request', packet => this.request(packet));
     client.on('disconnected', error => {
-      for (const call of this.phoneCalls.values()) call.abort(error);
       this.writers.clear();
+      this.submissions.clear();
+      for (const id of this.phoneTools.keys()) this.losePhoneTools(id, error);
       this.childParents.clear();
       for (const release of this.releasing.values()) release.reject(error);
       this.releasing.clear();
@@ -109,8 +125,30 @@ export class CodexState extends EventEmitter {
     const phone = this.phoneControl(id);
     return !phone || phone.devices.includes(deviceId);
   }
-  detachPhoneTools(id) {
-    if (this.phoneTools.delete(id)) this.releaseIdle(id).catch(error => this.changed(id, error));
+  detachPhoneTools(id, error = new Error('手机控制已结束，请在设备控制中重新连接手机。')) {
+    if (!this.phoneTools.delete(id)) return;
+    this.abortPhoneCalls(id, error);
+    if (this.client.ready) this.releaseIdle(id).catch(error => this.changed(id, error));
+  }
+
+  losePhoneTools(id, error) {
+    const tools = this.phoneTools.get(id);
+    if (!tools) return;
+    this.detachPhoneTools(id, error);
+    tools.onLost?.();
+  }
+
+  abortPhoneCalls(threadId, error, turnId) {
+    for (const call of this.phoneCalls.values())
+      if (call.threadId === threadId && (turnId === undefined || call.turnId === turnId)) call.abort(error);
+  }
+  settleTurnRequests(threadId, completed) {
+    for (const call of this.phoneCalls.values())
+      if (call.threadId === threadId && completed.has(call.turnId)) call.abort(new Error('手机操作轮次已结束'));
+    const seen = this.phoneTools.get(threadId)?.turns;
+    if (seen) for (const turnId of seen.keys()) if (completed.has(turnId)) seen.delete(turnId);
+    for (const [id, request] of this.requests)
+      if (request.params.threadId === threadId && completed.has(request.params.turnId)) this.requests.delete(id);
   }
   hasWriter(id) { return this.writers.has(id); }
   async account() {
@@ -147,13 +185,18 @@ export class CodexState extends EventEmitter {
 
   async withWriter(id, action, options) {
     await this.commands.get('account');
-    this.using.set(id, (this.using.get(id) || 0) + 1);
+    const release = this.#retainWriter(id);
     try { return await action(await this.load(id, options)); }
-    finally {
+    finally { release(); }
+  }
+
+  #retainWriter(id) {
+    this.using.set(id, (this.using.get(id) || 0) + 1);
+    return () => {
       const remaining = this.using.get(id) - 1;
       if (remaining) this.using.set(id, remaining); else this.using.delete(id);
-      this.releaseIdle(id).catch(error => this.changed(id, error));
-    }
+      if (this.client.ready) this.releaseIdle(id).catch(error => this.changed(id, error));
+    };
   }
   canRelease(id) {
     const parent = this.childParents.get(id);
@@ -200,11 +243,12 @@ export class CodexState extends EventEmitter {
       if (this.releasing.get(id) === release) this.releasing.delete(id);
     }
   }
-  async acquireWriter(method, params, prepare) {
+  async acquireWriter(method, params, prepare, phoneGeneration) {
+    const current = () => phoneGeneration === undefined || this.client.ready && this.client.generation === phoneGeneration;
     const result = await this.client.request(method, params, {
       onLateResult: ({ thread }) => {
         const id = thread?.id;
-        if (id && !this.writers.has(id) && !this.loading.has(id)) {
+        if (current() && id && !this.writers.has(id) && !this.loading.has(id)) {
           this.writers.add(id);
           this.releaseWriter(id).catch(error => this.changed(id, error));
         }
@@ -213,18 +257,23 @@ export class CodexState extends EventEmitter {
     const thread = { ...result.thread, settings: threadSettings(result), generation: this.client.generation };
     try {
       await prepare(thread);
+      if (!current()) throw new Error('Codex 手机会话连接已断开');
       this.writers.add(thread.id);
       this.threads.set(thread.id, thread);
       return thread;
     } catch (error) {
-      this.writers.add(thread.id);
-      await this.releaseWriter(thread.id).catch(releaseError => this.changed(thread.id, releaseError));
+      if (current()) {
+        this.writers.add(thread.id);
+        await this.releaseWriter(thread.id).catch(releaseError => this.changed(thread.id, releaseError));
+      }
       throw error;
     }
   }
   threadClosed(id) {
+    this.submissions.delete(id);
     this.childChats.delete(id);
     this.writers.delete(id);
+    this.losePhoneTools(id, new Error('Codex 手机会话已关闭'));
     const release = this.releasing.get(id);
     this.releasing.delete(id);
     release?.resolve();
@@ -328,7 +377,10 @@ export class CodexState extends EventEmitter {
   async create(cwd, { title = '新会话', model, effort, phone } = {}) {
     cwd = localFilePath(cwd);
     await this.client.connect();
-    const thread = await this.acquireWriter('thread/start', { cwd, ...(model ? { model } : {}), ...(phone?.start || {}) }, async thread => {
+    phone?.signal.throwIfAborted();
+    const thread = await this.acquireWriter('thread/start', { cwd, ...(model ? { model } : {}),
+      ...(phone ? { ...phone.start, ...phoneRestrictions, environments: [] } : {}) }, async thread => {
+      phone?.signal.throwIfAborted();
       if (!samePath(path.resolve(localFilePath(thread.cwd)), path.resolve(cwd))) throw new Error('Codex 返回的会话项目与所选目录不一致');
       // Native naming commits an empty thread before it can be restored after process exit.
       await this.client.request('thread/name/set', { threadId: thread.id, name: title });
@@ -337,16 +389,21 @@ export class CodexState extends EventEmitter {
         await this.client.request('thread/settings/update', { threadId: thread.id, effort });
         thread.settings.effort = effort;
       }
-    });
+    }, phone ? this.client.generation : undefined);
     try {
       if (phone) {
+        phone.signal.throwIfAborted();
+        if (!this.client.ready || thread.generation !== this.client.generation) throw new Error('Codex 手机会话连接已断开');
         thread.phoneControl = phone.scope;
-        this.phoneTools.set(thread.id, phone.call);
+        this.phoneTools.set(thread.id, { call: phone.call, onLost: phone.onLost, generation: thread.generation, turns: new Map() });
       }
       if (title === '新会话') this.records.set(thread.id, { untitled: true });
       this.remember(thread);
       this.changed(thread.id);
       return thread;
+    } catch (error) {
+      if (phone) this.detachPhoneTools(thread.id, error);
+      throw error;
     } finally { await this.releaseIdle(thread.id); }
   }
 
@@ -358,7 +415,8 @@ export class CodexState extends EventEmitter {
       await this.releasing.get(id)?.promise;
       let thread = this.threads.get(id);
       if (!this.writers.has(id)) {
-        thread = await this.acquireWriter('thread/resume', { threadId: id, ...(deferGoalContinuation ? { deferGoalContinuation } : {}) }, thread => {
+        thread = await this.acquireWriter('thread/resume', { threadId: id, ...(deferGoalContinuation ? { deferGoalContinuation } : {}),
+          ...(this.phoneControl(id) ? phoneRestrictions : {}) }, thread => {
           if (thread.id !== id) throw new Error('Codex 返回的会话 ID 与所选会话不一致');
           const previous = this.records.get(id);
           if (previous && !samePath(path.resolve(localFilePath(thread.cwd)), path.resolve(localFilePath(previous.cwd)))) throw new Error('Codex 原生会话项目已变化，请重新选择项目');
@@ -400,10 +458,8 @@ export class CodexState extends EventEmitter {
     this.threads.set(id, current);
     delete current.disconnected;
     if (reconcile) {
-      for (const [key, request] of this.requests) {
-        if (request.params.threadId === id && thread.turns.some(turn => turn.id === request.params.turnId && turn.status !== 'inProgress'))
-          this.requests.delete(key);
-      }
+      const completed = new Set(current.turns.filter(turn => turn.status !== 'inProgress').map(turn => turn.id));
+      this.settleTurnRequests(id, completed);
     }
     this.remember(current);
     this.changed(id);
@@ -442,6 +498,7 @@ export class CodexState extends EventEmitter {
   }
 
   async fork(id, turnId, defaultEffort) {
+    if (this.phoneControl(id)) throw new Error('手机控制会话包含设备私有记录，无法分叉');
     return this.withWriter(id, async source => {
       const settings = source.settings;
       const effort = settings.effort || source.reasoningEffort || await defaultEffort?.(source);
@@ -525,7 +582,11 @@ export class CodexState extends EventEmitter {
       }
       return;
     }
-    if (method === 'serverRequest/resolved' && this.requests.get(p.requestId)?.params.threadId === id) this.requests.delete(p.requestId);
+    if (method === 'serverRequest/resolved') {
+      if (this.requests.get(p.requestId)?.params.threadId === id) this.requests.delete(p.requestId);
+      const call = this.phoneCalls.get(p.requestId);
+      if (call?.threadId === id) call.abort(new Error('Codex 已结算手机工具请求'), false);
+    }
     if (!thread) return;
     thread.observedAt = Date.now();
     const becameIdle = method === 'thread/status/changed' && thread.status?.type === 'active' && p.status.type === 'idle';
@@ -553,10 +614,8 @@ export class CodexState extends EventEmitter {
         statistics[p.turn.id] = { ...statistics[p.turn.id], model: thread.settings.model || thread.model };
       }
       if (method === 'turn/completed') {
-        for (const [packet, call] of this.phoneCalls)
-          if (packet.params.threadId === id && packet.params.turnId === p.turn.id) call.abort(new Error('手机操作轮次已结束'));
+        this.settleTurnRequests(id, new Set([p.turn.id]));
         if (p.turn.status !== 'failed') delete thread.error;
-        for (const [key, request] of this.requests) if (request.params.threadId === id && request.params.turnId === p.turn.id) this.requests.delete(key);
         thread.updatedAt = Math.floor(Date.now() / 1000);
         this.remember(thread);
         cdpRead.run(null, () => withOperation(null, () => this.emit('catalogChanged', id)));
@@ -599,26 +658,64 @@ export class CodexState extends EventEmitter {
 
   request(packet) {
     if (packet.method === 'currentTime/read') return this.client.reply(packet.id, { currentTimeAt: Math.floor(Date.now() / 1000) });
-    if (packet.method === 'item/tool/call' && this.phoneControl(packet.params?.threadId)) return this.callPhoneTool(packet);
+    if (this.phoneControl(packet.params?.threadId)) {
+      if (packet.method === 'item/tool/call') return this.callPhoneTool(packet);
+      if (['item/commandExecution/requestApproval', 'item/fileChange/requestApproval', 'item/permissions/requestApproval'].includes(packet.method))
+        return this.client.reject(packet.id, '手机控制会话使用固定的本机权限');
+    }
     if (!['item/commandExecution/requestApproval', 'item/fileChange/requestApproval', 'item/tool/requestUserInput', 'item/permissions/requestApproval', 'mcpServer/elicitation/request'].includes(packet.method))
       return this.client.reject(packet.id, `Remote Agent 没有注册 ${packet.method}`);
     this.requests.set(packet.id, packet);
     this.changed(packet.params.threadId);
   }
 
-  async callPhoneTool(packet) {
-    const { threadId, tool, arguments: args } = packet.params;
-    const call = this.phoneTools.get(threadId), generation = this.client.generation;
+  callPhoneTool(packet) {
+    const { threadId, turnId, callId, tool, arguments: args } = packet.params;
+    const tools = this.phoneTools.get(threadId), generation = this.client.generation;
+    const reply = result => {
+      if (!this.client.ready || this.client.generation !== generation) return;
+      try { this.client.reply(packet.id, result); }
+      catch (error) { this.changed(threadId, error); }
+    };
+    if (this.phoneCalls.has(packet.id)) return;
+    if (!tools || tools.generation !== generation || !this.hasWriter(threadId) || this.releasing.has(threadId)) {
+      reply(phoneToolFailure(new Error('手机控制已结束，请在设备控制中重新连接手机。')));
+      return;
+    }
+    const turn = this.threads.get(threadId)?.turns.find(row => row.id === turnId);
+    if (!callId || tools.cancelledTurn === turnId || turn?.status !== 'inProgress') {
+      reply(phoneToolFailure(new Error('手机操作轮次已结束')));
+      return;
+    }
+    if (!tools.turns.has(turnId)) tools.turns.set(turnId, { requests: new Set(), calls: new Set() });
+    const seen = tools.turns.get(turnId);
+    if (seen.requests.has(packet.id)) return;
+    seen.requests.add(packet.id);
+    if (seen.calls.has(callId)) {
+      reply(phoneToolFailure(new Error('该手机工具调用已受理，请先核对手机状态。')));
+      return;
+    }
+    seen.calls.add(callId);
+
     const cancellation = new AbortController();
-    let result;
-    try {
-      if (!call) throw new Error('手机控制已结束，请在设备控制中重新连接手机。');
-      this.phoneCalls.set(packet, cancellation);
-      result = await call(tool, args, cancellation.signal);
-    } catch (error) {
-      result = { success: false, contentItems: [{ type: 'inputText', text: error.message }] };
-    } finally { this.phoneCalls.delete(packet); }
-    if (this.client.ready && this.client.generation === generation) this.client.reply(packet.id, result);
+    const release = this.#retainWriter(threadId);
+    const finish = (result, deliver = true) => {
+      if (this.phoneCalls.get(packet.id) !== pending) return;
+      try { if (deliver) reply(result); }
+      finally {
+        this.phoneCalls.delete(packet.id);
+        release();
+      }
+    };
+    const pending = { threadId, turnId, abort(error, deliver = true) {
+      cancellation.abort(error);
+      finish(phoneToolFailure(error), deliver);
+    } };
+    this.phoneCalls.set(packet.id, pending);
+    return Promise.resolve().then(() => {
+      cancellation.signal.throwIfAborted();
+      return tools.call(tool, args, cancellation.signal);
+    }).then(result => finish(result), error => finish(phoneToolFailure(error)));
   }
 
   requestRows(id) {
@@ -663,6 +760,8 @@ export class CodexState extends EventEmitter {
       if (decision === undefined) throw new Error('请求选项已变化');
       result = { decision };
     }
+    if (this.answeredRequests.has(request)) throw new Error('这条请求已提交，请核对原生状态');
+    this.answeredRequests.add(request);
     await this.client.replyToRequest(request, result);
   }
 
@@ -676,8 +775,11 @@ export class CodexState extends EventEmitter {
     }
     return this.withWriter(id, async thread => {
       if (busyTurn(thread)?.id !== turn.id) return;
-      for (const [packet, call] of this.phoneCalls)
-        if (packet.params.threadId === id && packet.params.turnId === turn.id) call.abort(new Error('用户停止了手机操作'));
+      const phone = this.phoneTools.get(id);
+      if (phone) {
+        phone.cancelledTurn = turn.id;
+        this.abortPhoneCalls(id, new Error('用户停止了手机操作，请先核对手机状态。'), turn.id);
+      }
       try {
         await this.client.request('turn/interrupt', { threadId: id, turnId: turn.id });
       } catch (error) {
@@ -713,7 +815,59 @@ export class CodexState extends EventEmitter {
     await this.client.request('thread/queue/start', { threadId: id, queuedSubmissionId: queueId });
   }
 
-  async send(id, input, when, requestId) {
+  async send(id, input, when, requestId, delivery) {
+    const request = async (method, params, accept) => {
+      if (!delivery) return accept(await this.client.request(method, params));
+      delivery.beforeSubmit();
+      const late = new AbortController();
+      const queued = method === 'thread/queue/add';
+      let stopObserving, deadline, releaseWriter;
+      const settle = finish => {
+        if (late.signal.aborted) return;
+        late.abort();
+        clearTimeout(deadline);
+        stopObserving?.();
+        try { finish(); } finally { releaseWriter?.(); }
+      };
+      let result;
+      try {
+        result = await this.client.request(method, params, {
+          lateSignal: late.signal,
+          onLateResult: value => settle(() => {
+            try { delivery.acceptLate(accept(value)); }
+            catch (error) { delivery.rejectLate(error); }
+          }),
+          onLateError: error => settle(() => delivery.rejectLate(error)),
+        });
+      } catch (error) {
+        const awaitingReceipt = error.code === 'CODEX_RPC_TIMEOUT';
+        if (!awaitingReceipt && error.code !== 'CODEX_RPC_DISCONNECTED') throw error;
+        delivery.unknown(error, awaitingReceipt);
+        if (awaitingReceipt) {
+          releaseWriter = this.#retainWriter(id);
+          const messageId = `${id}:user-message:${requestId}`;
+          const reconcile = () => {
+            if (late.signal.aborted) return;
+            const turn = this.threads.get(id)?.turns.find(turn => turn.items?.some(item =>
+              item.type === 'userMessage' && item.clientId === requestId));
+            const row = queued && this.queues.get(id)?.find(row => row.clientUserMessageId === requestId);
+            if (turn || row) settle(() => delivery.acceptLate(turn
+              ? { queued: false, thread: id, turnId: turn.id, messageId }
+              : { queued: true, thread: id, queueId: row.id, messageId }));
+          };
+          stopObserving = this.subscribe(id, reconcile);
+          deadline = setTimeout(() => settle(() => delivery.rejectLate(new Error('尚未读到本次发送的 Codex 原生记录'))), 30000);
+          deadline.unref();
+          reconcile();
+          if (!late.signal.aborted && this.client.ready && this.hasWriter(id)) {
+            this.refresh(id, { reconcile: true }).catch(error => this.changed(id, error));
+            if (queued) this.refreshQueue(id);
+          }
+        }
+        return { pending: true, queued };
+      }
+      return accept(result);
+    };
     return this.withWriter(id, async thread => {
       const turn = busyTurn(thread);
       if (turn && when === 'idle') throw new Error('Codex 后台会话仍有未结束的轮次');
@@ -721,27 +875,33 @@ export class CodexState extends EventEmitter {
       const title = Array.from(textInput(input).trim().split('\n')[0]).slice(0, 100).join('').trim();
       if (this.records.get(id)?.untitled && title) await this.renameInsideCommand(id, title);
       if (turn && when !== 'now') {
-        const result = await this.client.request('thread/queue/add', { threadId: id, input, clientUserMessageId: requestId });
-        const row = result.queuedSubmission;
-        if (row.clientUserMessageId !== requestId || textInput(row.input) !== textInput(input) || row.input.length !== input.length) throw new Error('Codex 队列回执与发送内容不一致');
-        this.refreshQueue(id);
-        return { queued: true, queueId: row.id, messageId: `${id}:user-message:${row.clientUserMessageId}`, thread: id };
+        return request('thread/queue/add', { threadId: id, input, clientUserMessageId: requestId }, ({ queuedSubmission: row }) => {
+          if (row.clientUserMessageId !== requestId || textInput(row.input) !== textInput(input) || row.input.length !== input.length) throw new Error('Codex 队列回执与发送内容不一致');
+          this.refreshQueue(id);
+          return { queued: true, queueId: row.id, messageId: `${id}:user-message:${row.clientUserMessageId}`, thread: id };
+        });
       }
-      const result = await this.client.request(turn ? 'turn/steer' : 'turn/start', {
+      return request(turn ? 'turn/steer' : 'turn/start', {
         threadId: id, input, clientUserMessageId: requestId, ...(turn ? { expectedTurnId: turn.id } : {}),
+      }, result => {
+        if (result.turn) {
+          const old = thread.turns.find(row => row.id === result.turn.id);
+          if (!old) thread.turns.push(result.turn);
+          else old.items = mergeTurnItems(result.turn.items, old.items);
+          delete thread.error;
+        }
+        this.changed(id);
+        // Fusion tracks the first turn through native events while its transcript is materializing.
+        if (when !== 'idle' && !thread.turns.some(row => row.items.some(item => item.type === 'userMessage' && item.clientId === requestId)))
+          this.refresh(id).catch(error => this.changed(id, error));
+        const accepted = { queued: false, thread: id, turnId: result.turn?.id || result.turnId,
+          messageId: `${id}:user-message:${requestId}` };
+        // Native turn ACKs may precede persisted user items. Every phone/MCP
+        // backend send shares this owner; retain the latest admitted input
+        // for exact cancellation until the native transcript materializes.
+        this.submissions.set(id, { ...accepted, input: structuredClone(input) });
+        return accepted;
       });
-      if (result.turn) {
-        const old = thread.turns.find(row => row.id === result.turn.id);
-        if (!old) thread.turns.push(result.turn);
-        else old.items = mergeTurnItems(result.turn.items, old.items);
-        delete thread.error;
-      }
-      this.changed(id);
-      // Fusion tracks the first turn through native events while its transcript is materializing.
-      if (when !== 'idle' && !thread.turns.some(row => row.items.some(item => item.type === 'userMessage' && item.clientId === requestId)))
-        this.refresh(id).catch(error => this.changed(id, error));
-      return { queued: false, thread: id, turnId: result.turn?.id || result.turnId,
-        messageId: `${id}:user-message:${requestId}` };
     });
   }
 
@@ -753,10 +913,12 @@ export class CodexState extends EventEmitter {
   }
 
   async readChildren(parent, item) {
-    if (item.senderThreadId !== parent.id) throw new Error('子 Agent 工具不属于当前会话');
+    if (!parent.turns.some(turn => turn.items.includes(item))
+        || item.type === 'collabAgentToolCall' && item.senderThreadId !== parent.id)
+      throw new Error('子 Agent 工具不属于当前会话');
     const cache = this.childChats.get(parent.id) || new Map();
     this.childChats.set(parent.id, cache);
-    await Promise.all([...new Set(item.receiverThreadIds || [])].map(async id => {
+    await Promise.all([...new Set(codexChildThreadIds(item))].map(async id => {
       cache.delete(id);
       const { thread } = await this.client.request('thread/read', { threadId: id, includeTurns: true });
       if (thread.id !== id || thread.parentThreadId !== parent.id
@@ -819,10 +981,12 @@ export class CodexState extends EventEmitter {
         const diff = details ? codexFileDiff(item.changes) : null;
         items.push({ ...base, k: 'tool', src: 'codex', kind: 'edit', t: item.changes.map(row => row.path).join(', ').slice(0, 240), f: item.changes[0]?.path,
           ...(details ? diff : {}), status: item.status });
-      } else if (item.type === 'collabAgentToolCall') {
+      } else if (item.type === 'collabAgentToolCall' || item.type === 'subAgentActivity') {
         const details = !tools || tools.has(item.id);
-        items.push({ ...base, k: 'tool', src: 'codex', kind: 'other', t: `${item.tool} · ${item.status}`, status: item.status,
-          ...(details ? { output: JSON.stringify(item.agentsStates || {}), children: (item.receiverThreadIds || []).filter(child => this.childChats.get(id)?.has(child)).map(child => ({
+        const childIds = codexChildThreadIds(item), status = item.status || item.kind;
+        items.push({ ...base, k: 'tool', src: 'codex', kind: 'other', t: `${item.tool || '子 Agent'} · ${status}`, status,
+          ...(childIds.length ? { childId: childIds[0] } : {}),
+          ...(details ? { output: item.agentsStates ? JSON.stringify(item.agentsStates) : '', children: childIds.filter(child => this.childChats.get(id)?.has(child)).map(child => ({
             id: child, title: item.agentsStates?.[child]?.nickname || child, items: this.childChats.get(id).get(child).items,
           })) } : {}) });
       } else if (item.type === 'mcpToolCall') items.push({ ...base, k: 'tool', src: 'codex', kind: 'command', t: `${item.server} · ${item.tool}`.slice(0, 240),
@@ -862,7 +1026,7 @@ export class CodexState extends EventEmitter {
   }
 
   forget(id) {
-    this.phoneTools.delete(id);
+    this.losePhoneTools(id, new Error('Codex 手机会话已归档'));
     this.manualCompactions.delete(id);
     this.childChats.delete(id);
     for (const children of this.childChats.values()) children.delete(id);

@@ -3,7 +3,6 @@ export class FusionScheduler {
     this.queue = [];
     this.mainSlots = new Map();
     this.workerSlots = new Map();
-    this.creating = new Map();
   }
   submit(job) {
     return new Promise((resolve, reject) => {
@@ -15,7 +14,13 @@ export class FusionScheduler {
     const ordered = [...this.queue].sort((a, b) => (b.priority || 0) - (a.priority || 0));
     for (const job of ordered) {
       const main = job.lane === 'main';
-      if (main && this.mainSlots.has(job.runId) || job.workerKey && this.workerSlots.has(job.workerKey) || !job.ready()) continue;
+      if ((main && this.mainSlots.has(job.runId)) || (job.workerKey && this.workerSlots.has(job.workerKey))) continue;
+      try { if (!job.ready()) continue; }
+      catch (error) {
+        this.queue.splice(this.queue.indexOf(job), 1);
+        job.reject(error);
+        continue;
+      }
       this.queue.splice(this.queue.indexOf(job), 1);
       if (main) this.mainSlots.set(job.runId, job);
       if (job.workerKey) this.workerSlots.set(job.workerKey, job);
@@ -34,15 +39,10 @@ export class FusionScheduler {
       job.reject(Object.assign(new Error('未提交的 Fusion 任务已取消'), { cancelled: true }));
     }
   }
-  cancelAttempt(attemptId) {
-    const job = this.queue.find(row => row.attemptId === attemptId);
+  cancelAttempt(runId, attemptId) {
+    const job = this.queue.find(row => row.runId === runId && row.attemptId === attemptId);
     if (!job) return;
     this.queue.splice(this.queue.indexOf(job), 1);
     job.reject(Object.assign(new Error('未提交的 Fusion 任务已取消'), { cancelled: true }));
   }
-  window(key, create) {
-    if (!this.creating.has(key)) this.creating.set(key, Promise.resolve().then(create).finally(() => this.creating.delete(key)));
-    return this.creating.get(key);
-  }
 }
-export const fusionScheduler = new FusionScheduler();

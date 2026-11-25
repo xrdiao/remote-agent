@@ -11,24 +11,24 @@ import { editorRoots } from '../../lib/files.mjs';
 import { findBin, localFilePath } from '../../lib/platform.mjs';
 import { helpersCall } from '../page/build.mjs';
 import { rememberFusionSession } from '../project-windows.mjs';
-import { fusionProject, fusionLive, publishFusion, fusionEvent } from './state.mjs';
+import { fusionProject, commitFusion, fusionEvent, fusionEffect, stateOfFusionRun } from './state.mjs';
 import { nativeCostSnapshot } from './cost.mjs';
 import { fusionModelCatalog } from './model-catalog.mjs';
 import { FUSION_TOOLS, fusionControllerPrompt, fusionTaskInput } from './control.mjs';
-import { fusionScheduler } from './scheduler.mjs';
-import { backgroundCodex, nativeAgentProvider, nativeAgentProviders } from './providers.mjs';
+import { backgroundCodex, nativeAgentProvider, nativeAgentProviders, fusionProviderFor } from './providers.mjs';
 import { fusionOpenCode } from './opencode.mjs';
-import { CODEX_BACKEND, codexBackend } from '../codex/state.mjs';
-import { favoriteSession, removeLibrarySession, publishSessionChange } from '../../lib/session-library.mjs';
+import { CODEX_BACKEND } from '../codex/state.mjs';
+import { publishSessionCleanup, publishSessionChange } from '../../lib/session-library.mjs';
+import { runNativeEffect, recordNativeTerminal } from './effects.mjs';
+import { remotePeerProject, verifyRemotePeerProject, executeRemotePeer, stopRemotePeer, closeRemotePeer, readRemotePeer, answerRemotePeer } from './remote-peer.mjs';
 
 const executeFile = promisify(execFile);
-const providerFor = context => context.backend === CODEX_BACKEND ? backgroundCodex : nativeAgentProvider(context.app);
 
 export async function fusionWorkspaceSnapshot(project, scope = []) {
   if (project.host) return { available: false, reason: '远程工作区差异需由原生 Agent 提供证据', at: Date.now() };
   const git = findBin('git');
   const root = localFilePath(project.root);
-  const options = { cwd: root, encoding: 'utf8', maxBuffer: 8 * 1024 * 1024, windowsHide: true };
+  const options = { cwd: root, encoding: 'utf8', maxBuffer: 8 * 1024 * 1024, timeout: 5000, windowsHide: true };
   const paths = scope.length ? scope.map(value => localFilePath(value)) : ['.'];
   const scopedFiles = await Promise.all(scope.map(async name => {
     const file = path.resolve(root, localFilePath(name));
@@ -51,14 +51,18 @@ export async function fusionWorkspaceSnapshot(project, scope = []) {
 }
 
 export class FusionAgent {
-  constructor({ scheduler = fusionScheduler, publish = publishFusion, onEvent = () => {}, catalog = fusionModelCatalog } = {}) {
-    this.scheduler = scheduler;
+  constructor({ adapterRegistry, providerFor = context => fusionProviderFor(context, adapterRegistry), onEvent = () => {}, catalog = fusionModelCatalog, receiptTimeout = 30000, evidenceTimeout = 5000 } = {}) {
+    this.providerFor = providerFor;
+    this.adapterRegistry = adapterRegistry;
+    this.receiptTimeout = receiptTimeout;
+    this.evidenceTimeout = evidenceTimeout;
     this.catalog = catalog;
-    this.publish = publish;
+    this.live = new Map();
     this.onEvent = onEvent;
     this.active = new Map();
     this.mainProjects = new Map();
   }
+  commit(run, edit) { return commitFusion(run, edit); }
   async carriers(app) {
     const editor = EDITORS.find(row => row.app === app);
     if (!editor) throw new Error('未知执行软件');
@@ -69,7 +73,8 @@ export class FusionAgent {
       .map(row => ({ id: row.id, app, editorWs: row.webSocketDebuggerUrl, ws: row.webSocketDebuggerUrl, title: row.title }));
   }
   async softwareCapabilities() {
-    return Promise.all(nativeAgentProviders().map(async ({ app, name, controller, worker }) => {
+    const providers = nativeAgentProviders().filter(({ app }) => !this.adapterRegistry || this.adapterRegistry[app]?.discover);
+    return Promise.all(providers.map(async ({ app, name, controller, worker }) => {
       try { return { app, name, controller, worker, connected: app === 'opencode'
         ? await fusionOpenCode.connected() : (await this.carriers(app)).length > 0 }; }
       catch (error) { return { app, name, controller, worker, connected: false, reason: error.message }; }
@@ -157,11 +162,14 @@ export class FusionAgent {
   }
   async close(context) {
     if (!context || context.backend) return;
-    if (context.pinned && context.app === 'cursor')
-      await this.call(context, `nativeSessionAction('cursor', ${JSON.stringify(context.native.threadId)}, 'release', ${JSON.stringify(context.leaseId)})`);
-    context.cdp.close();
-    const source = context.source;
-    if (!source.watching && !source.clients.size && !source.conversations.size && !source.listeners.size) source.close();
+    try {
+      if (context.pinned && context.app === 'cursor')
+        await this.call(context, `nativeSessionAction('cursor', ${JSON.stringify(context.native.threadId)}, 'release', ${JSON.stringify(context.leaseId)})`);
+    } finally {
+      context.cdp.close();
+      const source = context.source;
+      if (!source.watching && !source.clients.size && !source.conversations.size && !source.listeners.size) source.close();
+    }
   }
   async openBinding(controller, binding, windowId = binding.windowId) {
     if (binding.app === 'opencode') return fusionOpenCode.open(binding);
@@ -195,7 +203,7 @@ export class FusionAgent {
       }
       const actual = await provider.info(this, context, 'bind', context.leaseId);
       context.pinned = binding.app === 'cursor';
-      if (fusionProject(actual.cwd, actual.host || '')?.id !== binding.project.id) throw new Error('原生会话目录与该任务项目不一致，未切换任何普通窗口');
+      if (actual.threadId !== binding.threadId || fusionProject(actual.cwd, actual.host || '')?.id !== binding.project.id) throw new Error('原生会话目录与该任务项目不一致，未切换任何普通窗口');
       context.native = actual;
       return context;
     } catch (error) { await this.close(context); throw error; }
@@ -224,8 +232,7 @@ export class FusionAgent {
                   await session.openEditorChat();
                 } finally { session.dispose(); }
               }
-              controller.main.windowId = carrier.page.id;
-              this.publish(controller);
+              this.commit(controller, next => { next.main.windowId = carrier.page.id; });
               return { windowId: controller.main.windowId };
             }
             if (controller.main.app !== 'cursor') throw new Error('请先在原生应用中确认工作区信任');
@@ -238,15 +245,20 @@ export class FusionAgent {
       } }, controller.deviceId, { fusionBinding: true });
       context.app = controller.main.app;
       this.mainProjects.set(controller.id, context);
-      if (controller.project.host) await context.attach({ id: controller.main.app, project: controller.project });
-      else await context.withFocus(() => context.useProject(controller.project.root, false, '', '', '', { reuseOnly: true }));
+      try {
+        if (controller.project.host) await context.attach({ id: controller.main.app, project: controller.project });
+        // The user explicitly selected this Fusion project. If no existing window
+        // belongs to it, use the ordinary project-opening flow rather than
+        // repurposing an unrelated idle Cursor window.
+        else await context.withFocus(() => context.useProject(controller.project.root, false, '', '', '', { reuseOnly: false }));
+      } catch (error) { this.releaseMainProject(controller); throw error; }
     }
     if (context.pendingProject?.trust) return { trust: { path: context.pendingProject.root } };
-    if (!context.bindingReady) throw new Error(context.projectError || '项目原生窗口尚未就绪');
-    controller.main.windowId = context.windowId.replace(/^(cursor|devin|codex):/, '');
-    this.publish(controller);
-    this.releaseMainProject(controller);
-    return { windowId: controller.main.windowId };
+    try {
+      if (!context.bindingReady) throw new Error(context.projectError || '项目原生窗口尚未就绪');
+      this.commit(controller, next => { next.main.windowId = context.windowId.replace(/^(cursor|devin|codex):/, ''); });
+      return { windowId: controller.main.windowId };
+    } finally { this.releaseMainProject(controller); }
   }
   releaseMainProject(controller) {
     const context = this.mainProjects.get(controller.id);
@@ -314,16 +326,15 @@ export class FusionAgent {
   }
   async createBinding(controller, owner, app, project, role, spec, preferred = '') {
     const ownerId = role === 'main' ? '' : owner.id;
-    const currentOwner = () => role === 'main' ? controller.main : controller.agents.find(row => row.id === ownerId);
-    let creation = currentOwner().creations?.findLast(row => row.app === app && row.projectId === project.id && !['rejected', 'bound'].includes(row.status));
+    const currentOwner = run => role === 'main' ? run.main : run.agents.find(row => row.id === ownerId);
+    let creation = currentOwner(controller).creations?.findLast(row => row.app === app && row.projectId === project.id && !['rejected', 'bound'].includes(row.status));
     const backend = app === 'opencode' ? fusionOpenCode.windowId
       : app === 'codex' && role === 'worker' && !project.host && (!creation || creation.windowId === CODEX_BACKEND) ? CODEX_BACKEND : '';
     if (app === 'opencode' && project.host) throw new Error('OpenCode 仅支持本机 Fusion 子任务');
     const context = backend ? { app, backend, page: { id: backend }, native: { app, threadId: '', host: '' } }
       : await this.carrierFor(controller, app, project, creation?.windowId || preferred);
-    const provider = providerFor(context);
     try {
-      currentOwner().creations ||= [];
+      const provider = this.providerFor(context);
       let actual;
       if (creation && backend) {
         if (!creation.nativeThreadId) throw Object.assign(new Error(`${app} 后台创建结果无法确认，不能重新创建会话`), { creationUnknown: true });
@@ -331,43 +342,58 @@ export class FusionAgent {
           : await fusionOpenCode.open({ threadId: creation.nativeThreadId, project })).native;
       } else if (creation) {
         const record = await provider.info(this, context, 'creation', creation.id);
-        if (!record) throw Object.assign(new Error('后台创建结果无法确认，不能重新创建会话'), { creationUnknown: true });
-        if (record.status === 'rejected') { creation.status = 'rejected'; creation.error = record.error; this.publish(controller); throw new Error(record.error); }
-        actual = record.context;
-        if (!actual && record.nativeThreadId) actual = await provider.info(this,
-          { ...context, native: { ...context.native, threadId: record.nativeThreadId, host: project.host || '' } }, 'context');
-        if (!actual) throw Object.assign(new Error('原生仍在创建会话，结果待核对'), { creationUnknown: true });
+        if (record?.status === 'rejected') {
+          this.commit(controller, next => Object.assign(currentOwner(next).creations.find(row => row.id === creation.id),
+            { status: 'rejected', error: record.error }));
+          throw new Error(record.error);
+        }
+        actual = record?.context;
+        const threadId = creation.nativeThreadId || record?.nativeThreadId || (app === 'cursor' ? creation.requestedThreadId : '');
+        if (!actual && threadId) {
+          try {
+            actual = await provider.info(this,
+              { ...context, native: { ...context.native, threadId, host: project.host || '' } }, 'context');
+          } catch (error) { throw Object.assign(error, { creationUnknown: true }); }
+          if (actual?.threadId !== threadId) actual = null;
+        }
+        if (!actual) throw Object.assign(new Error('后台创建结果无法确认，不能重新创建会话'), { creationUnknown: true });
       } else {
         const workspacePlacement = app === 'cursor' && !project.host ? await provider.info(this, context, 'projectPlacement', project.root) : null;
         if (app === 'cursor' && !project.host && !workspacePlacement) throw new Error('Cursor 原生窗口尚未确认所选项目');
-        creation = { id: crypto.randomUUID(), app, projectId: project.id, windowId: context.page.id, status: 'creating', startedAt: Date.now() };
-        currentOwner().creations.push(creation); this.publish(controller);
+        creation = { id: crypto.randomUUID(), requestedThreadId: crypto.randomUUID(), app, projectId: project.id,
+          windowId: context.page.id, status: 'creating', startedAt: Date.now() };
+        this.commit(controller, next => { (currentOwner(next).creations ||= []).push(creation); });
         try {
           actual = await provider.create(this, { ...context, native: { ...context.native, host: project.host || '' } }, {
-            ...spec, role, requestId: creation.id, root: project.root, threadId: crypto.randomUUID(), workspacePlacement,
+            ...spec, role, requestId: creation.id, root: project.root, threadId: creation.requestedThreadId, workspacePlacement,
           }, controller, creation);
-          if (backend) { creation.nativeThreadId = actual.threadId; this.publish(controller); }
+          this.commit(controller, next => {
+            currentOwner(next).creations.find(row => row.id === creation.id).nativeThreadId = actual.threadId;
+          });
         } catch (error) {
-          const pending = currentOwner().creations.find(row => row.id === creation.id);
-          pending.error = error.message; pending.status = 'unknown'; this.publish(controller);
+          if (!error.fusionStoreError) this.commit(controller, next => {
+            Object.assign(currentOwner(next).creations.find(row => row.id === creation.id), { error: error.message, status: 'unknown' });
+          });
           throw Object.assign(error, { creationUnknown: true });
         }
       }
-      if (fusionProject(actual.cwd, actual.host || '')?.id !== project.id) {
-        creation.status = 'rejected'; creation.error = '新原生会话的实际项目不匹配，未提交任务';
-        this.publish(controller);
-        throw new Error(creation.error);
+      creation = currentOwner(controller).creations.find(row => row.id === creation.id);
+      if (!actual.threadId || fusionProject(actual.cwd, actual.host || '')?.id !== project.id) {
+        throw Object.assign(new Error('新原生会话的实际项目不匹配，未提交任务'), { creationUnknown: true });
       }
       const binding = { id: crypto.randomUUID(), role, app, windowId: context.page.id, threadId: actual.threadId,
         host: actual.host || '', project, nativeProject: actual, created: Date.now(),
         ...(role === 'main' && !project.host ? { reuseWindow: true } : {}),
         ...(creation.mcp ? { mcp: creation.mcp } : {}) };
-      controller.bindings.push(binding); currentOwner().bindingId = binding.id;
-      creation = currentOwner().creations.find(row => row.id === creation.id);
-      creation.status = 'bound'; creation.bindingId = binding.id;
-      this.publish(controller);
-      rememberFusionSession(app, binding.threadId, project, binding.windowId);
-      return binding;
+      this.commit(controller, next => {
+        next.bindings.push(binding);
+        const owner = currentOwner(next);
+        owner.bindingId = binding.id;
+        Object.assign(owner.creations.find(row => row.id === creation.id), { status: 'bound', bindingId: binding.id });
+      });
+      try { rememberFusionSession(app, binding.threadId, project, binding.windowId); }
+      catch (error) { stateOfFusionRun(controller).report('catalog', error, controller); }
+      return controller.bindings.find(row => row.id === binding.id);
     } finally { await this.close(context); }
   }
   async prepareMain(controller) {
@@ -383,14 +409,90 @@ export class FusionAgent {
     const agent = controller.agents.find(row => row.id === task.workerId), work = controller.works.find(row => row.id === task.workId);
     const binding = controller.bindings.find(row => row.id === agent.bindingId && row.app === assignment.app && row.project.id === work.project.id);
     if (binding) return binding;
+    const peer = remotePeerProject(work.project);
+    if (peer) {
+      verifyRemotePeerProject(work.project);
+      if (assignment.app !== 'opencode') throw new Error('远端 RA Peer 目前只允许 OpenCode Worker');
+      const id = crypto.randomUUID();
+      this.commit(controller, next => {
+        next.bindings.push({ id, role: 'worker', app: 'opencode', windowId: 'ra-peer:' + peer.target,
+          threadId: 'peer-pending:' + id, host: work.project.host, project: work.project,
+          remote: { target: peer.target, workspace: peer.workspace, jobs: [] }, created: Date.now() });
+        next.agents.find(row => row.id === agent.id).bindingId = id;
+      });
+      return controller.bindings.find(row => row.id === id);
+    }
     const main = controller.bindings.find(row => row.id === controller.main.bindingId);
     return this.createBinding(controller, agent, assignment.app, work.project, 'worker', { title: `Fusion · ${task.goal}`,
       model: assignment.model, effort: assignment.effort },
       assignment.app === controller.main.app && (assignment.app !== 'cursor' || main?.project.id === work.project.id) ? main?.windowId || '' : '');
   }
+  async executeRemoteWorker(run, attemptId, task, work, binding, recovering, validateSubmit, runtime) {
+    const current = () => run.attempts.find(row => row.id === attemptId);
+    if (!recovering) {
+      validateSubmit();
+      this.commit(run, next => {
+        const attempt = next.attempts.find(row => row.id === attemptId);
+        const target = next.tasks.find(row => row.id === task.id);
+        const input = fusionTaskInput(next, target, attempt);
+        attempt.inputIds = target.inputs.filter(row => !row.deliveredAt).map(row => row.id);
+        attempt.prompt = input.prompt;
+        attempt.promptContext = input.context;
+        attempt.baseline = { available: false, at: Date.now(), reason: '跨机工作区变更需通过授权 RA Peer 核验' };
+      });
+    }
+    runtime.remoteBinding = binding;
+    return executeRemotePeer({
+      project: binding.project, jobId: attemptId, model: current().model, prompt: current().prompt || '',
+      previousJobId: binding.remote.jobs?.at(-1), expectedThreadId: binding.threadId,
+      access: task.access, scope: task.scope,
+      recovering, signal: runtime.abort.signal, timeoutMs: 600000,
+      onWaiting: waiting => {
+        const previous = this.live.get(attemptId)?.remoteWaiting;
+        if (waiting && previous?.id === waiting.id && previous.kind === waiting.kind) return;
+        if (!waiting && !previous) return;
+        if (waiting) this.live.set(attemptId, { remoteWaiting: waiting, state: { waiting: waiting.id } });
+        else this.live.delete(attemptId);
+        this.commit(run, next => {
+          const row = next.attempts.find(row => row.id === attemptId);
+          const currentTask = next.tasks.find(t => t.id === row.taskId);
+          if (currentTask) {
+            currentTask.status = waiting ? 'awaiting_user' : 'running';
+            const worker = next.agents.find(a => a.id === currentTask.workerId);
+            if (worker) worker.status = currentTask.status;
+          }
+          if (waiting) fusionEvent(next, 'native_question', { workId: row.workId, taskId: row.taskId,
+            attemptId, bindingId: binding.id, text: waiting.detail || '', nativeRequest: waiting },
+            'remote-native:' + attemptId + ':' + waiting.id);
+        });
+        stateOfFusionRun(run).notify(run);
+        this.onEvent();
+      },
+      onOpen: threadId => this.commit(run, next => {
+        const row = next.bindings.find(row => row.id === binding.id);
+        row.threadId = threadId;
+        row.remote.jobs ||= [];
+        if (!row.remote.jobs.includes(attemptId)) row.remote.jobs.push(attemptId);
+      }),
+      onSubmitting: () => {
+        validateSubmit();
+        this.commit(run, next => {
+          const row = next.attempts.find(row => row.id === attemptId);
+          if (row.submission !== 'not_submitted') throw new Error('远端提交已登记或结果未知，不能重复派工');
+          Object.assign(row, { status: 'submitting', submission: 'submitting',
+            submittedAt: Date.now(), submitIntent: { requestId: attemptId, bindingId: binding.id, threadId: binding.threadId } });
+        });
+      },
+      onSubmitted: (threadId, messageId = 'peer:' + attemptId) => this.commit(run, next => {
+        const row = next.attempts.find(row => row.id === attemptId);
+        Object.assign(row, { status: 'running', submission: 'submitted',
+          native: { threadId, turnId: messageId, messageId } });
+      }),
+    });
+  }
   async configure(context, controller, attempt) {
     const model = controller.capabilities.find(row => row.app === attempt.app)?.models.find(row => row.model === attempt.model);
-    const provider = providerFor(context), current = await provider.info(this, context, 'settings');
+    const provider = this.providerFor(context), current = await provider.info(this, context, 'settings');
     if (current.model !== attempt.model) await provider.action(this, context, 'model', attempt.model);
     if (attempt.effort) await provider.action(this, context, 'effort', attempt.effort);
     const actual = await provider.info(this, context, 'settings');
@@ -398,171 +500,336 @@ export class FusionAgent {
     if (attempt.effort && actual.effort !== attempt.effort) throw new Error('原生未确认任务思考强度');
     return actual;
   }
-  async execute(controller, attemptId, prompt, recovering = false) {
-    const current = () => controller.attempts.find(row => row.id === attemptId);
-    const cancelled = () => controller.stopRequested || current().status === 'cancelled'
-      || controller.tasks.find(row => row.id === current().taskId)?.stopRequested;
-    const task = controller.tasks.find(row => row.id === current().taskId);
-    const assignment = controller.assignments.find(row => row.id === current().assignmentId);
-    const work = task && controller.works.find(row => row.id === task.workId);
-    const binding = current().kind === 'main' ? controller.bindings.find(row => row.id === controller.main.bindingId)
-      : await this.workerBinding(controller, task, assignment);
-    current().bindingId = binding.id; this.publish(controller);
-    const context = await this.openBinding(controller, binding);
-    const provider = providerFor(context);
-    const runtime = { controller, attemptId, binding, context,
-      stopping: controller.stopRequested || task?.stopRequested || current().status === 'stopping' };
+  async execute(run, attemptId, prompt, recovering, validateSubmit) {
+    const current = () => run.attempts.find(row => row.id === attemptId);
+    const update = edit => this.commit(run, next => edit(next.attempts.find(row => row.id === attemptId), next));
+    if (current().nativeTerminal) return current().nativeTerminal;
+    const abort = new AbortController();
+    const runtime = { run, attemptId, abort };
     this.active.set(attemptId, runtime);
+    const task = run.tasks.find(row => row.id === current().taskId);
+    const work = task && run.works.find(row => row.id === task.workId);
+    const stopping = () => run.stopRequested || current().stopRequested || current().status === 'stopping'
+      || run.tasks.find(row => row.id === current().taskId)?.stopRequested;
+    const checkCancelled = () => {
+      abort.signal.throwIfAborted();
+      if (!recovering && (stopping() || current().endedAt))
+        throw Object.assign(new Error('未提交的任务已取消'), { cancelled: true });
+    };
     try {
-      if (!recovering) {
-        if (cancelled()) throw Object.assign(new Error('未提交的任务已取消'), { cancelled: true });
-        if (task) {
-          if (provider.prepareTask) current().messageId = await provider.prepareTask(context, current(), task);
-          else await this.configure(context, controller, current());
+      checkCancelled();
+      const assignment = run.assignments.find(row => row.id === current().assignmentId);
+      // Recovery opens the previously journaled binding, even if a later task changed the worker's binding.
+      const binding = recovering ? run.bindings.find(row => row.id === current().bindingId)
+        : current().kind === 'main' ? run.bindings.find(row => row.id === run.main.bindingId)
+          : await this.workerBinding(run, task, assignment);
+      if (!binding) throw new Error('原生执行缺少已登记的 Binding，结果待核对');
+      checkCancelled();
+      if (current().bindingId !== binding.id) update(attempt => { attempt.bindingId = binding.id; });
+      if (binding.remote)
+        return await this.executeRemoteWorker(run, attemptId, task, work, binding, recovering, validateSubmit, runtime);
+      const context = runtime.context = await this.openBinding(run, binding);
+      const provider = this.providerFor(context);
+      Object.assign(runtime, { provider, binding, current, update, stopping });
+      const execute = async () => {
+        checkCancelled();
+        if (!recovering) {
+          const messageId = task && provider.prepareTask ? await provider.prepareTask(context, current(), task) : current().messageId;
+          if (task && !provider.prepareTask) await this.configure(context, run, current());
+          const before = await provider.readTurn(this, context);
+          if (before.threadId !== binding.threadId) throw new Error('原生结果身份与 Binding 不一致');
+          if (before.turnId && !before.ended) throw new Error('原生会话仍有未结束的执行，提交尚未发生');
+          const baseline = task ? await this.workspaceEvidence(run, work.project, task.scope) : null;
+          checkCancelled();
+          validateSubmit();
+          update((attempt, next) => {
+            const task = next.tasks.find(row => row.id === attempt.taskId);
+            if (task) {
+              attempt.inputIds = task.inputs.filter(input => !input.deliveredAt).map(input => input.id);
+              const input = fusionTaskInput(next, task, attempt);
+              prompt = input.prompt;
+              attempt.promptContext = input.context;
+            }
+            Object.assign(attempt, { messageId, beforeIds: before.ids, beforeTurnId: before.turnId || '', prompt, baseline });
+          });
         }
-        const before = await provider.readTurn(this, context);
-        if (task) {
-          const input = fusionTaskInput(controller, task, current());
-          prompt = input.prompt; current().promptContext = input.context;
+        const observing = this.observe(runtime, recovering);
+        if (!recovering) {
+          // A receipt can arrive before the transport returns. The observer owns the settlement.
+          Promise.resolve().then(async () => {
+            if (!context.backend) await context.source.conversationView(context.native).watching;
+            checkCancelled();
+            const ack = await provider.submit(this, context, { text: prompt, requestId: attemptId, messageId: current().messageId }, () => {
+              checkCancelled();
+              if (runtime.done) throw new Error('原生观察已关闭，提交尚未发生');
+              validateSubmit();
+              update(attempt => {
+                if (attempt.submission !== 'not_submitted') throw new Error('Fusion 提交已登记，结果待核对');
+                Object.assign(attempt, { status: 'submitting', submission: 'submitting', submittedAt: Date.now(),
+                  submitIntent: { requestId: attemptId, threadId: binding.threadId, bindingId: binding.id,
+                    messageId: attempt.messageId || '', beforeTurnId: attempt.beforeTurnId } });
+              });
+              runtime.armReceiptDeadline();
+            }, runtime.changed);
+            if (context.app === 'cursor' && ack?.settings && !this.disposed) update(attempt => {
+              const { model, effort } = ack.settings;
+              if (model) Object.assign(attempt, { model, effort });
+            });
+            if (runtime.done) return;
+            if (ack?.turnId && ack.thread === binding.threadId && !current().native) update(attempt => {
+              attempt.submitReceipt = { turnId: ack.turnId, messageId: ack.messageId };
+            });
+            runtime.changed();
+          }).catch(error => {
+            if (current()?.submission === 'not_submitted' || error.fusionStoreError) runtime.finish(null, error);
+            else runtime.changed(error);
+          });
         }
-        Object.assign(current(), { beforeIds: before.ids, beforeTurnId: before.turnId || '', prompt,
-          baseline: task ? await fusionWorkspaceSnapshot(work.project, task.scope) : null, status: 'preparing' });
-        this.publish(controller);
-      }
-      const observing = this.observe(runtime, recovering);
-      if (!recovering) {
-        if (!context.backend) await context.source.conversationView(context.native).watching;
-        if (runtime.error) throw runtime.error;
-        if (cancelled()) { runtime.cancelBeforeSend(); return observing; }
-        Object.assign(current(), { status: 'submitting', submission: 'submitting', submittedAt: Date.now() }); this.publish(controller);
-        try {
-          await provider.action(this, context, 'send', { text: prompt, requestId: attemptId, messageId: current().messageId });
-        } catch (error) { runtime.fail(error); }
-        runtime.check();
-      }
-      return await observing;
+        return observing;
+      };
+      const terminal = await (provider.observe ? provider.observe(context, execute) : execute());
+      // Supplemental evidence may fail after native completion. The terminal fact is already durable.
+      const [settings, changes] = await Promise.all([
+        this.usageEvidence(run, () => provider.info(this, context, 'settings')),
+        task ? this.workspaceEvidence(run, work.project, task.scope) : null,
+      ]);
+      return { ...terminal, changes, usage: { native: settings.usage, observedAt: terminal.endedAt,
+        basis: settings.usageBasis || '原生未提供可读取的会话用量', actualCost: 'unknown' } };
     } finally {
-      runtime.unsubscribe?.(); this.active.delete(attemptId);
-      await this.close(context);
+      abort.abort();
+      runtime.unsubscribe?.();
+      if (this.active.get(attemptId) === runtime) this.active.delete(attemptId);
+      if (this.live.delete(attemptId)) stateOfFusionRun(run).notify(run);
+      try { if (runtime.context) await this.close(runtime.context); }
+      catch (error) { stateOfFusionRun(run).report('close', error, run); }
+    }
+  }
+  async usageEvidence(run, read) {
+    let timer;
+    try {
+      const deadline = new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error('原生用量读取超时')), this.evidenceTimeout);
+        timer.unref();
+      });
+      return await Promise.race([deadline, Promise.resolve().then(read)]);
+    } catch (error) {
+      stateOfFusionRun(run).report('settings', error, run);
+      return {};
+    } finally { clearTimeout(timer); }
+  }
+  async workspaceEvidence(run, project, scope) {
+    try { return await fusionWorkspaceSnapshot(project, scope); }
+    catch (error) {
+      stateOfFusionRun(run).report('workspace', error, run);
+      return { available: false, at: Date.now(), reason: error.message };
     }
   }
   observe(runtime, recovering) {
-    const { controller, context, binding, attemptId } = runtime;
-    const current = () => controller.attempts.find(row => row.id === attemptId);
-    const provider = providerFor(context);
+    const { run, context, binding, attemptId, provider, current, update, abort } = runtime;
     return new Promise((resolve, reject) => {
-      let reading = false, again = false, done = false;
-      const finish = (result, error) => { if (done) return; done = true; runtime.unsubscribe?.(); error ? reject(error) : resolve(result); };
-      runtime.fail = error => { runtime.error = error; finish(null, error); };
-      runtime.cancelBeforeSend = () => finish(null, Object.assign(new Error('未提交的任务已取消'), { cancelled: true }));
-      if (!context.backend) context.cdp.onclose = error => finish(null, error);
-      runtime.check = async () => {
-        if (done) return;
+      let reading = false, again = false, deadline;
+      const finish = runtime.finish = (result, error) => {
+        if (runtime.done) return;
+        runtime.done = true;
+        clearTimeout(deadline);
+        runtime.unsubscribe?.();
+        error ? reject(error) : resolve(result);
+      };
+      runtime.armReceiptDeadline = () => {
+        if (deadline) return;
+        deadline = setTimeout(() => finish(null, runtime.lastError || new Error('尚未核对原生接受结果，不能自动重发')), this.receiptTimeout);
+        deadline.unref();
+      };
+      if (!context.backend) context.cdp.onclose = error => finish(null, error || new Error('原生窗口连接已关闭'));
+      const check = async () => {
+        if (runtime.done || current().submission === 'not_submitted') return;
         if (reading) { again = true; return; }
         reading = true;
         try {
-          const turn = await provider.readTurn(this, context, { id: current().native?.messageId || current().messageId || '', attemptId,
-            previous: current().beforeIds || [], generationId: current().native?.generationId || '' });
-          const nativeError = await provider.info(this, context, 'sendError', attemptId);
+          const attempt = current();
+          const turn = await provider.readTurn(this, context, {
+            id: attempt.native?.messageId || attempt.submitReceipt?.messageId || attempt.messageId || '', attemptId,
+            previous: attempt.beforeIds || [], generationId: attempt.native?.generationId || attempt.submitReceipt?.turnId || '',
+          });
+          if (runtime.done) return;
           if (turn.threadId !== binding.threadId) throw new Error('原生结果身份与 Binding 不一致');
-          let snapshot = {};
-          if (!turn.ended) {
-            try {
-              snapshot = context.backend ? await provider.snapshot(context) : await context.source.readConversation(context.native, true);
-              delete current().contentError;
-              fusionLive.set(binding.id, { ...snapshot, at: Date.now() });
-            } catch (error) {
-              current().contentError = error.message;
-              fusionLive.delete(binding.id);
-            }
+          if (turn.id && attempt.native?.turnId && attempt.native.turnId !== turn.turnId)
+            throw new Error('原生结果与已登记轮次不一致');
+          if (context.app === 'cursor' && turn.id && attempt.native?.messageId
+              && (turn.id !== attempt.native.messageId || attempt.native.generationId && turn.generationId
+                && turn.generationId !== attempt.native.generationId)) throw new Error('Cursor 原生消息或 generation 与已登记轮次不一致');
+          if (turn.id && turn.accepted !== false || turn.ended && attempt.native?.turnId === turn.turnId) {
+            const native = { threadId: binding.threadId, turnId: turn.turnId, messageId: turn.id || attempt.native?.messageId,
+              generationId: turn.generationId || attempt.native?.generationId || '' };
+            if (!native.turnId || !native.messageId) throw new Error('原生回执缺少轮次身份');
+            const terminal = turn.ended ? { native, text: turn.text || '', completed: !turn.supersededBy && !!turn.completed,
+              stopped: !!turn.supersededBy || runtime.stopping(), error: turn.error || '', endedAt: Date.now(),
+              ...(turn.supersededBy ? { supersededBy: turn.supersededBy } : {}) } : null;
+            if (terminal || attempt.submission !== 'accepted' || attempt.status === 'unknown' || !attempt.native?.turnId) update((row, next) => {
+              Object.assign(row, { native, submission: 'accepted', acceptedAt: row.acceptedAt || Date.now(),
+                status: runtime.stopping() ? 'stopping' : 'running' });
+              if (turn.settings?.nativeModel) row.nativeModel = turn.settings.nativeModel;
+              delete row.error; delete row.outcomeUnknown;
+              const task = next.tasks.find(value => value.id === row.taskId);
+              for (const input of task?.inputs || []) if (!input.deliveredAt && row.inputIds?.includes(input.id))
+                Object.assign(input, { deliveredAt: row.acceptedAt, attemptId, nativeTurnId: native.turnId });
+              if (task) task.status = row.status;
+              const worker = task && next.agents.find(value => value.id === task.workerId);
+              if (worker) worker.status = row.status;
+              if (terminal) recordNativeTerminal(next, row, terminal);
+            });
+            clearTimeout(deadline); deadline = undefined;
+            if (terminal) { finish(terminal); return; }
+            if (!turn.current) throw new Error('原生已离开该轮次，结果待核对');
+            if (runtime.stopping()) this.stop(attemptId, turn).catch(error => {
+              stateOfFusionRun(run).report('stop', error, run);
+            });
+            this.observeInteractions(runtime, native, turn.current);
+          } else {
+            const rejection = await provider.info(this, context, 'sendError', attemptId);
+            if (runtime.done) return;
+            if (rejection?.status === 'error' && rejection.outcome === 'rejected')
+              throw Object.assign(new Error(rejection.message), { nativeRejected: true });
+            if (rejection?.message) runtime.lastError = new Error(rejection.message);
+            runtime.armReceiptDeadline();
           }
-          if (snapshot.state?.waiting) {
-            const id = `native-question:${attemptId}:${snapshot.state.waiting}`;
-            if (!controller.events.some(event => event.id === id)) {
-              fusionEvent(controller, 'native_question', { workId: current().workId, taskId: current().taskId,
-                attemptId, bindingId: binding.id, text: snapshot.state.waitingText, nativeRequest: snapshot.state.waiting }, id);
-              this.publish(controller); this.onEvent();
-            }
-          }
-          const generationId = turn.generationId || current().native?.generationId || '';
-          if (turn.id && turn.accepted !== false) {
-            if (current().kind === 'main' && !current().acceptedAt) {
-              const settings = await provider.info(this, context, 'settings');
-              current().model = controller.main.model = settings.model;
-              current().effort = controller.main.effort = settings.effort || '';
-            }
-            Object.assign(current(), { native: { threadId: binding.threadId, turnId: turn.turnId || snapshot.state?.run?.id,
-              messageId: turn.id, generationId: binding.app === 'devin' ? generationId : turn.generationId || '' },
-              submission: 'accepted', acceptedAt: current().acceptedAt || Date.now(), status: runtime.stopping ? 'stopping' : 'running' });
-            const task = controller.tasks.find(row => row.id === current().taskId);
-            if (task && !current().acceptanceSaved) for (const input of task.inputs.filter(row => current().inputIds?.includes(row.id)))
-              Object.assign(input, { deliveredAt: current().acceptedAt, attemptId, nativeTurnId: current().native.turnId });
-            if (task) task.status = snapshot.chat?.questions?.requests?.length || snapshot.chat?.questions?.list?.length || snapshot.state?.waiting ? 'awaiting_user' : 'running';
-            const agent = task && controller.agents.find(row => row.id === task.workerId);
-            if (agent) agent.status = task.status;
-            this.publish(controller, !current().acceptanceSaved);
-            current().acceptanceSaved = true;
-          }
-          if (turn.ended || snapshot.state?.run?.status === 'error' && current().native?.turnId === snapshot.state.run.id) {
-            const endedAt = Date.now();
-            current().nativeGenerationEndedAt = endedAt;
-            const task = controller.tasks.find(row => row.id === current().taskId), work = task && controller.works.find(row => row.id === task.workId);
-            const settings = await provider.info(this, context, 'settings');
-            const result = { text: turn.text || '', completed: !!turn.completed, stopped: runtime.stopping, error: turn.error || (snapshot.state?.run?.status === 'error' ? '原生执行失败' : ''),
-              native: current().native, endedAt, changes: task ? await fusionWorkspaceSnapshot(work.project, task.scope) : null,
-              usage: { native: settings.usage, observedAt: endedAt,
-                basis: settings.usageBasis || '原生未提供可读取的会话用量', actualCost: 'unknown' } };
-            finish(result); return;
-          }
-          if (nativeError?.status === 'error') throw Object.assign(new Error(nativeError.message), { nativeRejected: nativeError.outcome === 'rejected' });
-          if (recovering && !turn.id && current().submission === 'submitting') throw new Error('未找到可核对的原生接受事实，不能自动重发');
-          if (recovering && context.backend === CODEX_BACKEND && !codexBackend.hasWriter(binding.threadId)) throw new Error('后台 Codex 没有可继续观察的原生轮次，结果待核对');
-          if (runtime.stopping && current().native) await this.stop(attemptId);
-          this.publish(controller, false);
         } catch (error) { finish(null, error); }
-        finally { reading = false; if (again && !done) { again = false; runtime.check(); } }
+        finally { reading = false; if (again && !runtime.done) { again = false; void check(); } }
       };
-      const changed = error => error ? finish(null, error) : runtime.check();
-      runtime.unsubscribe = context.backend ? provider.subscribe(context, changed) : context.source.subscribe(changed, context.native);
-      if (recovering) runtime.check();
+      runtime.changed = error => {
+        if (error) runtime.lastError = error;
+        void check();
+      };
+      runtime.unsubscribe = provider.subscribe(context, error => error ? finish(null, error) : runtime.changed());
+      abort.signal.addEventListener('abort', () => finish(null, abort.signal.reason), { once: true });
+      if (recovering) { runtime.armReceiptDeadline(); runtime.changed(); }
     });
   }
-  async stop(attemptId) {
-    const runtime = this.active.get(attemptId);
-    if (!runtime) throw new Error('原生执行尚未重新观察，停止结果待核对');
-    runtime.stopping = true;
-    if (runtime.stopSubmitted) return;
-    const attempt = runtime.controller.attempts.find(row => row.id === attemptId);
-    const provider = providerFor(runtime.context);
-    const turn = await provider.readTurn(this, runtime.context, { id: attempt.native?.messageId || '', attemptId, previous: attempt.beforeIds || [], generationId: attempt.native?.generationId || '' });
-    if (turn.ended) { runtime.check(); return; }
-    if (!turn.current || !attempt.native || turn.turnId && turn.turnId !== attempt.native.turnId) throw new Error('原生已不在该任务轮次，不能停止其他执行');
-    await provider.action(this, runtime.context, 'stop', attempt.native.turnId);
-    runtime.stopSubmitted = true; runtime.check();
+  observeInteractions(runtime, native, current) {
+    if (!current || !runtime.provider.status) return;
+    if (runtime.interactionRead) { runtime.interactionAgain = true; return; }
+    const { run, context, binding, attemptId, provider, update } = runtime;
+    runtime.interactionRead = Promise.resolve().then(async () => {
+      const snapshot = await provider.status(this, context, native);
+      if (runtime.done || runtime.current().native?.turnId !== native.turnId) return;
+      const { state, chat } = snapshot || {};
+      const waiting = state?.waiting;
+      const id = waiting && `native-question:${attemptId}:${waiting}`;
+      const status = runtime.stopping() ? 'stopping' : waiting ? 'awaiting_user' : 'running';
+      const task = run.tasks.find(row => row.id === runtime.current().taskId);
+      if (task && task.status !== status || id && !run.events.some(event => event.id === id)) update((attempt, next) => {
+        const task = next.tasks.find(row => row.id === attempt.taskId);
+        if (task) {
+          task.status = status;
+          const worker = next.agents.find(row => row.id === task.workerId);
+          if (worker) worker.status = status;
+        }
+        if (id) fusionEvent(next, 'native_question', { workId: attempt.workId, taskId: attempt.taskId,
+          attemptId, bindingId: binding.id, text: state.waitingText || '', nativeRequest: waiting }, id);
+      });
+      if (waiting) {
+        const previous = this.live.get(attemptId);
+        if (!previous || JSON.stringify(previous) !== JSON.stringify(snapshot)) {
+          this.live.set(attemptId, snapshot);
+          stateOfFusionRun(run).notify(run);
+        }
+      } else if (this.live.delete(attemptId)) stateOfFusionRun(run).notify(run);
+      if (id) this.onEvent();
+    }).catch(error => stateOfFusionRun(run).report('interaction', error, run)).finally(() => {
+      runtime.interactionRead = null;
+      if (!runtime.done && runtime.interactionAgain) {
+        runtime.interactionAgain = false;
+        this.observeInteractions(runtime, native, current);
+      }
+    });
   }
-  async nativeAction(controller, attemptId, action) {
-    const attempt = controller.attempts.find(row => row.id === attemptId);
+  async stop(attemptId, observedTurn) {
+    const runtime = this.active.get(attemptId);
+    if (runtime?.remoteBinding) return stopRemotePeer(runtime.remoteBinding.project, attemptId);
+    if (!runtime?.current || runtime.stoppingJob) return runtime?.stoppingJob;
+    const { provider, context, run } = runtime;
+    const { native } = runtime.current();
+    if (!native || runtime.current().nativeTerminal || runtime.current().stopOutcomeUnknown) return;
+    const id = `native-stop:${attemptId}:${native.turnId}`;
+    if (run.effects.some(row => row.id === id)) return;
+    runtime.stoppingJob = (async () => {
+      const turn = observedTurn || await provider.readTurn(this, context, {
+        id: native.messageId, attemptId, generationId: native.generationId,
+      });
+      if (turn.ended) { runtime.changed(); return; }
+      if (!turn.current || turn.turnId !== native.turnId || turn.threadId !== native.threadId)
+        throw new Error('原生已不在该任务轮次，不能停止其他执行');
+      await runNativeEffect(run, { id, kind: 'native-stop', data: { attemptId, native }, canSettle: () => !this.disposed }, () => provider.stop(this, context, native));
+      runtime.changed();
+    })().finally(() => { runtime.stoppingJob = null; });
+    return runtime.stoppingJob;
+  }
+  async nativeAction(run, attemptId, action, requestId) {
+    const attempt = run.attempts.find(row => row.id === attemptId);
     if (!attempt || attempt.bindingId !== action.bindingId) throw new Error('请求不属于这个任务 Binding');
-    if (attempt.endedAt) throw new Error('该次执行已结束，不能处理其它执行的原生交互');
-    const binding = controller.bindings.find(row => row.id === attempt.bindingId), context = await this.openBinding(controller, binding);
+    if (attempt.endedAt || attempt.nativeTerminal || !attempt.native?.turnId) throw new Error('该次执行不在可交互的原生轮次');
+    const binding = run.bindings.find(row => row.id === attempt.bindingId);
+    if (binding?.remote) {
+      const waiting = this.live.get(attemptId)?.remoteWaiting;
+      if (!waiting || waiting.id !== action.id
+          || waiting.kind !== (action.kind === 'remotePermission' ? 'permission' : action.kind === 'remoteQuestion' ? 'question' : ''))
+        throw new Error('远端审批已过期或不属于该原生任务');
+      if (waiting.kind === 'permission' && !['once', 'reject'].includes(action.reply))
+        throw new Error('远端审批只能单次允许或拒绝');
+      if (waiting.kind === 'question' && (!Array.isArray(action.answers)
+          || !action.answers.length || action.answers.some(row => !Array.isArray(row) || row.some(v => typeof v !== 'string'))))
+        throw new Error('远端问题答案格式无效');
+      const id = 'native-input:' + attemptId + ':' + waiting.kind + ':' + waiting.id;
+      await runNativeEffect(run, { id, kind: 'native-input',
+        data: { attemptId, native: attempt.native, requestId, identity: waiting.id },
+        canSettle: () => !this.disposed }, async () => {
+        const receipt = await answerRemotePeer(binding.project, attemptId, waiting,
+          waiting.kind === 'permission' ? action.reply : action.answers);
+        if (receipt?.state !== 'answered') throw new Error('远端审批结果尚未确认');
+      });
+      this.live.delete(attemptId);
+      stateOfFusionRun(run).notify(run);
+      return;
+    }
+    const context = await this.openBinding(run, binding);
     try {
-      if (binding.app === 'opencode') return fusionOpenCode.interaction(context, action, attempt.native?.turnId);
-      if (context.backend === CODEX_BACKEND && action.kind === 'codexRequest') return backgroundCodex.answer(binding.threadId, attempt.native?.turnId, action);
-      if (binding.app === 'codex' && action.kind === 'codexRequest')
-        return this.call(context, `codexRequestAction(${JSON.stringify(String(action.id))}, ${Number(action.n)}, ${JSON.stringify(action.fields || [])})`);
-      if (binding.app === 'devin' && action.kind === 'codexRequest' || ['cursor', 'devin'].includes(binding.app) && action.kind === 'question')
-        return this.call(context, `nativeSessionAction(${JSON.stringify(binding.app)}, ${JSON.stringify(binding.threadId)}, 'question', ${JSON.stringify(action)})`);
-      if (binding.app === 'cursor' && action.kind === 'button')
-        return this.call(context, `nativeSessionAction('cursor', ${JSON.stringify(binding.threadId)}, 'permission', ${JSON.stringify(action.actionId)})`);
-      throw new Error('该原生交互尚无不切换普通会话的后台接口');
+      const provider = this.providerFor(context), native = attempt.native;
+      const turn = await provider.readTurn(this, context, { id: native.messageId, generationId: native.generationId, attemptId });
+      if (!turn.current || turn.ended || turn.threadId !== native.threadId || turn.turnId !== native.turnId
+          || run.attempts.find(row => row.id === attemptId)?.nativeTerminal) throw new Error('该次执行已结束或已离开原生轮次');
+      const identity = action.id || action.item || action.actionId;
+      const choice = action.kind === 'question' && ['option', 'prev', 'next'].includes(action.part)
+        || binding.app === 'codex' && action.kind === 'codexRequest' && String(action.id).startsWith('async:');
+      if (!identity || choice && !requestId) throw new Error('缺少原生交互身份');
+      const id = `native-input:${attemptId}:${native.turnId}:${identity}:${choice ? requestId : ''}`;
+      // Native answers may contain secrets. Record the request identity without its values.
+      await runNativeEffect(run, { id, kind: 'native-input', data: { attemptId, native, requestId, identity }, canSettle: () => !this.disposed },
+        () => provider.interaction(this, context, action, native));
     } finally { await this.close(context); }
+  }
+  dispose() {
+    this.disposed = true;
+    for (const runtime of this.active.values()) runtime.abort.abort(new Error('Fusion 观察已关闭'));
+    for (const session of this.mainProjects.values()) session.dispose();
+    this.mainProjects.clear();
+    this.live.clear();
   }
   async readBinding(controller, bindingId, history = false, before = null) {
     const binding = controller.bindings.find(row => row.id === bindingId);
     if (!binding) throw new Error('没有这个原生 Binding');
+    if (binding.remote) {
+      const jobId = (binding.remote.jobs || []).at(-1);
+      if (!jobId) return { binding, chat: { items: [], earlier: false } };
+      const status = await readRemotePeer(binding.project, jobId);
+      const task = controller.attempts.find(row => row.id === jobId);
+      return { binding, chat: { earlier: false, items: [
+        ...(task?.prompt ? [{ k: 'human', t: task.prompt }] : []),
+        ...(status.text ? [{ k: 'assistant', t: status.text }] : []),
+      ] } };
+    }
     const context = await this.openBinding(controller, binding, '');
     try {
-      return { binding, chat: await providerFor(context).content(this, context, history, before) };
+      return { binding, chat: await this.providerFor(context).content(this, context, history, before) };
     } finally { await this.close(context); }
   }
   async renameMain(controller, title) {
@@ -579,9 +846,16 @@ export class FusionAgent {
         throw new Error('原生会话目录与该任务项目不一致，未切换任何普通窗口');
       let expected = title;
       if (state.title !== title) {
-        const result = await provider.action(this, context, 'rename', title);
-        if (!result?.confirmed) throw new Error('桌面端尚未确认会话操作完成，请刷新列表查看');
-        expected = result.title;
+        const unsettled = controller.effects.findLast(row => row.kind === 'native-rename' && row.data.bindingId === binding.id
+          && ['executing', 'outcomeUnknown'].includes(row.status));
+        if (unsettled && state.title !== unsettled.data.title)
+          throw new Error('上次原生改名结果待核对，请检查桌面会话名称');
+        const id = crypto.randomUUID();
+        await runNativeEffect(controller, { id, kind: 'native-rename', data: { bindingId: binding.id, threadId: binding.threadId, title } }, async () => {
+          const result = await provider.action(this, context, 'rename', title);
+          if (!result?.confirmed) throw new Error('桌面端尚未确认会话操作完成，请刷新列表查看');
+          expected = result.title;
+        });
         state = await provider.info(this, context, 'name');
       }
       if (!state.exists || !state.title || state.title !== expected) throw new Error('桌面端尚未确认会话操作完成，请刷新列表查看');
@@ -590,21 +864,71 @@ export class FusionAgent {
     } finally { await this.close(context); }
   }
   async cleanupBinding(controller, binding) {
+    if (binding.remote) {
+      const id = 'native-cleanup:' + binding.id;
+      const saved = controller.effects.find(row => row.id === id && row.status === 'done');
+      if (saved?.receipt?.confirmed) return saved.receipt;
+      for (const jobId of binding.remote.jobs || []) {
+        const result = await closeRemotePeer(binding.project, jobId);
+        if (result.state !== 'closed') throw new Error('远端原生会话未确认删除，保留任务记录');
+      }
+      const receipt = { confirmed: true, action: 'delete' };
+      this.commit(controller, next => Object.assign(fusionEffect(next, 'native-cleanup',
+        { bindingId: binding.id, threadId: binding.threadId }, id),
+        { status: 'done', receipt, endedAt: Date.now() }));
+      return { ...receipt, app: binding.app, threadId: binding.threadId, at: Date.now() };
+    }
+    const id = `native-cleanup:${binding.id}`;
+    const saved = controller.effects.find(row => row.id === id && row.kind === 'native-cleanup' && row.status === 'done'
+      && row.data.threadId === binding.threadId);
+    const result = saved?.receipt || await this.#cleanupNativeBinding(controller, binding, id);
+    try { publishSessionCleanup(binding.app, binding.threadId, result.action); }
+    catch (error) {
+      stateOfFusionRun(controller).report('catalog', error, controller);
+      throw error;
+    }
+    return { ...result, app: binding.app, threadId: binding.threadId, at: Date.now() };
+  }
+  async #cleanupNativeBinding(controller, binding, id) {
     const context = binding.app === 'opencode' ? await fusionOpenCode.open(binding, { archived: true })
       : binding.app === 'codex' && binding.windowId === CODEX_BACKEND ? await this.openBinding(controller, binding)
       : await this.carrierFor(controller, binding.app, binding.project, binding.reuseWindow ? binding.windowId : '');
     context.native = { app: binding.app, threadId: binding.threadId, host: binding.project.host || '', cwd: binding.project.root };
     try {
-      const provider = providerFor(context), state = await provider.cleanupState(this, context);
+      const provider = this.providerFor(context), state = await provider.cleanupState(this, context);
       if (state.running) throw new Error('原生会话仍在运行，请先停止并核对');
       if (state.exists && fusionProject(state.context.cwd, state.context.host || '')?.id !== binding.project.id)
         throw new Error('原生会话目录与该 Binding 项目不一致，未执行清理');
-      const result = await provider.cleanup(this, context);
-      if (result?.confirmed !== true || !['delete', 'archive'].includes(result.action)) throw new Error('桌面端尚未确认删除或归档完成');
-      if (result.action === 'delete') removeLibrarySession(binding.app, binding.threadId);
-      else favoriteSession(binding.app, binding.threadId, false);
-      publishSessionChange(binding.app, binding.threadId, { action: result.action });
-      return { ...result, app: binding.app, threadId: binding.threadId, at: Date.now() };
+      // Cursor throws this guard BEFORE any native delete. Keep it out of the
+      // uncertain-effect journal, so a later QA session can make it deletable.
+      if (binding.app === 'cursor' && state.deletionBlocked && state.exists && !state.archived)
+        throw new Error('Cursor 当前只有一个原生会话，清空不能代替删除或归档');
+      const prior = controller.effects.find(row => row.id === id);
+      if (binding.app === 'cursor' && prior?.status === 'outcomeUnknown'
+          && /^Error: Cursor 当前只有一个原生会话，清空不能代替删除或归档/.test(prior.error || '')) {
+        // Existing v517 records captured this exact pre-native guard as
+        // outcomeUnknown. Its throw site precedes delete, proving no write.
+        commitFusion(controller, next => {
+          const effect = next.effects.find(row => row.id === id);
+          effect.status = 'preflightRejected';
+          effect.preflightError = effect.error;
+          effect.preflightRejectedAt = Date.now();
+        });
+      }
+      const data = { bindingId: binding.id, threadId: binding.threadId };
+      if (!state.exists || state.archived) {
+        const receipt = { confirmed: true, action: state.archived ? 'archive' : 'delete', already: true };
+        commitFusion(controller, next => Object.assign(fusionEffect(next, 'native-cleanup', data, id),
+          { status: 'done', receipt, endedAt: Date.now() }));
+        return receipt;
+      }
+      let receipt;
+      await runNativeEffect(controller, { id, kind: 'native-cleanup', data }, async () => {
+        receipt = await provider.cleanup(this, context);
+        if (receipt?.confirmed !== true || !['delete', 'archive'].includes(receipt.action))
+          throw new Error('桌面端尚未确认删除或归档完成');
+      }, next => { next.effects.find(row => row.id === id).receipt = receipt; });
+      return receipt;
     } finally { await this.close(context); }
   }
 }

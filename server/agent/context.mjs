@@ -1,80 +1,27 @@
 import { MOD, NAMED_KEYS, cdpRead, awaitCdpRead } from '../cdp.mjs';
 import { EDITORS } from '../config.mjs';
-import { helpersCall, DEVIN_COMPOSER_SRC, COMPOSER_TARGET_SRC } from '../page/build.mjs';
+import { helpersCall } from '../page/build.mjs';
+import { tapCss } from './primitives.mjs';
+import { AgentServices } from './services.mjs';
+import { ADAPTERS } from '../apps/index.mjs';
 import { resetThinkingCaches } from './thinking-cache.mjs';
+import { ConversationRef, SessionBinding } from '../session/binding.mjs';
 
-// Cursor's chat composer is a ProseMirror contenteditable; selectors ordered from most to least specific.
-export const FOCUS_COMPOSER = `(() => {
-  // Codex draws its prompt inside a same-origin iframe. Cursor and Devin use this page.
-  const doc = document.getElementById('active-frame')?.contentDocument || document;
-  ${DEVIN_COMPOSER_SRC}
-  revealDevinComposer();
-  ${COMPOSER_TARGET_SRC}
-  const el = composerTarget(doc);
-  if (!el) return null;
-  el.focus();
-  const range = doc.createRange();
-  range.selectNodeContents(el);
-  range.collapse(false);
-  const sel = doc.defaultView.getSelection();
-  sel.removeAllRanges();
-  sel.addRange(range);
-  return true;
-})()`;
+export * from './primitives.mjs';
 
-
-export const cursorUsage = { data: null, initial: null };
-export const appPlans = {};
-
-const quotaName = app => ({ cursor: 'Cursor', devin: 'Devin', codex: 'Codex', fusion: 'Fusion' }[app] || app || 'Agent');
-
-export function quotaState(usage) {
-  const limits = (usage?.limits || []).map(limit => {
-    const raw = limit?.pct;
-    const pct = typeof raw === 'number' ? raw : typeof raw === 'string' && raw.trim() ? Number(raw) : NaN;
-    return Number.isFinite(pct) ? { ...limit, pct } : null;
-  }).filter(Boolean);
-  if (!limits.length || usage?.missing) return { state: 'unknown', limits: [] };
-  const exhausted = limits.filter(limit => limit.basis === 'remaining' ? limit.pct <= 0 : limit.pct >= 100);
-  if (exhausted.length) return { state: 'exhausted', limits, exhausted };
-  const warning = limits.filter(limit => limit.basis === 'remaining' ? limit.pct <= 1 : limit.pct >= 99);
-  return { state: warning.length ? 'warning' : 'ok', limits, warning };
-}
-
-export function quotaBlockedMessage(app, usage) {
-  const state = quotaState(usage);
-  if (state.state !== 'exhausted') return '';
-  const labels = state.exhausted.map(limit => limit.label).filter(Boolean).join('、');
-  return `${quotaName(app)} ${labels || '账号额度'}已用尽，请等待额度重置、升级套餐或切换账号后重试。`;
-}
-
-export function quotaErrorMessage(app, error) {
-  const raw = String(error?.message || error || '').trim();
-  if (!raw) return '';
-  const quota = /quota|rate[ _-]*limit|usage[ _-]*limit|usage quota|exhausted|too many requests/i.test(raw);
-  const denied = /permission denied[\s\S]*internal server error/i.test(raw);
-  if (!quota && !denied) return '';
-  return `${quotaName(app)} 账号额度或频率限制，当前请求未发送成功。请等待额度重置、升级套餐或切换账号后重试。`;
-}
-
-export class AgentContext {
+export class AgentContext extends AgentServices {
   constructor({ deviceId = '', emit } = {}) {
+    super();
     this.deviceId = deviceId;
     if (emit) this.emit = emit;
-    this.cdp = null;
-    this.editorCdp = null;
+    SessionBinding.initialize(this);
     this.lastChat = '';
     this.lastExtractedChat = '';
     this.draftRevision = this.draftGeneration = 0;
     this.pollAgain = null;
     this.resetCaches();
     this.curSession = undefined;
-    this.app = null;
-    this.sel = 0;
-    this.windowId = '';
-    this.threadId = '';
     this.pendingThread = '';
-    this.codexPageId = '';
     this.lastPanel = '';
     this.lastBusy = null;
     this.lastTermHash = undefined;
@@ -83,6 +30,8 @@ export class AgentContext {
   }
 
 
+
+  get adapter() { return ADAPTERS[this.app]; }
 
   emit() {}
 
@@ -105,7 +54,7 @@ export class AgentContext {
   }
 
   selectionKey() {
-    return [this.app || '', this.windowId || '', this.threadId || ''].join('|');
+    return ConversationRef.capture(this).key;
   }
 
   clearViewState() {
@@ -221,11 +170,8 @@ export class AgentContext {
     }
   }
 
-  async tapCss(x, y, button = 'left', cdp = this.cdp) {
-    const base = { x, y, button, clickCount: 1 };
-    await cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x, y });
-    await cdp.send('Input.dispatchMouseEvent', { type: 'mousePressed', ...base });
-    await cdp.send('Input.dispatchMouseEvent', { type: 'mouseReleased', ...base });
+  tapCss(x, y, button = 'left', cdp = this.cdp) {
+    return tapCss(cdp, x, y, button);
   }
 
   async key(combo, opts = {}) {
@@ -258,12 +204,16 @@ export class AgentContext {
     try {
     await this.assertSelectedThread();
     if (sel != null && sel !== this.selectionKey()) throw new Error('会话已切换，请使用当前会话的按钮');
-    const pos = await this.cdp.evaluate(helpersCall(`locate(${JSON.stringify(String(item))}, ${Number(n) || 0}, ${JSON.stringify(actionId || '')}, ${JSON.stringify(label || '')})`));
-    if (!pos) { await this.pollChat(true); throw new Error('请求已更新，请查看最新选项'); }
-    if (/^(Fork chat from here|Open agent|View agent|View subagent)$/.test(label || '')) this.selectedThread = '';
-    if (pos.fork) {
-      if (!await this.cdp.evaluate(helpersCall(`forkCodexTurn(${JSON.stringify(String(item))})`))) throw new Error('请求已更新，请查看最新选项');
-    } else await this.tapCss(pos.x, pos.y);
+    const terminalDecision = this.app === 'cursor' && actionId && (label === 'Run' || label === 'Skip')
+      && await this.cdp.evaluate(helpersCall(`nativeSessionAction('cursor', ${JSON.stringify(this.threadId)}, 'terminalPermission', ${JSON.stringify({ item, actionId, label })})`));
+    if (!terminalDecision) {
+      const pos = await this.cdp.evaluate(helpersCall(`locate(${JSON.stringify(String(item))}, ${Number(n) || 0}, ${JSON.stringify(actionId || '')}, ${JSON.stringify(label || '')})`));
+      if (!pos) { await this.pollChat(true); throw new Error('请求已更新，请查看最新选项'); }
+      if (/^(Fork chat from here|Open agent|View agent|View subagent)$/.test(label || '')) this.selectedThread = '';
+      if (pos.fork) {
+        if (!await this.cdp.evaluate(helpersCall(`forkCodexTurn(${JSON.stringify(String(item))})`))) throw new Error('请求已更新，请查看最新选项');
+      } else await this.tapCss(pos.x, pos.y);
+    }
     clicked = true;
     await new Promise(r => setTimeout(r, 200));
     await this.pollChat(true);

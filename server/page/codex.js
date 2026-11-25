@@ -198,10 +198,20 @@
   };
 
   const codexPromptEl = () => composerTarget(doc);
-  const codexPromptText = () => {
-    const ed = codexPromptEl();
-    if (!ed) return null;
-    return (ed.innerText || '').replace(/[\u200b\ufeff]/g, '').replace(/^\n/, '').replace(/\n+$/g, '');
+  const codexComposerThread = props => props.find(p => typeof p.conversationId === 'string')?.conversationId;
+  const codexComposerProps = (editor, expectedThread) => {
+    if (!editor) return null;
+    const props = codexFiberProps(editor, Infinity);
+    const thread = codexComposerThread(props);
+    if (expectedThread === undefined || thread === expectedThread) return props;
+    // An empty new-chat composer may not have a conversation ID yet.
+    if (expectedThread === '' && thread === undefined && composerInputs(doc).length === 1 && !codexAnnotationThread()) return props;
+    return null;
+  };
+  const codexPromptText = expectedThread => {
+    const editor = codexPromptEl();
+    const controller = codexComposerProps(editor, expectedThread)?.find(props => props.composerController)?.composerController;
+    return controller && typeof controller.getPlainText === 'function' ? controller.getPlainText() : null;
   };
   const codexPromptPayload = () => {
     const ed = codexPromptEl();
@@ -225,8 +235,8 @@
     const r = ed.getBoundingClientRect();
     return codexPoint(ed);
   };
-  const codexClearDraftAttachments = () => {
-    const props = codexFiberProps(codexPromptEl(), Infinity).find(props => typeof props.clearDraftAttachments === 'function');
+  const codexClearDraftAttachments = expectedThread => {
+    const props = codexComposerProps(codexPromptEl(), expectedThread)?.find(props => typeof props.clearDraftAttachments === 'function');
     if (!props) return false;
     props.clearDraftAttachments();
     return true;
@@ -331,6 +341,23 @@
     if (thread && codexThread() !== thread) return false;
     if (action === 'update') {
       const threadId = thread || codexThread(), manager = codexNativeManager();
+      if (!manager) {
+        const before = codexQueued(true), target = before.find(row => row.id === id);
+        const controller = codexQueueController();
+        if (!target || typeof controller?.handleEditMessage !== 'function') throw new Error('排队消息已不存在');
+        // Let the native editor retain the queued context, position and draft.
+        await controller.handleEditMessage(id);
+        if (codexQueueController()?.editingMessageId !== id) throw new Error('Codex 未进入该队列项的编辑状态');
+        if (!setComposerDraft(text) || codexThread() !== threadId) throw new Error('Codex 队列编辑输入尚未就绪');
+        if (!await submitCodexMessage('queue', false, '', threadId)) throw new Error('Codex 队列编辑尚未提交');
+        const previous = new Set(before.map(row => row.id)), deadline = Date.now() + 3000;
+        while (Date.now() < deadline) {
+          const matches = codexQueued(true).filter(row => (row.id === id || !previous.has(row.id)) && row.t === text);
+          if (matches.length === 1) return { queued: true, queueId: matches[0].id };
+          await new Promise(resolve => requestAnimationFrame(resolve));
+        }
+        throw new Error('Codex 尚未确认队列编辑结果，请核对原生队列');
+      }
       const coordinator = manager.turnCoordinator;
       await coordinator.loadMessages(threadId);
       if (coordinator.readState()[threadId]?.some(row => row.id === id)) {
@@ -547,11 +574,11 @@
     const visiblePermission = visible ? permissionLabel() : null;
     const permission = visiblePermission || (['auto_review', 'guardian_subagent'].includes(permissions?.approvalsReviewer) ? 'Approve for me'
       : permissions?.sandboxPolicy?.type === 'dangerFullAccess' ? 'Full access' : permissions ? 'Ask for approval' : null);
-    const view = visible ? codexFacts()?.view : null;
+    const view = visible ? codexFacts(conversation)?.view : null;
     return { thread, title: conversation.title || '', rect: [0, 0, 0, 0], items: page.items, global: [],
       _nativeState: { thread, run, busy: run?.status === 'running', host: remoteContext.host, ...nativeWaiting('codex', thread, manager) },
       busy: run?.status === 'running', readonly: false, queued: codexQueued(false, state), subagents: [],
-      changed: codexChanges().count, questions: { codex: true, requests: codexRequestData() },
+      changed: codexChanges(state).count, questions: { codex: true, requests: codexRequestData() },
       model: (manager && agentModelName()) || model, effort, permission, mode: conversation.latestCollaborationMode?.mode || null,
       context: null, capacityPresent: page.items.some(item => item.capacity),
       performance: nativePerformance('codex', thread, run, model, conversation),
@@ -781,15 +808,15 @@
     const skills = queries.flatMap(q => q.state.data?.data || []).flatMap(d => d.skills || []).filter(s => s.enabled);
     return [...new Map(skills.map(s => [s.path, { label: s.interface?.displayName || s.name, q: s.interface?.displayName || s.name, sub: `${s.name} · ${s.interface?.shortDescription || s.description || ''}`, section: 'skills', trigger: '/' }])).values()];
   };
-  const codexChanges = () => {
+  const codexChanges = (state = null) => {
     const files = new Map();
     const turns = [...doc.querySelectorAll('[data-turn-key]')];
-    const entries = remoteContext?.app === 'codex'
+    const entries = state ? state.entries : remoteContext?.app === 'codex'
       ? codexHistoryState(codexNativeManager()?.getConversation(remoteContext.threadId), false).entries
       : turns.length ? codexFiberProps(turns[0], 50).find(p => Array.isArray(p.entries))?.entries : null;
     let changed;
     if (entries) {
-      const thread = codexThread(), scopes = codexHistoryScopes();
+      const thread = codexThread(), scopes = state?.scopes || codexHistoryScopes();
       const patchTurns = doc.__remoteCodexPatchTurns ||= new WeakMap();
       const mounted = new Map(turns.map(el => [el.getAttribute('data-turn-key'), el]));
       for (const entry of [...entries].reverse()) {
@@ -828,11 +855,13 @@
     const b = el && buttonsIn(el, false).find(b => b.label === label);
     return b ? codexPoint(b.el) : null;
   };
-  const codexFacts = () => {
+  const codexFacts = (conversation = null) => {
     const add = [...doc.querySelectorAll('[data-composer-navigation-target="add-context"]')].find(vis);
     if (!add) return null;
-    const conversation = codexNativeManager()?.getConversation(codexThread());
-    const plan = conversation?.latestCollaborationMode?.mode === 'plan';
+    conversation ||= codexNativeManager()?.getConversation(codexThread())
+      || codexThreadProjection(codexThread(), codexRequestHost());
+    const mode = conversation?.latestCollaborationMode || conversation?.latestThreadSettings?.collaborationMode;
+    const plan = mode?.mode === 'plan';
     let ideStatus = '', autoContext, hasDraftAttachments;
     let fiber = add?.[Object.keys(add).find(k => k.startsWith('__reactFiber'))];
     for (let i = 0; i < 40 && fiber; i++) {

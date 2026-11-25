@@ -74,7 +74,7 @@ export async function transferApi(req, res, route, device) {
     }
     if (route === '/api/transfer/preview' && req.method === 'GET') {
       const file = localPath(query.get('path')), stat = await fsp.stat(file);
-      const info = { name: path.basename(file), path: file, size: stat.size };
+      const info = { name: path.basename(file), path: file, root: path.parse(file).root, size: stat.size };
       const body = await buildFilePreview({ path: file, size: stat.size }, device.id, () => query.get('theme') === 'light' ? 'light-plus' : 'dark-plus');
       return json(req, res, 200, { ...info, ...body });
     }
@@ -97,6 +97,11 @@ export async function transferApi(req, res, route, device) {
       const destination = filePlatform.uploadPath(directory, relative);
       const mode = query.get('mode');
       if (!['rename', 'replace', 'skip'].includes(mode)) throw Error('请选择同名文件的处理方式');
+      if (query.get('kind') === 'directory') {
+        for await (const chunk of verifiedTransfer(req, req)) if (chunk.length) throw Error('目录上传不接受文件内容');
+        await fsp.mkdir(destination, { recursive: true });
+        return json(req, res, 200, { path: destination, size: 0 });
+      }
       temporary = path.join(await existingDirectory(path.dirname(destination)), '.remote-agent-' + crypto.randomUUID() + '.upload');
       await pipeline(req, source => verifiedTransfer(req, source), fs.createWriteStream(temporary, { flags: 'wx', mode: 0o600 }));
       let target = destination;

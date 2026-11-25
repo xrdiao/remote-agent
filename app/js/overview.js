@@ -1,6 +1,9 @@
 /* ---------- overview: projects grouped by computer → sessions ---------- */
-const OV_ROOT = { level: 'sessions', comp: null, proj: null, open: null };
-const ovS = { ...OV_ROOT, level: store.get('ov-level') || OV_ROOT.level };
+const OV_ROOT = { level: 'sessions', comp: null, proj: null, open: null, query: '' };
+const ovLevel = level => ({ work: 'fusion', 'peer-tasks': 'devices', 'device-control': 'devices' })[level]
+  || (['sessions', 'projects', 'favorites', 'fusion', 'devices'].includes(level) ? level : OV_ROOT.level);
+const ovS = { ...OV_ROOT, level: ovLevel(store.get('ov-level')) };
+const ovIsOverview = () => ['sessions', 'projects', 'favorites'].includes(ovS.level);
 const OV_RANK = { done: 0, wait: 1, err: 1, run: 2, idle: 3, unknown: 4 };
 const OV_AGENT = { cursor: 'Cursor', devin: 'Devin', codex: 'Codex', opencode: 'OpenCode' };
 const OV_EN = {
@@ -47,7 +50,7 @@ let ovOpenRequest = 0;
 let ovToolState = null;
 const ovComposerControls = { mic: $('mic'), stop: $('stop'), attachments: $('attachments').parentElement };
 let ovBatch = null;
-let ovList = [], ovPaint = '', ovCrumbsPaint = '', ovSig = [], ovScroll, ovEditing = null;
+let ovList = [], ovPaint = '', ovCrumbsPaint = '', ovBoardPaint = '', ovSig = [], ovScroll, ovEditing = null;
 const ovTn = new Map();
 const ovTname = k => { let n = ovTn.get(k); if (!n) ovTn.set(k, n = 'ov-t' + (ovTn.size + 1)); return n; };
 
@@ -56,7 +59,7 @@ const ovAg = app => `<span class="ov-ag"><img class="on-dark" src="logo-${app}-d
 const ovLogo = (inner, cls = '') => `<span class="ov-logo${cls}">${inner}</span>`;
 const ovText = (raw, ui) => raw ? `<span class="ovRaw">${esc(raw)}</span>` : ui ? `<span>${ovT(ui)}</span>` : '';
 const ovRecLogo = (r, extra = '') => r.fusion ? ovLogo(ovAg(r.main.app) + extra) : ovLogo(ovAg(r.app) + extra);
-const ovAgName = r => r.fusion ? `Fusion · ${OV_AGENT[r.main.app]}` : OV_AGENT[r.app] || r.app;
+const ovAgName = r => r.fusion ? `${I18N.tr('自主编排')} · ${OV_AGENT[r.main.app]}` : OV_AGENT[r.app] || r.app;
 const ovTarget = x => ({ computer: x.comp, win: x.win, windowId: x.windowId, threadId: x.threadId || '',
   ...(x.dormant ? { project: { root: x.workspace, host: x.host } } : {}) });
 const ovNativeKey = (comp, s) => `${comp}|${s.projectId}|${s.threadId || s.win}`;
@@ -71,12 +74,12 @@ const ovAggregate = (recs, loading = false) => {
 };
 const ovCompName = id => ovList.find(e => e.id === id)?.name || '';
 const ovSessionIdentity = r => r.key;
-const ovCanManage = r => !r.fusion && !r.off && !!r.threadId;
-const ovContext = r => `${ovS.level === 'favorites' ? ovCompName(r.comp) + ' · ' : ''}${r.projName} · ${ovAgName(r)}`;
+const ovCanManage = r => !!r && !r.fusion && !r.off && !!r.threadId;
+const ovContext = r => `${r.projName} · ${ovAgName(r)}`;
 const ovOn = e => ovComputerStatus(e) === 'online';
 
 function ovComputerStatus(e, st = ovSt.get(e.id)) {
-  const link = e.c && computerSockets.get(e.c.key), status = st?.dataStatus || 'loading';
+  const link = e.c && linkForComputerKey(e.c.key), status = st?.dataStatus || 'loading';
   if (e.foreign) return status;
   if (link?.phase === 'identity') return 'offline';
   if (link?.rejected) return 'auth';
@@ -120,7 +123,7 @@ function ovPoll() {
   });
 }
 function ovRefreshPreview() {
-  const r = !document.body.classList.contains('conv') && ovRecs().find(r => r.key === ovS.open && !r.fusion && !r.off && !r.dormant);
+  const r = ovS.open && !document.body.classList.contains('conv') && ovRecs().find(r => r.key === ovS.open && !r.fusion && !r.off && !r.dormant);
   if (ovPreviewOwner && ovPreviewOwner.key !== r?.key) {
     ovPreviewOwner.controller.abort();
     ovPreviewOwner = null;
@@ -180,7 +183,7 @@ async function ovRead(c, relay) {
 }
 async function ovLoad(e, st) {
   const c = e.c;
-  const link = computerSockets.get(c.key), socket = link?.socket, authorization = link?.auth;
+  const link = linkForComputerKey(c.key), socket = link?.socket, authorization = link?.auth;
   st.stage = c.relay ? 1 : 0;
   if (!c.relay) return;
   const r = await ovRead(c, c.relay);
@@ -188,7 +191,7 @@ async function ovLoad(e, st) {
   if (!computerRetryAllowed(c)) return;
   if (r.down) throw new Error('down');
   if (r.auth) {
-    const current = computerSockets.get(c.key);
+    const current = linkForComputerKey(c.key);
     if (current?.socket === socket && current?.auth === authorization) rejectComputerConnection(c, 'auth');
     return;
   }
@@ -200,7 +203,7 @@ async function ovLoad(e, st) {
 function ovApply(e, st, data) {
   const first = !st.fetched, prev = st.prev, next = new Map();
   st.fetched = true; st.data = data;
-  const link = computerSockets.get(e.c.key);
+  const link = linkForComputerKey(e.c.key);
   if (link?.authed) saveComputerResume(link);
   for (const s of data.sessions) {
     const key = ovNativeKey(e.id, s);
@@ -254,9 +257,15 @@ function ovRecsOf(e, st) {
 }
 const ovRecs = () => [...ovList.flatMap(e => ovSt.get(e.id)?.data ? ovRecsOf(e, ovSt.get(e.id)) : []),
   ...(ovS.level === 'favorites' ? fusionWorkbenchRecords().filter(row => row.favorite) : [])];
+function ovMatches(query, ...values) {
+  return !query || values.some(value => String(value || '').toLocaleLowerCase().includes(query));
+}
 function ovScopedRecs(all = ovRecs()) {
-  if (ovS.level === 'favorites') return [...new Map(all.filter(r => r.favorite).map(r => [ovSessionIdentity(r), r])).values()];
-  return all.filter(r => !r.dormant && (!ovS.comp || r.comp === ovS.comp) && (!ovS.proj || r.project === ovS.proj));
+  const query = ovS.query.trim().toLocaleLowerCase();
+  const scoped = all.filter(r => (!ovS.comp || r.comp === ovS.comp) && (!ovS.proj || r.project === ovS.proj)
+    && (!query || ovMatches(query, r.title, r.projName, ovAgName(r), ovCompName(r.comp))));
+  if (ovS.level === 'favorites') return [...new Map(scoped.filter(r => r.favorite).map(r => [ovSessionIdentity(r), r])).values()];
+  return scoped.filter(r => !r.dormant);
 }
 function ovProjects(all) {
   const map = new Map();
@@ -307,7 +316,7 @@ function ovAgg({ attrs, logo, title, sub, recs, badge, off, vt, loading }) {
     <div class="ov-foot">${ovSeg(k)}<span class="ov-num">${k.wait + k.run}<small>活跃</small></span></div></div>`;
 }
 function ovComputerGroup(e, all, projs) {
-  const st = ovSt.get(e.id), link = e.c && computerSockets.get(e.c.key);
+  const st = ovSt.get(e.id), link = e.c && linkForComputerKey(e.c.key);
   const status = ovComputerStatus(e, st);
   if (status === 'online' && !st.loaded) {
     st.loaded = true;
@@ -333,7 +342,9 @@ function ovComputerGroup(e, all, projs) {
   if (loading) detail = ovT(link?.retry != null || link?.attempt && link?.socket?.readyState >= 2 || link?.restoring ? '正在恢复连接…' : link?.authed ? '正在读取项目与会话…' : link?.opened ? '正在验证设备…' : !link?.socket && st?.data ? '等待连接…' : stage ? '连接电脑…' : '查找地址…');
   const progress = loading && !e.foreign ? `<span class="ov-computer-progress" aria-hidden="true">${[0, 1, 2].map(i => `<i class="${i < stage ? 'done' : i === stage ? 'current' : ''}"></i>`).join('')}</span>` : '';
   ovSig.push(`c:${e.id}:${status}:${loading ? stage : ''}:${collapsed}`);
-  const body = !collapsed && st?.data ? ovS.level === 'projects' ? ovProjectTiles(projects, all, false) : ovSessions(recs, e.id) : '';
+  const body = !collapsed && (st?.data || ovS.level === 'favorites') ? ovS.level === 'projects'
+    ? ovProjectTiles(projects, all, false) : ovS.level === 'favorites'
+      ? recs.slice().sort(ovCompare).map(ovScopedTile).join('') : ovSessions(recs, e.id) : '';
   const empty = status === 'online' && st?.data?.ready ? ovEmpty('这里还没有会话') : '';
   const tools = status === 'online' && !e.foreign ? `<button type="button" class="ov-computer-tool" data-ov="computer-projects" data-id="${esc(e.id)}" title="${I18N.tr('打开项目／新建会话')}" aria-label="${I18N.tr('打开项目／新建会话')}">${$('pickEditor').innerHTML}</button><button type="button" class="ov-computer-tool" data-ov="computer-editor" data-id="${esc(e.id)}" title="${I18N.tr('打开文件')}" aria-label="${I18N.tr('打开文件')}">${fileEntryIcon(false)}</button>` : '';
   const terminalTool = link?.authed && !e.foreign ? `<button type="button" class="ov-computer-tool" data-ov="computer-terminal" data-id="${esc(e.id)}" title="${I18N.tr('RA 终端')}" aria-label="${I18N.tr('RA 终端')}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="m7 9 3 3-3 3m6 0h4"/></svg></button>` : '';
@@ -478,7 +489,9 @@ function ovCard(r) {
   const message = opening ? opening.message : ready && $('msg').className !== 'quiet' ? $('msg').textContent : '';
   const messageClass = opening ? opening.phase === 'error' ? 'err' : '' : $('msg').className;
   const toolStatus = tools || opening ? `<div class="ov-tool-status ${messageClass}" role="status">${esc(message)}</div>` : '';
-  return status + body + off + err + `<div class="ov-cfoot">${tools}${ovOpenLink(r)}</div>` + toolStatus;
+  const access = canReply && !r.host && r.threadId
+    ? `<button class="ra-control ra-card-access" data-ov="ra-access" data-id="${key}"${ready ? '' : ' disabled'}>${I18N.tr('跨设备操作')}</button>` : '';
+  return status + body + off + err + `<div class="ov-cfoot">${tools}${ovOpenLink(r)}</div>` + toolStatus + access;
 }
 function ovSessionGroup(label, recs, id) {
   if (!recs.length) return '';
@@ -499,41 +512,54 @@ function ovSessions(recs, scope) {
     + ovSessionGroup('不常用', inactive, scope + '|inactive');
 }
 function ovEmpty(text) { return `<div class="ov-empty">${text}</div>`; }
+function ovScopedTile(row) {
+  return row.fusion ? fusionWorkbenchTile(ovList.find(entry => entry.id === row.comp),
+    fusionWorkspaces.get(row.comp).runs.find(run => run.id === row.threadId)) : ovSessTile(row);
+}
 function ovBoard(all, projs, scoped) {
-  if (ovS.level === 'fusion') return fusionBoard();
-  if (ovS.level === 'favorites') return scoped.sort(ovCompare).map(row => row.fusion
-    ? fusionWorkbenchTile(ovList.find(entry => entry.id === row.comp), fusionWorkspaces.get(row.comp).runs.find(run => run.id === row.threadId)) : ovSessTile(row)).join('')
-    || ovEmpty(`${ovT('还没有收藏会话')}<small>${ovT('长按会话卡片可收藏')}</small>`);
+  if (ovS.level === 'fusion') return RaCoreUI.work() + fusionBoard();
+  if (ovS.level === 'devices') return RaCoreUI.devices(ovList);
+  const query = ovS.query.trim().toLocaleLowerCase(), isFavorites = ovS.level === 'favorites';
+  const noMatches = () => ovEmpty(I18N.tr('没有匹配的项目或会话'));
   if (!ovS.proj) {
-    const list = ovList.filter(e => !ovS.comp || e.id === ovS.comp).sort((a, b) => ovOn(b) - ovOn(a));
-    return list.map(e => ovComputerGroup(e, all, projs)).join('') || ovEmpty(ovT('还没有配对的电脑'));
+    const projectsWithMatches = query && new Set(scoped.map(row => row.project));
+    const matchedProjects = query ? projs.filter(p => projectsWithMatches.has(p.key) || ovMatches(query, p.name, OV_AGENT[p.app], ovCompName(p.comp))) : projs;
+    const groups = new Set((ovS.level === 'projects' ? matchedProjects : scoped).map(row => row.comp));
+    const list = ovList.filter(e => (!ovS.comp || e.id === ovS.comp) && (!(query || isFavorites) || groups.has(e.id)))
+      .sort((a, b) => ovOn(b) - ovOn(a));
+    return list.map(e => ovComputerGroup(e, ovS.level === 'projects' ? all : scoped, matchedProjects)).join('')
+      || (query ? noMatches() : isFavorites ? ovEmpty(`${ovT('还没有收藏会话')}<small>${ovT('长按会话卡片可收藏')}</small>`) : ovEmpty(ovT('还没有配对的电脑')));
   }
   const p = ovS.proj && projs.find(x => x.key === ovS.proj);
-  return ovSessions(scoped, ovS.proj) || (p && p.app !== 'fusion'
+  return ovSessions(scoped, ovS.proj) || (query ? noMatches() : p && p.app !== 'fusion'
     ? `<div class="ov-empty"><button class="ov-btn ov-pri" data-ov="open" data-t="${esc(JSON.stringify(ovTarget(p)))}">${ovT('打开项目')}</button></div>`
     : ovEmpty('这里还没有会话'));
 }
 function ovPlan() {
-  const all = ovRecs().filter(r => ovS.level === 'favorites' || !r.dormant), projs = ovProjects(all);
+  const overview = ovIsOverview();
+  const all = overview ? ovRecs().filter(r => ovS.level === 'favorites' || !r.dormant) : [];
+  const projs = overview ? ovProjects(all) : [];
   ovSig = [];
   const scoped = ovScopedRecs(all);
-  const k = { ...ovCount(scoped), total: scoped.length, inactive: scoped.filter(r => r.state === 'idle' && !r.common).length }, anyWait = scoped.some(r => r.state === 'wait');
+  ovPruneBatch(scoped);
+  const k = { ...ovCount(scoped), total: scoped.length, inactive: scoped.filter(r => r.state === 'idle' && !r.common).length };
   const crumbs = [`<label class="ov-scope"><select class="ovRaw" data-ov-computer aria-label="${ovT('电脑范围')}"><option value=""${!ovS.comp ? ' selected' : ''}>${ovT('全部电脑')}</option>${ovList.map(e => `<option value="${esc(e.id)}"${ovS.comp === e.id ? ' selected' : ''}>${esc(e.name)}</option>`).join('')}</select><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></label>`];
   if (ovS.proj) crumbs.push(`<i>›</i><button data-ov="crumb" data-v="proj"><span class="ovRaw">${esc(projs.find(p => p.key === ovS.proj)?.name || '')}</span></button>`);
-  if (ovS.level === 'favorites') crumbs.splice(0, crumbs.length, `<span class="ov-favorites-title">${ovT('收藏')}</span>`);
-  if (ovS.level === 'fusion') crumbs.unshift('<strong class="ov-fusion-title">Fusion ·</strong>');
-  const levels = [['sessions', ovT('概览'), OV_ICON.grid], ['projects', ovT('项目'), OV_ICON.folder], ['favorites', ovT('收藏'), OV_ICON.star], ['fusion', 'Fusion', OV_ICON.fusion]]
-    .map(([v, l, ic]) => `<button class="ov-lv${ovS.level === v ? ' on' : ''}" data-ov="level" data-v="${v}"><i>${ic}${v === 'sessions' && anyWait && ovS.level !== 'sessions' ? '<span class="ov-dot"></span>' : ''}</i><span>${l}</span></button>`).join('')
-    + `<button class="ov-lv" data-ov="peer-tasks" aria-haspopup="dialog"><i>${OV_ICON.peers}</i><span>${I18N.tr('设备控制')}</span></button>`;
-  const summary = (ovS.level === 'fusion' ? [] : [['total', ovT(ovS.level === 'favorites' ? '收藏会话' : '全部会话'), 'var(--fg-3)'], ['wait', ovT('需要你'), 'var(--ov-amber)'], ['run', ovT('运行中'), 'var(--accent)'], ['err', ovT('已停止'), 'var(--err)'], ['done', '今日完成', 'var(--ok)'], ['inactive', ovT('不常用'), 'var(--fg-4)']])
+  const tab = overview ? 'sessions' : ovS.level;
+  const anyWait = !overview && [...ovSt.values()].some(st => [...st.prev.values()].some(r => r.wait));
+  const levels = [['sessions', ovT('概览'), OV_ICON.grid], ['fusion', I18N.tr('工作'), OV_ICON.fusion], ['devices', I18N.tr('设备'), OV_ICON.peers]]
+    .map(([v, l, ic]) => `<button type="button" class="ov-lv${tab === v ? ' on' : ''}" data-ov="level" data-v="${v}"${tab === v ? ' aria-current="page"' : ''}><i>${ic}${v === 'sessions' && anyWait ? '<span class="ov-dot"></span>' : ''}</i><span>${l}</span></button>`).join('');
+  const filters = overview ? `<div class="ov-filter-buttons" role="group" aria-label="${I18N.tr('概览筛选')}">${[['sessions', '全部', ''], ['projects', '项目', OV_ICON.folder], ['favorites', '收藏', OV_ICON.star]]
+    .map(([v, label, icon]) => `<button type="button" data-ov="filter" data-v="${v === 'sessions' ? 'all' : v}" aria-pressed="${ovS.level === v}">${icon}${ovT(label)}</button>`).join('')}</div><input data-ov-search type="search" aria-label="${I18N.tr('搜索项目或会话')}" placeholder="${I18N.tr('搜索项目或会话')}" autocomplete="off">` : '';
+  const summary = (overview ? [['total', ovT(ovS.level === 'favorites' ? '收藏会话' : '全部会话'), 'var(--fg-3)'], ['wait', ovT('需要你'), 'var(--ov-amber)'], ['run', ovT('运行中'), 'var(--accent)'], ['err', ovT('已停止'), 'var(--err)'], ['done', '今日完成', 'var(--ok)'], ['inactive', ovT('不常用'), 'var(--fg-4)']] : [])
     .filter(([n]) => k[n]).map(([n, l, c]) => `<span><i class="ov-d" style="background:${c}"></i><b>${k[n]}</b><em>${l}</em></span>`).join('');
   const lane = ovS.level !== 'projects' || ovS.proj ? '' : scoped.filter(r => r.state === 'wait').sort((a, b) => ovRecency(b) - ovRecency(a))
     .map(r => `<div class="ov-lane-item" data-ov="lane" data-id="${esc(r.key)}">${ovRecLogo(r)}<span class="ovRaw">${esc(r.title)}</span><small>${esc(ovBadge(r))}</small></div>`).join('');
   const board = ovBoard(all, projs, scoped);
   const batch = ovBatchHtml();
   const layout = [ovS.level, ovS.comp, ovS.proj, ovS.open, ovSig.join('|')].join('\u0001');
-  const paint = [layout, crumbs.join(''), levels, summary, lane, board, batch].join('\u0001');
-  return { up: !!(ovS.open || ovS.comp || ovS.proj), crumbs: crumbs.join(''), levels, summary, lane, board, batch, layout, paint };
+  const paint = [layout, crumbs.join(''), levels, filters, summary, lane, board, batch, ovS.query].join('\u0001');
+  return { up: !!(ovS.open || ovS.comp || ovS.proj), crumbs: crumbs.join(''), levels, filters, summary, lane, board, batch, layout, paint };
 }
 function ovPatch(container, html) {
   const template = document.createElement('template');
@@ -577,7 +603,7 @@ function ovPatch(container, html) {
 }
 function ovCommit(p) {
   if (ovToolState && ovToolState.key !== ovS.open) { ovReleaseComposer(); ovVisible(); }
-  const scrolls = new Map([...$('ovBoard').querySelectorAll('[data-ov-scroll]')].map(el => [el.dataset.ovScroll, { top: el.scrollTop, left: el.scrollLeft }]));
+  const boardChanged = !ovPaint || ovBoardPaint !== p.board;
   ovPaint = p.paint;
   $('overview').classList.toggle('ov-project', !!ovS.proj);
   $('ovUp').classList.toggle('ov-hide', !p.up);
@@ -587,17 +613,29 @@ function ovCommit(p) {
     if (scope) scope.value = ovS.comp || '';
     ovCrumbsPaint = p.crumbs;
   }
-  ovPatch($('ovLevels'), p.levels);
+  ovPatch($('ovTabs'), p.levels);
+  const filters = $('ovFilters');
+  ovPatch(filters, p.filters);
+  filters.hidden = !p.filters;
+  const query = filters.querySelector('[data-ov-search]');
+  if (query && query.value !== ovS.query) query.value = ovS.query;
   ovPatch($('ovSummary'), p.summary);
   ovPatch($('ovLane'), p.lane);
   $('ovLane').hidden = !p.lane;
-  ovPatch($('ovBoard'), p.board);
+  if (boardChanged) {
+    const board = $('ovBoard');
+    const scrolls = new Map([...board.querySelectorAll('[data-ov-scroll]')].map(el => [el.dataset.ovScroll, { top: el.scrollTop, left: el.scrollLeft }]));
+    ovPatch(board, p.board);
+    ovBoardPaint = p.board;
+    const origin = board.querySelector('[data-ra-origin]');
+    if (origin) origin.value = origin.querySelector('option[selected]')?.value || '';
+    for (const el of board.querySelectorAll('[data-ov-scroll]')) {
+      const pos = scrolls.get(el.dataset.ovScroll);
+      if (pos) { el.scrollTop = pos.top; el.scrollLeft = pos.left; }
+    }
+  }
   ovPatch($('ovBatch'), p.batch);
   $('ovBatch').hidden = !p.batch;
-  for (const el of $('ovBoard').querySelectorAll('[data-ov-scroll]')) {
-    const pos = scrolls.get(el.dataset.ovScroll);
-    if (pos) { el.scrollTop = pos.top; el.scrollLeft = pos.left; }
-  }
   ovPrepareVisibleComposer();
   ovMountComposerControls();
   ovUpdateUsage();
@@ -611,6 +649,7 @@ function ovRender(vt, scroll, locate = false) {
     }
   }
   ovRefreshPreview();
+  RaCoreUI.sync(ovS, ovList);
   if (document.body.classList.contains('conv')) return;
   const p = ovPlan();
   if (scroll != null) ovScroll = scroll;
@@ -652,8 +691,9 @@ function ovRestoreComputers(saved) {
     st.offset = value.offset;
   }
   if (!pendingNotice && store.get('start-view') !== 'conversation') {
-    const sameLevel = saved.view.ov.level === ovS.level;
+    const sameLevel = ovLevel(saved.view.ov.level) === ovS.level;
     if (sameLevel) Object.assign(ovS, saved.view.ov);
+    ovS.level = ovLevel(ovS.level);
     ovCollapsed.clear();
     for (const id of saved.view.ovCollapsed) ovCollapsed.add(id);
     ovExpanded.clear();
@@ -664,6 +704,7 @@ function ovRestoreComputers(saved) {
 function ovRestore(st) {
   ovClearBatch();
   Object.assign(ovS, OV_ROOT, st?.ov);
+  ovS.level = ovLevel(ovS.level);
   ovCollapsed.clear();
   for (const id of st?.ovCollapsed || []) ovCollapsed.add(id);
   ovExpanded.clear();
@@ -677,10 +718,14 @@ function ovMove(change, push = false) {
   ovClearBatch();
   ovSaveHistory();
   const depth = history.state?.ovDepth || 0;
+  const changingLevel = change.level !== undefined && change.level !== ovS.level;
   Object.assign(ovS, change);
   if (['fusion', 'favorites'].includes(ovS.level)) refreshFusionWorkspace();
   history[push ? 'pushState' : 'replaceState']({ ...ovHistory(0), ovDepth: depth + Number(push) }, '');
-  ovRender(true, 0);
+  // A ViewTransition callback may be delayed when the paired browser is not
+  // foregrounded. Commit primary tab/filter changes synchronously so the DOM
+  // always matches the selected RA view and its capability fetch lifecycle.
+  ovRender(!changingLevel, 0);
 }
 function ovCloseCard() {
   ovCancelOpening();
@@ -699,7 +744,7 @@ function ovFocusSession(key) {
   if (!r) return;
   ovCollapsed.delete(r.comp);
   if (r.state === 'idle') ovExpanded.add(r.comp + (r.common ? '|idle' : '|inactive'));
-  ovMove({ level: 'sessions', comp: r.comp, proj: null, open: key });
+  ovMove({ level: 'sessions', comp: r.comp, proj: null, open: key, query: '' });
 }
 function ovToast(html, key, pending = false) {
   const t = document.createElement('div');
@@ -733,9 +778,9 @@ async function ovSend(key, act, extra, ok) {
 async function ovSessionRequest(r, action, extra = {}) {
   const entry = ovList.find(e => e.id === r.comp), route = '/api/overview/session';
   if (r.fusion || ['rename', 'archive', 'delete', 'remove'].includes(action)) {
-    const link = computerSockets.get(entry.c.key), device = link?.auth?.device;
+    const link = linkForComputerKey(entry.c.key), device = link?.auth?.device;
     const target = { ...ovTarget(r), action, ...extra }, identity = JSON.stringify([device, target]);
-    const existing = [...desktopRequests.values()].find(request => request.overview === identity);
+    const existing = desktopOperations.find(request => request.overview === identity);
     if (existing) return existing.promise;
     if (!link?.authed || link.socket.readyState !== 1) throw new Error(ovT('电脑尚未连接，请先重新连接'));
     const request = { overview: identity, device, resultType: 'overviewManaged', message: { t: 'overviewManage', ...target, sel: [r.app, r.windowId, r.threadId].join('|') } };
@@ -778,6 +823,7 @@ function ovMarkRead(key) {
   return true;
 }
 function ovStartBatch() {
+  if (!ovIsOverview()) ovMove({ level: 'sessions', proj: null, open: null });
   ovBatch ||= { selected: new Map(), running: false, cancelled: false, results: [], total: 0 };
   ovS.open = null;
   if (document.activeElement?.dataset?.ovInput) document.activeElement.blur();
@@ -788,10 +834,25 @@ function ovClearBatch() {
   if (ovBatch) ovBatch.cancelled = true;
   ovBatch = null;
 }
+function ovPruneBatch(scoped) {
+  const batch = ovBatch;
+  if (!batch?.selected.size) return;
+  const eligible = new Map(scoped.filter(ovCanManage).map(r => [ovSessionIdentity(r), r]));
+  for (const [id, selected] of batch.selected) {
+    if (id === batch.activeKey) continue;
+    const row = eligible.get(id);
+    if (row && row.app === selected.app) batch.selected.set(id, row);
+    else {
+      batch.selected.delete(id);
+      batch.pruned = true;
+    }
+  }
+}
 function ovSelectSession(r) {
   if (!ovCanManage(r) || ovBatch.running) return;
   const id = ovSessionIdentity(r);
   if (ovBatch.selected.has(id)) ovBatch.selected.delete(id); else ovBatch.selected.set(id, r);
+  ovBatch.pruned = false;
   ovRender();
 }
 function ovBatchHtml() {
@@ -799,25 +860,41 @@ function ovBatchHtml() {
   const b = ovBatch, disabled = !b.selected.size || b.running ? ' disabled' : '';
   const failed = b.results.filter(r => !r.ok);
   const report = b.total ? `<div class="ov-batch-report" role="status">${esc(I18N.tr(`已处理 ${b.results.length}/${b.total}，成功 ${b.results.length - failed.length}，失败 ${failed.length}`))}${failed.length ? `<details><summary>${esc(I18N.tr('失败详情'))}</summary>${failed.map(r => `<p>${esc(r.title)}：${esc(r.error)}</p>`).join('')}</details>` : ''}</div>` : '';
+  const notice = b.pruned ? `<div class="ov-batch-report" role="status" data-ov-batch-pruned>${esc(I18N.tr('已取消选择当前范围之外或已不可管理的会话。'))}</div>` : '';
   return `<div class="ov-batch-head"><span>${esc(I18N.tr(`已选 ${b.selected.size} 个会话`))}</span><button data-ov="batch-all"${b.running ? ' disabled' : ''}>${ovT('全选当前范围')}</button></div>`
-    + `<div class="ov-batch-actions"><button data-ov="batch-favorite"${disabled}>${ovT('批量收藏')}</button><button class="ov-danger" data-ov="batch-remove"${disabled}>${ovT('删除／归档')}</button><button data-ov="batch-exit">${ovT(b.running ? '停止剩余操作' : '退出管理')}</button></div>${report}`;
+    + `<div class="ov-batch-actions"><button data-ov="batch-favorite"${disabled}>${ovT('批量收藏')}</button><button class="ov-danger" data-ov="batch-remove"${disabled}>${ovT('删除／归档')}</button><button data-ov="batch-exit">${ovT(b.running ? '停止剩余操作' : '退出管理')}</button></div>${notice}${report}`;
 }
 async function ovRunBatch(action) {
   const batch = ovBatch;
-  if (!batch || batch.running || !batch.selected.size) return;
+  if (!batch || batch.running || batch.confirming) return;
+  ovPruneBatch(ovScopedRecs());
+  if (!batch.selected.size) return ovRender();
   const targets = [...batch.selected.values()].sort((a, b) => a.comp.localeCompare(b.comp) || a.app.localeCompare(b.app));
-  if (action === 'remove' && !await ask(`删除或归档所选 ${targets.length} 个会话？\n逐条执行桌面端支持的操作，成功后无法通过取消恢复。`, '继续')) return;
+  if (action === 'remove') {
+    const identities = targets.map(r => `${r.title || r.threadId}\n${ovCompName(r.comp)} · ${r.comp} · ${ovAgName(r)} · ${r.threadId}`);
+    batch.confirming = true;
+    const confirmed = await ask([I18N.tr(`删除或归档所选 ${targets.length} 个会话？`),
+      I18N.tr('逐条执行桌面端支持的操作，成功后无法通过取消恢复。'), ...identities].join('\n\n'), I18N.tr('继续'));
+    batch.confirming = false;
+    if (!confirmed || ovBatch !== batch) return;
+    ovPruneBatch(ovScopedRecs());
+    if (batch.selected.size !== targets.length || targets.some(r => !batch.selected.has(ovSessionIdentity(r)))) return ovRender();
+  }
   if (ovBatch !== batch) return;
   batch.running = true; batch.cancelled = false; batch.results = []; batch.total = targets.length;
   ovRender();
   try {
-    for (const r of targets) {
+    for (const target of targets) {
       if (batch.cancelled) break;
+      const id = ovSessionIdentity(target), r = batch.selected.get(id);
+      if (!r) continue;
+      batch.activeKey = id;
       try {
         await ovManageSession(r, action, action === 'favorite' ? { favorite: true } : {});
         batch.results.push({ title: `${ovCompName(r.comp)} · ${r.title}`, ok: true });
-        batch.selected.delete(ovSessionIdentity(r));
+        batch.selected.delete(id);
       } catch (error) { batch.results.push({ title: `${ovCompName(r.comp)} · ${r.title}`, ok: false, error: error.message }); }
+      batch.activeKey = null;
       ovRender();
     }
   } finally { batch.running = false; ovRender(); }
@@ -920,13 +997,13 @@ async function ovOpen(target) {
   if (target.project && !target.project.root) return status(ovT('尚未读取到项目路径，请在电脑上打开项目后重试'), false);
   releaseFusionView();
   const pending = winTargetPending(target);
-  ovOpening = { target, phase: 'opening', navigationId: pending ? navigationPending.id : undefined,
+  ovOpening = { target, phase: 'opening', navigationId: pending ? selectedConversation.navigation.id : undefined,
     message: ovT(pending ? '正在等待会话内容…' : '正在连接并打开会话…') };
   if (mode !== 'chat') setMode('chat', false);
   const state = ovToolState;
-  if (state && winBinding?.target === state.target && navigationPending && !target.project
+  if (state && winBinding?.target === state.target && selectedConversation.navigation && !target.project
     && sameWinTarget(state.target, target)) {
-    ovOpening.navigationId = navigationPending.id;
+    ovOpening.navigationId = selectedConversation.navigation.id;
     ovRender();
     ovEnterRequested = false;
     if (await state.ready && request === ovOpenRequest && ovToolState === state && ovComposerReady(state.key)) ovShowConversation();
@@ -964,7 +1041,7 @@ function ovConversationOpened(enter = true, target) {
   if (enter || !sameWinTarget(ovOpening?.target, target)) ovEnterRequested = enter;
 }
 function ovEnterReady() {
-  if (!ovEnterRequested || !authed || !windowReady || navigationPending) return;
+  if (!ovEnterRequested || !authed || !windowReady || selectedConversation.navigation) return;
   ovEnterRequested = false;
   ovShowConversation();
 }
@@ -1026,11 +1103,15 @@ $('overview').addEventListener('click', e => {
       ovSaveHistory();
       return ovRender(true);
     case 'proj': return ovMove({ comp: id.split('|')[0], proj: id, level: 'projects', open: null }, true);
-    case 'level':
-      store.set('ov-level', v);
-      return ovMove({ level: v, comp: v === 'favorites' ? null : ovS.comp, proj: null, open: null });
+    case 'level': case 'filter': {
+      const level = ovLevel(v);
+      store.set('ov-level', level);
+      return ovMove({ level, proj: null, open: null, ...(a === 'level' && level === 'sessions' ? { query: '' } : {}) });
+    }
     case 'batch-all':
+      if (!ovBatch || ovBatch.running) return;
       ovBatch.selected.clear();
+      ovBatch.pruned = false;
       for (const r of ovScopedRecs().filter(ovCanManage)) ovBatch.selected.set(ovSessionIdentity(r), r);
       return ovRender();
     case 'batch-favorite': return ovRunBatch('favorite');
@@ -1043,6 +1124,16 @@ $('overview').addEventListener('click', e => {
     case 'up': return ovUp();
     case 'menu': return showMainMenu();
     case 'peer-tasks': return showDeviceControl();
+    case 'ra-peer': case 'ra-phone':
+      if (ovS.level !== 'devices' || id !== (ovS.comp || currentComputer()?.id)) return;
+      return a === 'ra-peer' ? showPeerTasks(id) : showPhoneControl(id);
+    case 'ra-access': {
+      const row = ovRecs().find(r => r.key === id);
+      if (row && ovComposerReady(id)) return RaCoreUI.open(row, ovToolState.target);
+      return;
+    }
+    case 'ra-refresh': return RaCoreUI.refresh();
+    case 'ra-operation': return RaCoreUI.operation(id);
     case 'computer-projects': return showComputerActions(id);
     case 'computer-editor': return openComputerFiles(id);
     case 'computer-terminal': return openComputerTerminal(id);
@@ -1074,6 +1165,14 @@ $('overview').addEventListener('click', e => {
 });
 $('overview').addEventListener('change', e => {
   if (e.target.matches('[data-ov-computer]')) ovMove({ comp: e.target.value || null, proj: null, open: null });
+  if (e.target.matches('[data-ra-origin]')) RaCoreUI.selectOrigin(e.target.value);
+});
+$('ovFilters').addEventListener('input', e => {
+  if (!e.target.matches('[data-ov-search]')) return;
+  ovCancelOpening();
+  ovS.query = e.target.value; ovS.open = null;
+  ovSaveHistory();
+  ovRender(false, 0);
 });
 $('overview').addEventListener('focusin', e => {
   const r = e.target.dataset.ovInput && ovRecs().find(r => r.key === e.target.dataset.ovInput);
@@ -1107,7 +1206,10 @@ addEventListener('popstate', () => {
   if (document.body.classList.contains('conv')) return ovLeave(st);
   ovRestore(st);
 });
-document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') ovPoll(); });
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') ovPoll();
+  else RaCoreUI.sync(ovS, ovList);
+});
 for (const [id, t] of [['ovBack', '返回概览'], ['ovUp', '上一级'], ['ovMenu', '菜单']]) $(id).setAttribute('aria-label', ovT(t));
 const ovLayout = () => $('overview').classList.toggle('ov-landscape', innerWidth > innerHeight);
 ovLayout();

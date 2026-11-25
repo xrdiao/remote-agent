@@ -1,8 +1,22 @@
 import fs from 'node:fs/promises';
-import { Cdp } from '../../server/cdp.mjs';
+import { awaitCdpRead, Cdp, cdpRead } from '../../server/cdp.mjs';
 
 export class Unavailable extends Error {}
 export const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+export async function browserDeadline(timeout, label, action) {
+  const controller = new AbortController(), parent = cdpRead.getStore();
+  const signal = parent ? AbortSignal.any([parent, controller.signal]) : controller.signal;
+  const timer = setTimeout(() => controller.abort(Object.assign(new Error(`${label}超时（${timeout}ms）`), {
+    code: 'QA_DEADLINE', kind: 'timeout',
+  })), timeout);
+  try {
+    return await cdpRead.run(signal, () => {
+      signal.throwIfAborted();
+      return awaitCdpRead(Promise.resolve().then(() => { signal.throwIfAborted(); return action(signal); }));
+    });
+  } finally { clearTimeout(timer); }
+}
 
 // Actions use the rendered DOM and CDP input. Application globals are read only.
 export class Browser {
@@ -40,7 +54,10 @@ export class Browser {
       if (message.t === 'draftAck') browser.events.push({ type: 'draft-ack', at: Date.now(),
         sel: message.sel, epoch: message.draftEpoch, revision: message.revision, ok: message.ok });
       if (message.t === 'status' && message.ok === false) browser.events.push({ type: 'relay-status-error', at: Date.now(),
-        sel: message.sel, message: String(message.msg || '').split('\n')[0] });
+        sel: message.sel, navigationId: message.navigationId, message: String(message.msg || '').split('\n')[0] });
+      if (browser.traceNavigation && message.navigationId != null && ['attached', 'attachFailed', 'thread', 'chat'].includes(message.t))
+        browser.events.push({ type: 'navigation-response', at: Date.now(), message: message.t, navigationId: message.navigationId,
+          sel: message.sel, thread: message.threadId || message.chat?.thread, ready: message.ready, cached: message.cached });
     });
     cdp.on('Network.webSocketFrameSent', event => {
       if (event.response.opcode !== 1) return;
@@ -50,6 +67,9 @@ export class Browser {
       try { message = JSON.parse(signature < 0 ? frame : frame.slice(signature + 1)); } catch { return; }
       if (message.t === 'send' && message.submit !== false)
         browser.events.push({ type: 'send', at: Date.now(), sel: message.sel, requestId: message.requestId });
+      if (browser.traceNavigation && message.navigationId != null)
+        browser.events.push({ type: 'navigation-request', at: Date.now(), message: message.t, navigationId: message.navigationId,
+          id: message.id, thread: message.threadId });
     });
     await cdp.send('Runtime.enable'); await cdp.send('Network.enable'); await cdp.send('Page.enable');
     if (process.platform === 'win32') await cdp.send('Emulation.setFocusEmulationEnabled', { enabled: true });
@@ -59,6 +79,7 @@ export class Browser {
   async wait(expression, label, timeout = this.timeout, failure) {
     const deadline = Date.now() + timeout;
     do {
+      cdpRead.getStore()?.throwIfAborted();
       const error = failure?.();
       if (error) throw error;
       const value = await (typeof expression === 'function' ? expression() : this.read(expression));
@@ -88,11 +109,25 @@ export class Browser {
     await this.wait(`!document.getAnimations().some(a=>a.playState==='running'&&Number.isFinite(a.effect?.getComputedTiming().endTime))`, '页面过渡结束');
   }
   async click(selector, options = {}) {
-    const point = await this.position(selector, options);
-    this.steps.push({ action: 'click', selector });
-    for (const type of ['mouseMoved', 'mousePressed', 'mouseReleased'])
-      await this.cdp.send('Input.dispatchMouseEvent', { type, ...point, button: 'left', clickCount: 1 });
-    await this.settled();
+    if (options.dom) {
+      // Overview tiles can move between computing a point and dispatching a click.
+      // Activate the exact visible control in the same browser evaluation.
+      await this.wait(`(()=>{
+        const control=document.querySelector(${JSON.stringify(selector)});
+        if (!control?.getClientRects().length || control.disabled || control.getAttribute('aria-disabled')==='true'
+            || getComputedStyle(control).visibility==='hidden') return false;
+        control.click(); return true;
+      })()`, `控件可点击 ${selector}`);
+      this.steps.push({ action: 'dom-click', selector });
+    } else {
+      const point = await this.position(selector, options);
+      this.steps.push({ action: 'click', selector });
+      for (const type of ['mouseMoved', 'mousePressed', 'mouseReleased'])
+        await this.cdp.send('Input.dispatchMouseEvent', { type, ...point, button: 'left', clickCount: 1 });
+    }
+    // Fast navigation tests verify the resulting view explicitly. Waiting for
+    // unrelated page animations here can mask a completed navigation.
+    if (options.settle !== false) await this.settled();
   }
   async key(key, modifiers = 0) {
     const codes = { Enter: ['Enter', 13], Escape: ['Escape', 27], Backspace: ['Backspace', 8], Tab: ['Tab', 9], ArrowUp: ['ArrowUp', 38], ArrowDown: ['ArrowDown', 40] };

@@ -19,12 +19,13 @@ import { voiceStatus, loadWorker } from '../voice/service.mjs';
 import { voiceEngines } from '../voice/config.mjs';
 import { uploads, removeUpload, registerUpload, updateUpload } from '../../lib/uploads.mjs';
 import { overviewSnapshot, overviewPreview } from '../overview.mjs';
-import { manageOverviewSession } from '../overview-actions.mjs';
+import { inspectCodexOverviewSession, manageOverviewSession } from '../overview-actions.mjs';
 import { uploadDocument, imageTypes } from '../../lib/shared-rules.mjs';
 import { localFilePath } from '../../lib/platform.mjs';
 import { relayAutostart } from '../autostart.mjs';
 import { managePeerTasks, receivePeerTask, receivePeerWorkspace } from '../peer/api.mjs';
 import { phoneTargets, phoneTicket, stopPhoneControl } from '../phone/control.mjs';
+import { handleRaCore } from '../ra-core/api.mjs';
 
 // A device is usable once paired and, when 2FA asks for it, re-verified.
 function deviceFor(req) {
@@ -65,7 +66,7 @@ async function actOnWindow(deviceId, { win, threadId, act, index, text, question
   });
 }
 
-export async function handleApi(req, res, route) {
+export async function handleApi(req, res, route, raCore) {
   const ip = clientIp(req);
   if (req.method === 'POST' && !originAllowed(req)) return json(req, res, 403, { error: 'bad origin' });
   if (route === '/api/peer-task') return receivePeerTask(req, res);
@@ -118,7 +119,8 @@ export async function handleApi(req, res, route) {
   }
 
   if (device && req.method === 'POST' && route !== '/api/upload' && route !== '/api/transfer/upload') {
-    try { await verifyBufferedBody(req, route === '/api/transfer/download' ? 1024 * 1024 : undefined); }
+    const limit = route === '/api/transfer/download' ? 1024 * 1024 : route === '/api/ra-core/invoke' ? 224 * 1024 : undefined;
+    try { await verifyBufferedBody(req, limit); }
     catch (error) { if (!res.destroyed) return json(req, res, 400, { error: error.message }); return; }
   }
 
@@ -170,6 +172,10 @@ export async function handleApi(req, res, route) {
     return json(req, res, 200, { ok: true });
   }
   if (needsTotp(device)) return json(req, res, 401, { needTotp: true, error: '需要二次验证' });
+  if (route.startsWith('/api/ra-core/')) return handleRaCore(req, res, route, device.id, () => {
+    const paired = findDevice(bearer(req));
+    return paired?.id === device.id && !needsTotp(paired);
+  }, raCore);
   if (route === '/api/phone' && req.method === 'GET') return json(req, res, 200, phoneTargets(device.id));
   if (route === '/api/phone' && req.method === 'POST') {
     const body = await readJson(req);
@@ -318,6 +324,12 @@ export async function handleApi(req, res, route) {
     try {
       const target = Object.fromEntries(new URL(req.url, 'http://relay').searchParams);
       return json(req, res, 200, { computer: computerId(), ...await overviewPreview(device.id, target) });
+    } catch (error) { return json(req, res, 409, { error: error.message }); }
+  }
+  if (route === '/api/overview/session' && req.method === 'GET') {
+    try {
+      const target = Object.fromEntries(new URL(req.url, 'http://relay').searchParams);
+      return json(req, res, 200, await inspectCodexOverviewSession(device.id, target));
     } catch (error) { return json(req, res, 409, { error: error.message }); }
   }
   if (route === '/api/overview/session' && req.method === 'POST') {

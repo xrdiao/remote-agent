@@ -1,3 +1,4 @@
+import { ConversationRef } from '../session/binding.mjs';
 // 对话：聊天轮询、历史加载、发送与附件
 import fs from 'node:fs';
 import path from 'node:path';
@@ -5,11 +6,12 @@ import { mod, pathKey } from '../../lib/platform.mjs';
 import { codexContext } from '../windows.mjs';
 import { cdpRead, awaitCdpRead } from '../cdp.mjs';
 import { PAGE_SRC, helpersCall } from '../page/build.mjs';
-import { FOCUS_COMPOSER } from './context.mjs';
+import { FOCUS_COMPOSER } from './primitives.mjs';
 import { uploads, uploadPathKey, pendingUploads, uploadAttachments, removeUpload, updateUpload } from '../../lib/uploads.mjs';
 import { rememberSessionMessage, observeSessionTitle, readLibrary } from '../../lib/session-library.mjs';
 import { nativeWindow } from '../native-windows.mjs';
-import { normalizeReceiptText, withoutAttachmentLabels } from '../../lib/shared-rules.mjs';
+import { submitPromptKey } from '../apps/capabilities/window-receipt.mjs';
+import { nativeCapability, runAdapterMethod, runNativeAction } from '../apps/index.mjs';
 
 // Cursor accepts images pasted into the composer; a synthetic paste event carrying a File works the same way.
 const pasteImage = (b64, name, type) => `(async () => {
@@ -38,7 +40,11 @@ const pasteImage = (b64, name, type) => `(async () => {
 
 export const methods = {
   refreshSoon(ms) {
-    return setTimeout(() => this.pollChat().catch(() => {}), ms);
+    const binding = ConversationRef.capture(this);
+    return setTimeout(() => {
+      if (binding.isCurrent(this) && (!this.connectionView || this.connectionView.acceptsDelivery()))
+        this.pollChat().catch(() => {});
+    }, ms);
   },
 
   thinkingBody(it) {
@@ -179,6 +185,7 @@ export const methods = {
     const controller = new AbortController(), parent = cdpRead.getStore();
     const signal = parent ? AbortSignal.any([parent, controller.signal]) : controller.signal;
     signal.navigationId = parent?.navigationId;
+    signal.navigation = parent?.navigation;
     const state = this.chatRead = { cdp, sel, controller, requested: false, sent: false, retrying: false };
     state.requestFirst = () => {
       if (!state.requested || state.sent) {
@@ -238,20 +245,21 @@ export const methods = {
       if (!chat && this.app === 'codex' && this.liveRead(cdp, sel) && await this.checkCodexLogin()) return;
       if (!this.liveRead(cdp, sel) || this.historyLoading) return;
       if (!this.acceptsChat(chat)) return;
-      this.syncSession(chat);
-      for (const file of uploads.values()) if (file.pending && file.awaitingReceipt && file.sel === this.selectionKey()
+      if (this.app === 'devin') this.syncSession(chat);
+      for (const [, file] of pendingUploads(this.selectionKey(), this.deviceId)) if (file.awaitingReceipt
         && chat?.items.some(item => item.k === 'human' && item.t?.split('\n').some(line => pathKey(line) === uploadPathKey(file)))) updateUpload(file, { pending: false });
       const extracted = chat && JSON.stringify({ ...chat, draft: undefined });
       if ((this.app !== 'codex' || state.requested && !state.sent) && chat && chat.thread === (this.threadId || '') && (!this.lastChat || extracted !== this.lastExtractedChat || state.requested && !state.sent)) {
         const initial = { ...chat, items: chat.items.map(it => ({ ...it })) };
         delete initial.draft;
-        this.mergeCodexItems(initial);
+        if (this.app === 'codex') this.mergeCodexItems(initial);
         await enrichTools(initial);
+        if (!this.liveRead(cdp, sel)) return;
         this.lastExtractedChat = extracted;
         this.fillThinking(initial);
         this.retainThinking(initial);
         this.fillDevinCommands(initial);
-        this.mergeDevinHistory(initial);
+        if (this.app === 'devin') this.mergeDevinHistory(initial);
         if (initial?.model === 'Fusion' && this.fusion) initial.fusion = this.fusion;
         this.lastChat = JSON.stringify(initial);
         publish(initial);
@@ -332,8 +340,9 @@ export const methods = {
       this.pendingThread = '';
       this.lastBusy = !!chat.busy;
       if (!this.liveRead(cdp, sel)) return;
-      this.mergeCodexItems(chat);
+      if (this.app === 'codex') this.mergeCodexItems(chat);
       await enrichTools(chat);
+      if (!this.liveRead(cdp, sel)) return;
       const draft = chat.draft;
       delete chat.draft;
       if (immediate && this.app !== 'codex') {
@@ -341,7 +350,7 @@ export const methods = {
         this.fillThinking(chat);
         this.retainThinking(chat);
         this.fillDevinCommands(chat);
-        this.mergeDevinHistory(chat);
+        if (this.app === 'devin') this.mergeDevinHistory(chat);
         if (this.app === 'devin') this.devinGeneration(chat);
         const json = JSON.stringify(chat);
         if ((json !== this.lastChat || state.requested && !state.sent) && this.liveRead(cdp, sel)) {
@@ -393,13 +402,13 @@ export const methods = {
           if (!wasOpen) await cdp.evaluate(helpersCall(`setCommandOpen(${JSON.stringify(item.i)}, false)`));
         }
       }
-      await this.captureThoughts(chat);
+      if (this.app === 'devin') await this.captureThoughts(chat);
       });
       if (!this.liveRead(cdp, sel) || !this.acceptsChat(chat)) return;
       this.fillThinking(chat);
       this.rememberThinking(chat);
       this.retainThinking(chat);
-      this.mergeDevinHistory(chat);
+      if (this.app === 'devin') this.mergeDevinHistory(chat);
       const finished = this.app === 'devin' || (this.app === 'codex' && chat.busy) ? [] : (chat?.items || []).filter(it => it.k === 'thinking' && !it.live);
       finished.forEach((it, i) => {
         const has = this.thinkingBody(it).length > 0;
@@ -414,7 +423,7 @@ export const methods = {
       });
       if (chat?.model === 'Fusion') {
         if (this.fusion) chat.fusion = this.fusion;
-        else this.queueFusionRead();
+        else this.queueFusionRead?.();
       } else this.fusion = null;
       if (this.app === 'devin') this.devinGeneration(chat);
       const json = JSON.stringify(chat);
@@ -461,14 +470,14 @@ export const methods = {
   async editQueued(id, text) {
     if (!text.trim()) throw new Error('内容不能为空；不想要这条就点「删除」');
     await this.assertSelectedThread();
-    if (this.app === 'codex') return this.adapter.editQueued.call(this, id, text);
+    if (this.app === 'codex') return runAdapterMethod(this, 'editQueued', id, text);
     const editing = { cdp: this.cdp, sel: this.selectionKey(), draft: await this.cdp.evaluate(helpersCall('composerDraft()')) };
     this.queueEditing = editing;
     this.draftGeneration++;
     let saved = false;
     try {
       await this.queueAction(id, 'edit');
-      const result = await this.adapter.editQueued.call(this, id, text);
+      const result = await runAdapterMethod(this, 'editQueued', id, text);
       saved = true;
       return result;
     } finally {
@@ -501,21 +510,10 @@ export const methods = {
   async queueAction(id, action) {
     await this.assertSelectedThread();
     if (!['send', 'remove', 'edit'].includes(action)) throw new Error('不支持的排队操作');
-    return this.adapter.queueAction.call(this, id, action);
+    return runAdapterMethod(this, 'queueAction', id, action);
   },
-  async stopButton(message) {
-    const cdp = this.cdp, scope = this.selectionKey(), app = this.app, thread = this.threadId;
-    if (message.sel && message.sel !== scope) return;
-    await nativeWindow(cdp)?.stopRetry();
-    if (['cursor', 'devin'].includes(app) && thread) {
-      await cdp.evaluate(helpersCall(`nativeSessionAction(${JSON.stringify(app)}, ${JSON.stringify(thread)}, 'stop')`));
-      if (cdp === this.cdp && scope === this.selectionKey()) this.pollChat(true).catch(() => {});
-      return;
-    }
-    await this.assertSelectedThread();
-    if (cdp !== this.cdp || scope !== this.selectionKey()) return;
-    const clicked = await cdp.evaluate(helpersCall('stopTarget(true)'));
-    if (cdp === this.cdp && scope === this.selectionKey()) this.emit({ t: 'status', msg: clicked ? '已点击停止' : '当前没有停止按钮' });
+  stopButton(message) {
+    return runNativeAction(this, 'stop', message);
   },
   async stopAgent() {
     if (['cursor', 'devin'].includes(this.app) && this.threadId)
@@ -630,7 +628,7 @@ export const methods = {
 
   // Phone typed "@q" (or tapped a category): list what Devin offers, then put the prompt back.
   async mentionQuery(q, cat, seq, trigger, query) {
-    return this.adapter.mentionQuery.call(this, q, cat, seq, trigger, query);
+    return runAdapterMethod(this, 'mentionQuery', q, cat, seq, trigger, query);
   },
   async withComposerQuery(query, fn) {
     const cdp = this.cdp;
@@ -642,167 +640,122 @@ export const methods = {
       await cdpRead.run(null, () => cdp.evaluate(helpersCall('composerQuery("", 0, true)')));
     }
   },
-  async submitPromptKey(key, queued, submit, target) {
-    const cdp = this.cdp, scope = this.selectionKey(), receipt = this.sendNativeReceipt;
-    const imageCount = target?.imageCount || 0;
-    const read = timeout => target && this.app === 'devin'
-      ? cdp.evaluate(helpersCall(`nativeSessionInfo('devin', ${JSON.stringify(target.thread)}, 'receipt')`), { timeout })
-      : cdp.evaluate(`(() => {
-      const h = ${PAGE_SRC}, chat = h.extract();
-      return { thread: chat?.thread || '', draft: h.composerDraft(),
-        human: (chat?.items || []).filter(it => it.k === 'human'), queued: chat?.queued || [] };
-    })()`, { timeout });
-    const norm = normalizeReceiptText;
-    const before = await read();
-    if (target && before.thread !== target.thread) throw new Error('会话已切换，消息未发送');
-    const text = target?.text ?? before.draft;
-    const expected = norm(text);
-    this.lastDraft = text;
-    const human = new Set(before.human.map(it => `${it.i}:${it.sentAt || ''}`));
-    const queues = new Set(before.queued.map(it => it.id));
-    const queueText = norm(text.replace(/[ \t]+/g, ' ').replace(/\n{3,}/g, '\n\n').trim().slice(0, 4000));
-    const queuedMatches = rows => rows.filter(it => norm(it.t) === queueText).length;
-    const result = submit ? await submit() : await this.key(key);
-    if (result?.queueId && (result.imageCount || 0) >= imageCount && this.cdp === cdp && this.selectionKey() === scope) {
-      receipt.queueId = result.queueId;
-      return true;
-    }
-    const deadline = Date.now() + 5000;
-    while (Date.now() < deadline) {
-      let after;
-      try { after = await read(Math.max(1, deadline - Date.now())); } catch { break; }
-      if (this.cdp !== cdp || this.selectionKey() !== scope || before.thread && after.thread && after.thread !== before.thread) break;
-      const item = after.human.find(it => !human.has(`${it.i}:${it.sentAt || ''}`)
-        && (it.images?.length || 0) >= imageCount
-        && (!expected || norm(withoutAttachmentLabels(it.t)) === expected));
-      if (item) { receipt.messageId = item.i; return false; }
-      const pending = after.queued.find(it => norm(it.t) === queueText
-        && (it.imageCount || 0) >= imageCount
-        && (!queues.has(it.id) || this.app === 'devin' && queuedMatches(after.queued) > queuedMatches(before.queued)));
-      if (pending) { receipt.queueId = pending.id; return true; }
-      await new Promise(resolve => setTimeout(resolve, 125));
-    }
-    receipt.pending = true;
-    return queued;
-  },
+  submitPromptKey,
 
   async sendMessage(text, submit, when, mentions, receipt) {
-    if (this.codexBackend) return this.adapter.sendBackendMessage.call(this, text, submit, when, mentions, receipt);
+    const capability = nativeCapability(this);
+    if (!capability.composer) return runNativeAction(this, 'sendMessage', text, submit, when, mentions, receipt);
+    const composer = capability.composer;
     const receiptToken = submit ? (this.sendNativeReceipt = {}) : null;
-    const receiptScope = this.selectionKey(), receiptCdp = this.cdp, receiptThread = this.threadId;
+    const binding = ConversationRef.capture(this);
+    const { key: receiptScope, cdp: receiptCdp, threadId: receiptThread, app: receiptApp } = binding;
+    const stillSelected = () => binding.isCurrent(this);
     if (submit && receipt) this.draftEpoch = receipt.draftEpoch || '';
-    if (this.app === 'fusion') {
-      const queued = await this.adapter.sendMessage.call(this, text, receipt?.requestId);
-      if (receipt) this.emit({ t: 'sent', ...receipt, queued, sentAt: Date.now(), sel: this.selectionKey() });
-      return queued;
-    }
-    if (this.app === 'codex' && submit) {
-      await receiptCdp.evaluate(helpersCall('codexViewState(true)'));
-      if (this.cdp !== receiptCdp || this.selectionKey() !== receiptScope) throw new Error('会话已切换，消息未发送');
+    if (submit && composer.prepareSubmit) {
+      await composer.prepareSubmit.call(this, receiptCdp);
+      if (!stillSelected()) throw new Error('会话已切换，消息未发送');
     }
     await this.assertSelectedThread();
-    const imageCount = submit && this.app === 'devin' ? await receiptCdp.evaluate(helpersCall('attachmentRows().length')) : 0;
-    const files = pendingUploads(this.selectionKey()).map(([, file]) => file);
-    if (files.length) text += '\n\n附加文件（请读取这些电脑端文件）：\n' + files.map(f => f.path).join('\n');
+    const imageCount = submit && composer.readAttachmentCount ? await composer.readAttachmentCount(receiptCdp) : 0;
+    if (submit && !stillSelected()) throw new Error('会话已切换，消息未发送');
+    const files = pendingUploads(receiptScope, this.deviceId);
+    if (files.length) text += '\n\n附加文件（请读取这些电脑端文件）：\n' + files.map(([, file]) => file.path).join('\n');
     this.sendGen = (this.sendGen || 0) + 1;
     this.sending = true;
     let busy, now, queued;
     try {
-      const nativeCursorSend = submit && this.app === 'cursor';
-      const input = this.app === 'codex' && nativeWindow(this.cdp) ? await this.cdp.evaluate(`(() => {
-        const focused = ${FOCUS_COMPOSER}, h = ${PAGE_SRC};
-        return { focused, busy: h.agentState()?.busy, draft: h.composerDraft() };
-      })()`) : null;
-      if (!nativeCursorSend) {
+      const directSubmit = submit && composer.directSubmit;
+      const input = composer.focusDraft ? await composer.focusDraft(receiptCdp, receiptThread) : null;
+      if (input?.wrongThread) throw new Error('Codex 输入框不属于所选会话');
+      if (!directSubmit) {
         const found = input ? input.focused : await this.cdp.evaluate(FOCUS_COMPOSER);
         if (!found) throw new Error(this.appMessage('没找到 {app} 的聊天输入框：先在画面里打开 Agent 面板（或点「打开聊天」）'));
         // Typing can replace Stop with Send, so read the run state first.
         busy = submit && (input ? input.busy : await this.cdp.evaluate(helpersCall('agentState()?.busy')));
+        if (when === 'idle' && busy) throw Object.assign(new Error('session_busy_or_waiting'), { outcomeUnknown: false });
         const sameDraft = !mentions?.length && (input ? input.draft : await this.cdp.evaluate(helpersCall('composerDraft()'))) === text;
         if (!sameDraft) {
-          const draftCleared = await this.cdp.evaluate(helpersCall(`setComposerDraft('')`));
-          for (let i = 0; !draftCleared && i < 2 && await this.cdp.evaluate(helpersCall('composerFocused()')) && await this.cdp.evaluate(helpersCall('composerDraft()')); i++) {
-            await this.key(mod('A'));
-            await this.key('Backspace');
+          if (submit && !stillSelected()) throw new Error('会话已切换，消息未发送');
+          if (!composer.focusDraft) {
+            const draftCleared = await this.cdp.evaluate(helpersCall(`setComposerDraft('')`));
+            for (let i = 0; !draftCleared && i < 2 && await this.cdp.evaluate(helpersCall('composerFocused()')) && await this.cdp.evaluate(helpersCall('composerDraft()')); i++) {
+              await this.key(mod('A'));
+              await this.key('Backspace');
+            }
           }
-          await this.adapter.typeDraft.call(this, text, mentions);
+          if (submit && !stillSelected()) throw new Error('会话已切换，消息未发送');
+          await composer.typeDraft.call(this, text, mentions, { cdp: receiptCdp, thread: receiptThread || '' });
         }
       } else {
         busy = await receiptCdp.evaluate(helpersCall('agentState()?.busy'));
-        if (this.cdp !== receiptCdp || this.selectionKey() !== receiptScope) throw new Error('会话已切换，消息未发送');
       }
-      now = this.app === 'devin' && when === 'now' && !!busy;
+      if (when === 'idle' && busy) throw Object.assign(new Error('session_busy_or_waiting'), { outcomeUnknown: false });
+      now = composer.interruptWhileBusy === true && when === 'now' && !!busy;
       queued = Boolean(busy) && !now;
-      if (submit) queued = await this.adapter.submitPrompt.call(this, now, busy, when, queued, mentions, receipt, files, text,
-        { cdp: receiptCdp, thread: receiptThread, imageCount });
-    } catch (error) {
-      if (this.app === 'codex' && mentions?.some(m => m.section === 'local-files')) {
-        await this.cdp.evaluate(helpersCall('codexClearDraftAttachments()')).catch(() => false);
+      if (submit) {
+        if (!stillSelected()) throw new Error('会话已切换，消息未发送');
+        queued = await composer.submitPrompt.call(this, now, busy, when, queued, mentions, receipt, files, text,
+          { cdp: receiptCdp, thread: receiptThread, imageCount });
       }
+    } catch (error) {
+      if (composer.cleanFailedDraft && stillSelected()) await composer.cleanFailedDraft(receiptCdp, receiptThread, mentions);
       throw error;
     } finally {
       this.sending = false;
       this.sendGen++;
     }
     if (submit) {
-      files.forEach(file => updateUpload(file, receiptToken?.pending ? { awaitingReceipt: true } : { pending: false }));
-      if (!receiptToken?.pending) this.lastDraft = text;
-      if (!queued && !receiptToken?.pending) rememberSessionMessage(this.app, this.threadId, Date.now());
+      for (const [id, file] of files) if (uploads.get(id) === file && file.sel === receiptScope)
+        updateUpload(file, receiptToken.pending ? { awaitingReceipt: true } : { pending: false });
+      if (!receiptToken.pending) {
+        if (stillSelected()) this.lastDraft = text;
+        if (!queued) rememberSessionMessage(receiptApp, receiptThread, Date.now());
+      }
     }
-    if (submit && receipt) this.emit({ t: 'sent', ...receipt, ...(this.sendNativeReceipt === receiptToken && this.selectionKey() === receiptScope && this.cdp === receiptCdp ? receiptToken : {}), queued, sentAt: Date.now(), sel: this.selectionKey() });
+    if (submit && receipt) this.emit({ t: 'sent', ...receipt, ...receiptToken, queued, sentAt: Date.now(), sel: receiptScope });
+    if (!stillSelected()) return queued;
     if (this.mode === 'chat') {
       this.lastChatAt = 0;
       this.pollChat(true).catch(() => {});
     }
     this.syncAttachments().catch(() => {});
-    if (now && !receiptToken?.pending) this.emit({ t: 'status', ok: true, msg: '已打断当前任务并发送' });
+    if (now && !queued && !receiptToken?.pending) this.emit({ t: 'status', ok: true, msg: '已打断当前任务并发送' });
     return queued;
   },
   async answerQuestion(qi, oi, part, text) {
-    await this.assertSelectedThread();
-    if (this.app === 'devin' && part === 'text') {
-      await this.cdp.evaluate(helpersCall(`nativeSessionAction('devin', ${JSON.stringify(this.threadId || '')}, 'questionText', ${JSON.stringify({ text: String(text ?? '') })})`));
-      this.refreshSoon(300);
-      return;
-    }
-    const call = p => helpersCall(`questionTarget(${Number(qi) || 0}, ${Number(oi) || 0}, ${JSON.stringify(p)})`);
-    const pos = await this.cdp.evaluate(call(part));
-    if (!pos) throw new Error('这个问题已经不在了（可能已在电脑上回答）');
-    await this.tapCss(pos.x, pos.y);
-    if (part === 'option' && typeof text === 'string') {
-      await new Promise(r => setTimeout(r, 150));
-      await this.cdp.evaluate(`document.activeElement?.select?.()`);
-      if (text) await this.typeText(text);
-      else await this.key('Backspace');
-    }
-    this.refreshSoon(300);
+    return runNativeAction(this, 'question', qi, oi, part, text);
   },
 
 
   // Take a picture / file off the prompt again (the little x on its thumbnail on the desktop).
   async attachImage(data, name, type, replace = '', sel, transfer, uploadId) {
+    const binding = ConversationRef.capture(this), cdp = binding.cdp;
     const file = uploadId && uploads.get(uploadId);
     if (uploadId && (!file?.image || file.deviceId !== this.deviceId || file.sel !== sel)) throw new Error('找不到当前会话的上传图片');
     try {
     if (transfer?.cancelled) return;
     if (sel && sel !== this.selectionKey()) throw new Error('会话已切换，请回到原会话编辑图片');
     if (file) { data = fs.readFileSync(file.path).toString('base64'); name = file.name; type = file.type; }
-    const before = await this.cdp.evaluate(`(() => { const h = ${PAGE_SRC}; if (${JSON.stringify(this.selectedThread || '')} && h.activeThread() !== ${JSON.stringify(this.selectedThread || '')}) throw new Error('当前窗口已不在所选会话，请重新连接'); return h.attachmentRows(); })()`);
+    const before = await cdp.evaluate(`(() => { const h = ${PAGE_SRC}; if (${JSON.stringify(this.selectedThread || '')} && h.activeThread() !== ${JSON.stringify(this.selectedThread || '')}) throw new Error('当前窗口已不在所选会话，请重新连接'); return h.attachmentRows(); })()`);
     if (replace && !before.some(f => f.id === replace)) throw new Error('原图片已不在输入框中');
     if (!/^image\/(png|jpeg|gif|webp)$/.test(type) || typeof data !== 'string' || !/^[A-Za-z0-9+/=]+$/.test(data)) throw new Error('只支持 PNG / JPEG / GIF / WebP 图片');
     if (transfer?.cancelled) return;
-    const ok = await this.cdp.evaluate(pasteImage(data, String(name || 'image').replace(/[^\w.\-]/g, '_').slice(0, 60), type));
+    binding.assertCurrent(this);
+    const ok = await cdp.evaluate(pasteImage(data, String(name || 'image').replace(/[^\w.\-]/g, '_').slice(0, 60), type));
     if (transfer?.cancelled && !ok) return;
     if (ok === null) throw new Error(this.appMessage('没找到 {app} 的聊天输入框：先在画面里打开 Agent 面板（或点「打开聊天」）'));
     if (!ok) throw new Error(this.appMessage('{app} 没有接收这张图片（当前模型可能不支持图片）'));
-    const attached = await this.cdp.evaluate(helpersCall('attachmentRows(true)'));
+    const attached = await cdp.evaluate(helpersCall('attachmentRows(true)'));
+    binding.assertCurrent(this);
     const added = attached.find(f => !before.some(old => old.id === f.id));
     if (transfer?.cancelled) {
       if (added) await this.removeAttachment(added.id);
       return;
     }
     if (replace) await this.removeAttachment(replace);
+    binding.assertCurrent(this);
     const confirmed = await this.syncAttachments();
+    binding.assertCurrent(this);
     if (transfer?.cancelled) {
       if (added) await this.removeAttachment(added.id);
       return;
@@ -812,7 +765,7 @@ export const methods = {
     const matches = confirmed.filter(f => f.preview && f.preview === added?.preview);
     return matches.length === 1 ? matches[0].id : undefined;
     } finally {
-      if (file) removeUpload(uploadId);
+      if (file && uploads.get(uploadId) === file) removeUpload(uploadId);
     }
   },
   async editAttachmentImage(id, scope) {
@@ -825,7 +778,7 @@ export const methods = {
     if (this.app === 'fusion' || text.length > 20000) return false;
     if (!this.cdp) return false;
     if (this.app === 'codex') {
-      const value = await nativeWindow(this.cdp).composerCall(`nativeSessionInfo('codex', ${JSON.stringify(this.threadId)}, 'draft', ${JSON.stringify(text)})`, { app: 'codex', threadId: this.threadId });
+      const value = await nativeWindow(this.cdp).composerCall(`nativeSessionInfo('codex', ${JSON.stringify(this.threadId)}, 'draft', ${JSON.stringify({ text, format: 'plain' })})`, { app: 'codex', threadId: this.threadId });
       if (value === text) this.lastDraft = value;
       return value === text;
     }
@@ -838,7 +791,7 @@ export const methods = {
     if (!cdp) return;
     const list = await cdp.evaluate(helpersCall('attachmentRows()'));
     if (!this.liveRead(cdp, sel)) return;
-    list.push(...uploadAttachments(this.selectionKey()));
+    list.push(...uploadAttachments(this.selectionKey(), this.deviceId));
     const json = JSON.stringify(list);
     if (json !== this.lastAttachments) {
       this.lastAttachments = json;
@@ -848,7 +801,7 @@ export const methods = {
   },
   async removeAttachment(id) {
     const file = uploads.get(id);
-    if (file?.pending && file.sel === this.selectionKey()) {
+    if (file?.pending && file.deviceId === this.deviceId && file.sel === this.selectionKey()) {
       removeUpload(id);
     } else {
       const point = await this.cdp.evaluate(helpersCall(`attachmentPoint(${JSON.stringify(id)})`));

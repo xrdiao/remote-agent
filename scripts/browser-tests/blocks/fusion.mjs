@@ -2,12 +2,14 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { attr, by } from '../context.mjs';
 import { Unavailable } from '../browser.mjs';
-
 async function current(c, id) {
   return c.b.read(`fusionWorkspaces.get(${attr(c.computer)})?.runs.find(r=>r.id===${attr(id)})||null`);
 }
+async function overview(c) {
+  await c.b.home(); await c.b.click('#ovTabs [data-v="sessions"]');
+}
 async function open(c, run) {
-  await c.b.home(); await c.b.click('#ovLevels [data-v="fusion"]');
+  await c.b.home(); await c.b.click('#ovTabs [data-v="fusion"]');
   await c.b.click(`[data-fusion-open=${attr(run.id)}]${by('data-computer', c.computer)}`);
   await c.b.wait(`windowReady&&currentFusionRun()?.id===${attr(run.id)}&&lastChat?.thread===${attr(run.thread)}`, 'Fusion 主会话首屏');
 }
@@ -17,9 +19,14 @@ async function openTasks(c, run) {
   await c.b.wait(`fusionViewOwner?.runId===${attr(run.id)}&&fusionViewOwner.kind==='tasks'`, '关系面板身份');
 }
 async function create(c) {
-  if (c.fusion.length) return c.fusion[0];
+  if (c.fusion.length) {
+    // A previous test can register a QA resource before native preparation.
+    // Never treat an incomplete binding as a reusable runnable workspace.
+    if (!c.fusion[0].thread) throw new Unavailable('上一个 Fusion QA 工作台的原生准备未完成，后续场景不应继续发送');
+    return c.fusion[0];
+  }
   const b = c.b, app = c.options.fusionApp, root = path.resolve(c.directory, 'projects', 'fusion');
-  await fs.mkdir(root, { recursive: true }); await b.home(); await b.click('#ovLevels [data-v="fusion"]');
+  await fs.mkdir(root, { recursive: true }); await b.home(); await b.click('#ovTabs [data-v="fusion"]');
   const choices = await b.read(`fusionWorkspaces.get(${attr(c.computer)})?.apps||[]`);
   if (!choices.some(row => row.app === app && row.controller && row.connected !== false))
     throw new Unavailable(`Fusion ${app} 主 Agent 未连接或不具备控制能力`);
@@ -34,8 +41,18 @@ async function create(c) {
   const run = { id: found.id, app, root, thread: found.main?.target?.threadId || '' };
   c.fusion.push(run); await c.persistResources();
   await b.wait("!!document.getElementById('fusionConfigForm')", '工作台设置');
-  if (!(await current(c, run.id)).main.preparing && await b.has('[data-fusion-prepare]')) await b.click('[data-fusion-prepare]');
-  await b.wait(`!fusionWorkspaces.get(${attr(c.computer)})?.runs.find(r=>r.id===${attr(run.id)})?.main.preparing`, '主 Agent 准备');
+  // fusionCreated may arrive before asynchronous project preparation starts.
+  // Observe the native model catalog or a real error, not the transient !preparing state.
+  const prepareState = await b.wait(`(()=>{
+    const r=fusionStates.get(fusionViewKey(${attr(c.computer)},${attr(run.id)},{kind:'config'}));
+    if (!r) return null;
+    if (!r.main.preparing && r.main.error) return {error:r.main.error};
+    const models=(r.capabilities||[]).find(v=>v.app===${attr(app)})?.models||[];
+    return !r.main.preparing && models.length &&
+      document.querySelector('#fusionConfigForm [name="model"] option:not([value=""])')
+      ? {ready:true,count:models.length} : null;
+  })()`, '原生项目准备和主模型目录', 55000);
+  if (prepareState.error) throw new Error('原生主控准备失败：' + prepareState.error);
   if (await b.has('[data-fusion-trust]')) {
     await b.click('[data-fusion-trust]'); await b.click('[data-project-trust="yes"]');
   }
@@ -56,7 +73,7 @@ async function create(c) {
 
 export default [
   { id: 'fusion.catalog', title: '工作台目录、主 Agent 能力和卡片身份', refs: ['F19', 'X01', 'X02'], mode: 'read', async run(c) {
-    await c.b.home(); await c.b.click('#ovLevels [data-v="fusion"]');
+    await c.b.home(); await c.b.click('#ovTabs [data-v="fusion"]');
     const workspace = await c.b.read(`fusionWorkspaces.get(${attr(c.computer)})||null`);
     c.check(!!workspace, '执行电脑返回 Fusion 工作区');
     c.check(Array.isArray(workspace.runs) && Array.isArray(workspace.apps), '工作台列表与应用能力完整');
@@ -65,7 +82,8 @@ export default [
       c.check(!!run.main.target?.threadId, '绑定后的工作台返回真实主会话导航目标');
       c.check(!!run.main.target?.windowId, '主会话包含路由窗口身份');
     }
-    return { runs: ids.length, controllers: workspace.apps.filter(r => r.controller).map(r => r.app) };
+    await overview(c);
+    return { runs: ids.length, controllers: workspace.apps.filter(r => r.controller).map(r => r.app), availability: workspace.apps.map(r => ({ app: r.app, controller: r.controller, connected: r.connected, reason: r.reason || '' })) };
   } },
   { id: 'fusion.create', title: '独立项目启用并打开主工作台', refs: ['F19', 'X01', 'X02'], mode: 'write', async run(c) {
     const run = await create(c); await open(c, run);
@@ -75,9 +93,12 @@ export default [
     return { id: run.id, app: run.app, thread: run.thread };
   } },
   { id: 'fusion.navigation', title: '工作台→普通会话→工作台与关系面板', refs: ['F19', 'R04', 'X02', 'X08', 'X11'], mode: 'write', async run(c) {
-    const run = await create(c), normal = await c.target(run.app, 'A', true);
+    const run = await create(c);
+    await overview(c);
+    const normal = await c.target(run.app, 'A', true);
     await open(c, run); await openTasks(c, run);
     c.equal(await c.b.read('currentFusionRun().id'), run.id, '关系面板绑定同一工作台');
+    await overview(c);
     await c.open(normal); c.check(await c.b.read('!currentFusionRun()'), '普通会话没有残留工作台身份');
     await open(c, run); c.equal(await c.b.read('lastChat.thread'), run.thread, '重回工作台不是管理 ID 或普通会话');
     return { run: run.id, normal: normal.thread };
@@ -86,7 +107,7 @@ export default [
     const run = await create(c), before = await current(c, run.id), title = 'QA workbench ' + Date.now();
     const card = `[data-fusion-open=${attr(run.id)}]${by('data-computer', c.computer)}`;
     const menu = async () => {
-      await c.b.home(); await c.b.click('#ovLevels [data-v="fusion"]');
+      await c.b.home(); await c.b.click('#ovTabs [data-v="fusion"]');
       await c.b.hold(card); await c.b.wait("sheetKind==='agent-actions'", '工作台管理菜单');
     };
     try {
@@ -113,8 +134,14 @@ export default [
     const run = await create(c); await open(c, run);
     const before = (await current(c, run.id)).tasks.total;
     const marker = c.marker + '-FUSION-MAIN';
-    await c.send({ ...run, app: run.app }, `只回复 ${marker}，不要创建子 Agent、工作任务或操作文件。`);
-    c.check(await c.b.read(`lastChat.items.some(i=>i.k==='assistant'&&i.t?.includes(${attr(marker)}))`), '收到主 Agent 原生回复');
+    // A submitted native user message may briefly display busy=false before
+    // the real Agent turn starts. Only the NEW assistant output proves progress.
+    await c.send({ ...run, app: run.app }, `只回复 ${marker}，不要创建子 Agent、工作任务或操作文件。`, { complete: false });
+    const assistant = await c.b.wait(`lastChat?.thread===${attr(run.thread)}
+      && lastChat.items.find(i=>i.k==='assistant'&&i.t?.includes(${attr(marker)}))?.i||null`,
+      '主 Agent 原生完成标记', c.options.generationTimeout);
+    c.check(!!assistant, '收到主 Agent 原生回复');
+    await c.b.wait(`lastChat?.thread===${attr(run.thread)}&&!lastChat.busy`, '主 Agent 原生轮次结束', c.options.generationTimeout);
     c.equal((await current(c, run.id)).tasks.total, before, '直接答复没有多派子 Agent');
     const model = await c.b.read('lastChat.model'); c.check(!!model, '主模型数据可见');
     return { run: run.id, model };
@@ -122,11 +149,36 @@ export default [
   { id: 'fusion.dispatch', title: '子任务、审阅和交付真实闭环', refs: ['F19', 'X04', 'X05', 'X07'], mode: 'generate', async run(c) {
     const run = await create(c); await open(c, run);
     const marker = c.marker + '-CHILD';
+    const started = Date.now(), deadline = started + c.options.generationTimeout, milestones = [];
+    const runExpr = `fusionWorkspaces.get(${attr(c.computer)})?.runs.find(r=>r.id===${attr(run.id)})`;
+    const waitPhase = async (label, condition) => {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) throw new Error(`Fusion ${label} 未完成，已达到全程 ${c.options.generationTimeout}ms 上限`);
+      let value;
+      try {
+        value = await c.b.wait(`(()=>{const r=${runExpr};return r && (${condition}) ? r : null})()`, `Fusion ${label}`, remaining);
+      } catch (error) {
+        // Report the last REAL source-of-truth projection; no synthetic completion.
+        let state = null;
+        try {
+          state = await c.b.read(`(()=>{const r=${runExpr};return r&&{status:r.status,tasks:r.tasks,works:r.works,busy:lastChat?.busy}})()`);
+        } catch {}
+        throw new Error(`${error.message}；最后状态 ${JSON.stringify(state)}`);
+      }
+      const elapsedMs = Date.now() - started;
+      milestones.push({ stage: label, elapsedMs });
+      console.log(`Fusion QA ${label}: ${elapsedMs}ms`);
+      return value;
+    };
     await c.send({ ...run, app: run.app }, `这是隔离测试项目。请用 Fusion 工具建立一项工作，并派一个子 Agent 只回复 ${marker}，不读写文件。审阅它的结果并正式交付，最后回复 ${marker}-DONE。`, { complete: false });
-    const value = await c.b.wait(`(()=>{const r=fusionWorkspaces.get(${attr(c.computer)})?.runs.find(r=>r.id===${attr(run.id)});return r?.tasks?.total>0&&r.tasks.done>0&&r.works.done>0&&!lastChat.busy?r:null})()`, 'Fusion 派发审阅交付', c.options.generationTimeout);
-    c.check(value.tasks.total > 0, '实际创建子任务'); c.check(value.tasks.done > 0 && value.works.done > 0, '子任务已接受且工作已交付');
+    await waitPhase('已创建子任务', 'r.tasks?.total>0');
+    await waitPhase('子任务验收', 'r.tasks?.done>0');
+    const value = await waitPhase('工作正式交付', 'r.works?.done>0');
+    await waitPhase('主控原生回复终态', `!lastChat?.busy && lastChat?.thread===${attr(run.thread)}`);
+    c.check(value.tasks.total > 0 && value.tasks.done > 0 && value.works.done > 0, '真实子任务验收与工作交付已登记');
     c.check(await c.b.read(`lastChat.items.some(i=>i.k==='assistant'&&i.t?.includes(${attr(marker + '-DONE')}))`), '收到主 Agent 完成回执');
-    return { run: run.id, tasks: value.tasks, works: value.works, scope: '单子任务闭环；并行、复用和返工仍见待验清单' };
+    return { run: run.id, tasks: value.tasks, works: value.works, elapsedMs: Date.now() - started, milestones,
+      scope: '单子任务闭环；并行、复用和返工仍见待验清单' };
   } },
   { id: 'fusion.stop', title: '停止及核对继续入口', refs: ['F19', 'X10'], mode: 'write', async run(c) {
     const run = await create(c); await open(c, run); await openTasks(c, run);

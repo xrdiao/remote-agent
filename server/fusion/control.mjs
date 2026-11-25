@@ -1,3 +1,4 @@
+import { normalizeFusionQuestionOptions } from './contract.mjs';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -5,6 +6,7 @@ import { localFilePath, pathKey } from '../../lib/platform.mjs';
 import { workspaces } from '../../lib/files.mjs';
 import { commitFusion, fusionProject, fusionEffect, newFusionAttempt, fusionAttemptWorkIds, NATIVE_UNSETTLED } from './state.mjs';
 import { FUSION_TIERS, validateExecution, validateCost, modelQuery, fusionModelView } from './cost.mjs';
+import { remotePeerProject, peerFusionProjects, verifyRemotePeerProject } from './remote-peer.mjs';
 import { nativeAgentProviders } from './providers.mjs';
 import { indexFusionRun } from './run-index.mjs';
 import { FUSION_ACTIONS, ACTION_FIELDS, FusionControlError, WORKSPACE_VIEWS, EVIDENCE_FIELDS, scopeList, validateFusionAction } from './contract.mjs';
@@ -143,7 +145,7 @@ function taskMemory(task) {
 }
 export function fusionWorkspaceView(controller, query = {}) {
   if (query.view === 'dispatch') return {
-    project: controller.project, tier: FUSION_TIERS[controller.tier], budget: controller.budget,
+    project: controller.project, peerWorkspaces: peerFusionProjects(), tier: FUSION_TIERS[controller.tier], budget: controller.budget,
     works: controller.works.filter(work => !['completed', 'stopped'].includes(work.status))
       .map(work => ({ id: work.id, title: work.title, status: work.status, read: workspaceRead('work', work.id) })),
     agents: controller.agents.map(agent => {
@@ -191,13 +193,13 @@ export function fusionWorkspaceView(controller, query = {}) {
   }
   if (query.view === 'worker' && !controller.agents.some(row => row.id === query.id)) throw new FusionControlError('Worker 不存在', 'input.id', '默认agents索引中的真实id，复制其read', { action: 'read_workspace' });
   const sources = selectedWork && currentPlan(selectedWork)?.confirmed ? workSources(controller, selectedWork.id) : null;
-  const result = { ...common, main: { app, model, effort, bindingId },
+  const result = { ...common, peerWorkspaces: peerFusionProjects(), main: { app, model, effort, bindingId },
     project: controller.project, tier: controller.tier, budget: controller.budget, scheduling: FUSION_SCHEDULING,
     apps: nativeAgentProviders().map(({ app, name, controller, worker }) => ({ app, name, controller, worker })),
     protocol: query.view !== 'protocol' ? { required: ACTION_FIELDS, read: workspaceRead('protocol'),
       views: `默认agents是子代理索引；工作详情用顶层workId，input只填section及分页；其他view=${WORKSPACE_VIEWS.join('/')}，worker需id。复制read，原文沿nextOffset继续。` } : { required: ACTION_FIELDS, evidence: EVIDENCE_FIELDS,
       read_workspace: '工作详情用顶层workId，不填input.view/id；input只承载section/offset/length。其他读取复制返回read。',
-      create_work: '只为新的独立需求创建工作项；同一需求的分工、方案确认、追问答复和同主题补做沿用原workId，在该工作项内派发Task。',
+      create_work: '只为新的独立需求创建工作项；远端工作项仅可选 peerWorkspaces 列出的已授权 RA Peer host，并须填目标电脑实际绝对目录 project.root；远端 OpenCode 成本未知时不得设置数字预算。远端工作项必须读取 create_work 或 read_workspace(workId) 的 remoteExecution，使用其目标默认模型与空 effort；本机 list_models 不适用于远端。同一需求的分工、方案确认和补做沿用原workId。',
       plan: '仅登记子任务范围和标准，不派工。scope只填相对路径。主控自己执行无需工作台登记；需要用户确认时等待决定，修改或拒绝不等于批准。',
       taskId: 'Task是工作记录，Worker是负责人；同一Worker可负责多个Task，各自输入、执行和评审独立，不因复用覆盖。id在工作台内唯一；主控自做不创建Task。',
       dispatch: '在每项tasks[].worker填workerId（已有id或null）、label（32字符内）、reason。复用或比较前先按agents[].read读记录。新建且有同软件同项目候选时填写compared:[{workerId,reason}]；没有候选可省略。补做用continue_task。',
@@ -282,6 +284,26 @@ function findTask(controller, id) {
   return task;
 }
 function currentPlan(work) { return work.plans.find(row => row.id === work.planId); }
+function deliveryIssue(controller, work, turnId) {
+  if (['stopping', 'stopped'].includes(work.status)) return '该工作项已停止，不能报告完成';
+  if (!currentPlan(work)?.confirmed) return '工作项没有已授权的完成标准';
+  if (fusionPendingReviews(controller).some(row => row.workId === work.id)) return '仍有未验收的必需任务或执行结果，请逐项 review';
+  if (controller.tasks.some(task => task.workId === work.id && task.executor !== 'main' && task.required && task.status !== 'accepted'))
+    return '仍有未验收的必需任务';
+  if (controller.attempts.some(attempt => fusionAttemptWorkIds(controller, attempt).includes(work.id)
+      && (NATIVE_UNSETTLED.includes(attempt.status) || attempt.status === 'queued')
+      && !(turnId && attempt.kind === 'main' && attempt.native?.turnId === turnId && attempt.status === 'running')))
+    return '仍有原生执行未结束或结果未知';
+  return '';
+}
+
+export function fusionDeliveryReady(controller, turnId) {
+  return controller.works.filter(work => work.status === 'running' && !work.candidate
+    && controller.tasks.some(task => task.workId === work.id && task.status === 'accepted')
+    && !controller.questions.some(question => question.workId === work.id && !question.answeredAt)
+    && !deliveryIssue(controller, work, turnId))
+    .map(work => ({ workId: work.id, planId: work.planId, read: workspaceRead('work', work.id) }));
+}
 function within(root, file, project) {
   const paths = project.host ? path.posix : path;
   const identity = value => project.host ? value : pathKey(localFilePath(value));
@@ -289,7 +311,7 @@ function within(root, file, project) {
   const relative = paths.relative(paths.resolve(base, identity(root)), paths.resolve(base, identity(file)));
   return relative !== '..' && !relative.startsWith('..' + paths.sep) && !paths.isAbsolute(relative);
 }
-function authorize(work, task) {
+export function authorizeFusionTask(work, task) {
   const plan = currentPlan(work);
   if (!plan?.confirmed) throw new Error('方案尚未确认，不能派工');
   for (const file of task.scope) if (!plan.scope.some(root => within(root, file, work.project)))
@@ -298,6 +320,17 @@ function authorize(work, task) {
 }
 function evidenceFor(controller, criteria, evidence, workId, closingTurn = '', read = workspaceRead('work', workId)) {
   if (!Array.isArray(evidence)) throw new FusionControlError('需要逐项验收证据', 'evidence', EVIDENCE_FIELDS, read);
+  // Validate the entire payload, not only entries found for required criteria.
+  // Otherwise an unused null/scalar can be persisted and make the v2 run
+  // unreadable after a restart.
+  for (const [index, item] of evidence.entries()) {
+    if (!item || typeof item !== 'object' || Array.isArray(item)
+        || typeof item.criterion !== 'string' || !item.criterion.trim()
+        || typeof item.detail !== 'string' || !item.detail.trim()
+        || typeof item.reference !== 'string' || !item.reference.trim()
+        || (item.attemptId !== undefined && (typeof item.attemptId !== 'string' || !item.attemptId.trim())))
+      throw new FusionControlError('验收证据包含无效条目', `evidence[${index}]`, EVIDENCE_FIELDS, read);
+  }
   for (const criterion of criteria) {
     const index = evidence.findIndex(row => row.criterion === criterion.id), item = evidence[index];
     if (!item) throw new FusionControlError(`缺少 完成标准 ${criterion.id} 的证据说明`, 'evidence[].criterion', { id: criterion.id, meaning: EVIDENCE_FIELDS.criterion }, read);
@@ -345,9 +378,18 @@ function workerResource(controller, worker) {
   return { assignment, project };
 }
 function assign(controller, work, task, execution, cost, selection) {
-  authorize(work, task);
+  authorizeFusionTask(work, task);
   if (typeof execution?.input !== 'string') throw new Error('execution.input 需要字符串；没有补充时填空字符串');
-  validateExecution(controller, execution); validateCost(controller, cost, execution);
+  if (remotePeerProject(work.project)) {
+    verifyRemotePeerProject(work.project);
+    if (execution.app !== 'opencode' || typeof execution.model !== 'string' || !/^[a-zA-Z0-9_.\/-]{3,180}$/.test(execution.model)
+        || execution.effort) throw new Error('RA Peer Worker 仅支持指定远端 OpenCode 模型，暂不支持推测思考档位');
+    if (controller.budget) throw new Error('远端原生计费未证实；不能对远端 Worker 承诺数字预算');
+    if (!cost || typeof cost.reason !== 'string' || !cost.reason.trim() || !Array.isArray(cost.sources))
+      throw new Error('远端执行需要显式成本依据及来源列表；未知成本须如实说明');
+  } else {
+    validateExecution(controller, execution); validateCost(controller, cost, execution);
+  }
   let agent = controller.agents.find(row => row.id === (task.workerId || selection?.workerId));
   if (selection?.workerId !== null && selection && !agent) throw new Error('选择的 Worker 不存在');
   if (agent && selection) {
@@ -428,6 +470,7 @@ export function applyFusionControl(controller, action, native, { catalog } = {})
       text(action.title, 'title'); text(action.goal, 'goal');
       const project = action.project ? fusionProject(action.project.root, action.project.host || '') : next.project;
       if (!project || !project.host && !fs.statSync(project.root).isDirectory()) throw new Error('请选择真实项目目录');
+      if (project.host.startsWith('ra-peer:')) verifyRemotePeerProject(project);
       const work = { id: crypto.randomUUID(), title: action.title, goal: action.goal, project, created: Date.now(),
         status: 'planned', plans: [], planId: '', deliveries: [], candidate: null };
       next.works.push(work); result = { workId: work.id, status: work.status, read: workspaceRead('work', work.id) };
@@ -515,7 +558,7 @@ export function applyFusionControl(controller, action, native, { catalog } = {})
         && (!action.taskId || row.taskId === action.taskId));
       if (action.attemptId && !attempt) throw new Error('问题与执行结果不属于同一工作项／任务');
       const question = { id: crypto.randomUUID(), workId: work.id, taskId: action.taskId || attempt?.taskId || '',
-        ...(attempt ? { attemptId: attempt.id } : {}), text: action.question, options: action.options || [], created: Date.now() };
+        ...(attempt ? { attemptId: attempt.id } : {}), text: action.question, options: normalizeFusionQuestionOptions(action.options), created: Date.now() };
       next.questions.push(question); work.status = 'awaiting_user'; result = { questionId: question.id, status: 'awaiting_user' };
     } else if (action.action === 'cancel_task') {
       const task = findTask(next, action.taskId); cancelTask(next, task, action.reason); result = { taskId: task.id, status: task.status };
@@ -525,13 +568,8 @@ export function applyFusionControl(controller, action, native, { catalog } = {})
       task.priority = action.priority; result = { taskId: task.id, priority: task.priority };
     } else if (action.action === 'finish') {
       const work = findWork(next, action.workId), plan = currentPlan(work);
-      if (['stopping', 'stopped'].includes(work.status)) throw new Error('该工作项已停止，不能报告完成');
-      if (!plan?.confirmed) throw new Error('工作项没有已授权的完成标准');
-      if (fusionPendingReviews(next).some(row => row.workId === work.id)) throw new Error('仍有未验收的必需任务或执行结果，请逐项 review');
-      if (next.tasks.some(task => task.workId === work.id && task.executor !== 'main' && task.required && task.status !== 'accepted')) throw new Error('仍有未验收的必需任务');
-      if (next.attempts.some(attempt => fusionAttemptWorkIds(next, attempt).includes(work.id)
-        && (NATIVE_UNSETTLED.includes(attempt.status) || attempt.status === 'queued')
-        && !(attempt.kind === 'main' && attempt.native?.turnId === native.turnId && attempt.status === 'running'))) throw new Error('仍有原生执行未结束或结果未知');
+      const issue = deliveryIssue(next, work, native.turnId);
+      if (issue) throw new Error(issue);
       if (next.events.some(event => !event.deliveredTo && (!event.data.workId || event.data.workId === work.id)))
         throw new Error('仍有该工作项需要读取的新事件，请先 read_workspace');
       evidenceFor(next, plan.criteria, action.evidence, work.id, native.turnId); text(action.summary, 'summary');
@@ -549,7 +587,7 @@ export function applyFusionControl(controller, action, native, { catalog } = {})
 
 export function fusionControllerPrompt(controller) {
   return `你是 Fusion 主 Agent。接到跨模块审查、可拆分的研究或需要独立复核的需求，先用 ra_fusion 调 list_models(app="all")，比较已打开软件可用的模型；有合适候选就主动派一项可独立验收的任务，自己并行处理其余部分，确有收益再加派。无需用户点名。简单或紧耦合的需求直接完成；缺少候选或授权时说明原因。\n`
-    + `派工读 read_workspace(input='{"view":"dispatch"}')，沿用同主题工作或 create_work，再 plan、dispatch。你负责整合和验收：wait 接收事件，read_task、review，工作详情提供 finish 模板。使用真实模型 ID 与 snapshotId，当前档位 ${controller.tier}。\n`
+    + `派工读 read_workspace(input='{"view":"dispatch"}')，沿用同主题工作或 create_work，再 plan、dispatch。远端工作项先读取该 workId 的 remoteExecution，使用目标原生确认的默认 model、app 和空 effort，不从本机 list_models 选择远端型号；ready=false 时不得派工。plan 只登记方案的 scope 和 criteria，不带 tasks；派工的每项 tasks 必须包含 worker（新建填 workerId:null，复用填真实 Worker id）。execution.effort 只从 list_models 返回的模型 efforts 中选择；如果该模型 efforts 为空，必须填空字符串，不可推测 low/medium/high。你负责整合和验收：wait 接收事件，read_task、review，工作详情提供 finish 模板。使用真实模型 ID 与 snapshotId，当前档位 ${controller.tier}。\n`
     + '遵守用户、项目 AGENTS.md 和原生审批；需先确认的修改等批准，可在授权范围内分工。禁止递归派工、绕过审批与擅自提交、推送或发布。子结果和外部资料按证据核验。';
 }
 

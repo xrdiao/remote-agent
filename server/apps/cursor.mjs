@@ -1,8 +1,14 @@
+import { randomUUID } from 'node:crypto';
+import { answerComposerQuestion, stopWindowThread, windowQueue } from './capabilities/window-actions.mjs';
+import { cdpRead } from '../cdp.mjs';
+import { changeDesktopFiles, desktopUsageContext, showDesktopSettings, terminalProjectFromRoots, withDesktopFiles } from './capabilities/desktop-editor.mjs';
+import { fusionModelMenu } from './capabilities/fusion-model-menu.mjs';
+import { ConversationRef, SessionBinding } from '../session/binding.mjs';
 import { localFilePath, mod, samePath } from '../../lib/platform.mjs';
 import { cursorSource } from '../native-windows.mjs';
-import { windowRoots, editorRoots } from '../../lib/files.mjs';
+import { editorRoots } from '../../lib/files.mjs';
 import { helpersCall, PAGE_SRC } from '../page/build.mjs';
-import { cursorUsage } from '../agent/context.mjs';
+import { cursorUsage } from '../agent/primitives.mjs';
 import { activateQueuedAction } from '../agent/queued-action.mjs';
 import { rememberCursorSessionProject, storedProjectSession } from '../project-windows.mjs';
 
@@ -30,6 +36,7 @@ export const adapter = {
     if (!await this.waitFor('agentStartupState("cursor")', 250)) throw new Error('Cursor 会话面板尚未就绪');
   },
   async newChat(project = '') {
+    const origin = ConversationRef.capture(this);
     await this.adapter.ensureProjectPanel.call(this);
     const before = project ? '' : await this.cdp.evaluate(helpersCall('activeThread()'));
     const created = project ? await this.cdp.evaluate(helpersCall(`nativeSessionAction('cursor', '', 'createProjectChat', ${JSON.stringify(project)})`)) : '';
@@ -44,8 +51,10 @@ export const adapter = {
           throw new Error('Cursor 新会话的原生工作区与所选项目不一致');
         rememberCursorSessionProject(created, project, this.windowId);
       }
+      origin.assertCurrent(this);
+      cdpRead.getStore()?.throwIfAborted();
       this.clearViewState();
-      this.threadId = chat.thread || '';
+      SessionBinding.commit(this, { threadId: chat.thread || '', selectedThread: this.selectedThread === undefined ? undefined : chat.thread || '' });
       await this.currentRoots();
       this.publishThread('已新建对话');
       this.lastChatAt = 0;
@@ -64,12 +73,15 @@ export const adapter = {
 
   async openAgent(id, title = '', { reuseWindow = false } = {}) {
     if (!id || id.length > 200) throw new Error('这条 Agent 已经不在列表里');
+    const origin = ConversationRef.capture(this);
     const source = !reuseWindow && !this.fusionBinding && cursorSource(id);
     if (source && source.cdp.wsUrl !== this.cdp.wsUrl) {
       const context = await source.cdp.evaluate(helpersCall(`nativeSessionInfo('cursor', ${JSON.stringify(id)}, 'context')`));
       const roots = await editorRoots(source.cdp, 'cursor');
-      if (context.projectless ? !roots.length : context.roots.some(root => this.projectMatches(roots, root.root, root.host)))
+      if (context.projectless ? !roots.length : context.roots.some(root => this.projectMatches(roots, root.root, root.host))) {
+        origin.assertCurrent(this);
         return this.attach({ id: source.win.id, windowId: source.win.id, threadId: id });
+      }
     }
     const switching = this.switchingThread;
     let confirmed = false;
@@ -90,8 +102,10 @@ export const adapter = {
       })()`);
       for (let i = 0; i <= 12; i++) {
         if (await this.cdp.evaluate(helpersCall(`cursorChatReady(${JSON.stringify(id)})`))) {
+          origin.assertCurrent(this);
+          cdpRead.getStore()?.throwIfAborted();
           if (this.threadId !== id) this.clearViewState();
-          this.threadId = this.selectedThread = id;
+          SessionBinding.commit(this, { threadId: id, selectedThread: id });
           await this.currentRoots();
           this.publishThread('已切换会话');
           confirmed = true;
@@ -154,46 +168,20 @@ export const adapter = {
     return { queueId: id };
   },
 
-  async changeAction(i, name, act) {
-    if (!['keep', 'undo', 'bar'].includes(act)) throw new Error('不支持的操作');
-    await this.withFiles(async s => {
-      if (this.app === 'devin' && s.count && !s.files.length) throw new Error('这个界面看不到逐个文件的改动，请先切到 Agent 界面');
-      const call = a => helpersCall(`fileTarget(${Number(i) || 0}, ${JSON.stringify(String(name))}, ${JSON.stringify(a)})`);
-      if (act !== 'bar') {
-        const row = await this.cdp.evaluate(call('row'));
-        if (!row) throw new Error('文件列表已经变了，请重新打开');
-        await this.cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: row.x, y: row.y });
-        await new Promise(r => setTimeout(r, 120));
-      }
-      const pos = await this.cdp.evaluate(call(act));
-      if (!pos) throw new Error(this.appMessage('没找到这个按钮（可能 {app} 版本不同）'));
-      await this.tapCss(pos.x, pos.y);
-      await new Promise(r => setTimeout(r, 400));
-    }, { act: act !== 'bar' });
-    await this.listChanges();
-    this.refreshSoon(300);
-  },
+  changeAction: changeDesktopFiles,
 
   async listChanges() {
     const s = await this.withFiles(async s => s);
-    this.emit({ t: 'changes', ...s, ...(this.app === 'devin' ? { devin: true } : {}) });
+    this.emit({ t: 'changes', ...s });
   },
 
   async mentionQuery(q, cat, seq, trigger) {
   },
 
-  async withFiles(fn, opts) {
-    return this.withCursorFiles(fn);
-  },
+  withFiles: withDesktopFiles,
 
-  async terminalProject() {
-    const roots = await this.currentRoots();
-    return roots.length === 1 ? roots[0] : null;
-  },
-
-  async usageContext() {
-    return this.cdp.evaluate(helpersCall('contextPct()'));
-  },
+  terminalProject: terminalProjectFromRoots,
+  usageContext: desktopUsageContext,
 
   async accountUsage(request, automatic) {
     return this.readCursorUsage(automatic);
@@ -203,11 +191,11 @@ export const adapter = {
     await this.typeText(text);
   },
 
-  async submitPrompt(now, busy, when, queued, mentions, receipt, files, text, target) {
+  async submitPrompt(now, busy, when, queued, mentions, _receipt, files, text, target) {
     const { cdp, thread } = target;
     return this.submitPromptKey('', queued, () => cdp.evaluate(helpersCall(
-      `nativeSessionAction('cursor', ${JSON.stringify(thread)}, 'send', ${JSON.stringify({ text, requestId: receipt.requestId, when: when || '', requireActive: true })})`,
-    )), { text, thread });
+      `nativeSessionAction('cursor', ${JSON.stringify(thread)}, 'send', ${JSON.stringify({ text, requestId: randomUUID(), when: when || '', requireActive: true })})`,
+    )), { cdp, text, thread });
   },
 
   async fileAgentMarks(f, text, changes, diff) {
@@ -218,23 +206,7 @@ export const adapter = {
     return false;
   },
 
-  async showSettings(requestId = 0, section = '') {
-    if (this.desktopSettingsOwned === undefined) this.desktopSettingsOwned = !await this.editorCdp.evaluate(helpersCall('settingsOpen()'));
-    await this.ensureSettings();
-    const data = await this.editorCdp.evaluate(`(async () => {
-      const h = ${PAGE_SRC}, app = ${JSON.stringify(this.app)}, section = ${JSON.stringify(section)};
-      if (section) h.desktopSettingsNav(section, app);
-      const start = Date.now();
-      do {
-        const data = h.desktopSettingsData(section, app);
-        if (data.sections.length && (!section || data.current === section)) return data;
-        await new Promise(r => setTimeout(r,30));
-      } while (Date.now() - start < 1200);
-      return h.desktopSettingsData(section, app);
-    })()`);
-    this.desktopSettingsSection = data.current;
-    this.emit({ t: 'settings', ...data });
-  },
+  showSettings: showDesktopSettings,
 };
 
 function cursorThreadContext(cdp, id) {
@@ -269,11 +241,17 @@ async pickCursorMenu(kind, label) {
       if (!await h.nativeSessionAction('cursor', ${JSON.stringify(this.threadId)}, 'model', label)) return false;
       return h.modelItemsFast().some(item => item.checked && item.label === label);
     }
+    if (${JSON.stringify(kind)} === 'fast') {
+      if (!await h.pickFast(label === 'on')) return false;
+      const fast = h.fastInfo();
+      return fast?.on === (label === 'on') ? { fast } : false;
+    }
     if (!await h.pickEffort(label)) return false;
     return h.effortItems().some(item => item.checked && item.label === label);
   })()`);
   if (!confirmed) throw new Error('Cursor 尚未确认设置，请重新读取原生菜单');
-  await this.refreshModelChat();
+  if (kind === 'fast') this.emit({ t: 'fastState', sel: this.selectionKey(), ...confirmed });
+  this.refreshModelChat().catch(() => {});
 },
 
 async withCursorUiRead(fn) {
@@ -291,26 +269,7 @@ async withCursorUiRead(fn) {
   }
 },
 
-async withCursorFiles(fn) {
-  const state = () => this.cdp.evaluate(helpersCall('filesState()'));
-  let s = await state();
-  const opened = !s.open;
-  if (opened) {
-    const t = await this.cdp.evaluate(helpersCall('fileTarget(0, "", "toggle")'));
-    if (!t) return fn(s);
-    await this.tapCss(t.x, t.y);
-    for (let i = 0; i < 8 && !s.open; i++) {
-      await new Promise(r => setTimeout(r, 120));
-      s = await state();
-    }
-  }
-  try {
-    return await fn(s);
-  } finally {
-    const t = opened && await this.cdp.evaluate(helpersCall('fileTarget(0, "", "toggle")'));
-    if (t && (await state()).open) await this.tapCss(t.x, t.y);
-  }
-},
+withCursorFiles: withDesktopFiles,
 
 async readCursorUsage(automatic = false) {
   const cdp = this.cdp, editorCdp = this.editorCdp;
@@ -357,114 +316,13 @@ async toggleMax() {
   this.emit({ t: 'status', ok: true, msg: '设置已更新' });
 },
 
-queueFusionRead() {
-  if (this.fusionLoading || this.fusionMiss) return;
-  this.fusionLoading = true;
-  this.readFusion(true).then(cfg => {
-    if (cfg) { this.fusion = cfg; this.fusionMiss = false; this.lastChat = ''; }
-    else this.fusionMiss = true;
-  }).catch(() => { this.fusionMiss = true; }).finally(() => { this.fusionLoading = false; });
-},
+...fusionModelMenu,
+};
 
-
-// Reuses the panel if the model menu is already open (pressing the button again would close it),
-// and expands the model list like openMenu does when the panel does not show up on its own.
-async openFusionPanel() {
-  let fusion = await this.cdp.evaluate(helpersCall('fusionConfig()'));
-  if (fusion) return fusion;
-  await this.pressControl('model');
-  for (let i = 0; i < 14 && !fusion; i++) {
-    await new Promise(r => setTimeout(r, 150));
-    fusion = await this.cdp.evaluate(helpersCall('fusionConfig()'));
-    if (fusion) break;
-    // The panel opens while the mouse hovers the Fusion row. Clicking that row would pick it and close the menu.
-    const row = await this.cdp.evaluate(helpersCall(`menuItem('model', 'Fusion')`));
-    if (row) { await this.cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: row.x, y: row.y }); continue; }
-    if (i < 4) continue;
-    const opened = await this.cdp.evaluate(helpersCall('clickModelListTrigger()'));
-    if (opened) continue;
-    const sub = await this.cdp.evaluate(helpersCall('modelListTrigger()'));
-    if (sub) await this.tapCss(sub.x, sub.y);
-  }
-  return fusion;
-},
-
-async idleFusionRead() {
-  for (let i = 0; i < 40 && this.fusionLoading; i++) await new Promise(r => setTimeout(r, 100));
-},
-
-async readFusion(open) {
-  let cfg = await this.cdp.evaluate(helpersCall('fusionConfig()'));
-  if (cfg || !open) return cfg;
-  cfg = await this.openFusionPanel();
-  await this.closeMenus();
-  return cfg;
-},
-
-async fusionOptions(part) {
-  if (!['lead', 'effort', 'sidekick'].includes(part)) throw new Error('没有这个 Fusion 选项');
-  const native = await this.cdp.evaluate(`(() => { const h = ${PAGE_SRC}; if (!h.fusionConfig()?.lead) return null; return h.devinVariants(${JSON.stringify(part)}, true).map(({ label, checked, pricing }) => ({ label, checked, pricing })); })()`);
-  if (native?.length) {
-    this.emit({ t: 'menu', kind: `fusion-${part}`, items: native, fusion: await this.cdp.evaluate(helpersCall('fusionConfig(true)')) });
-    return;
-  }
-  await this.idleFusionRead();
-  const fusion = await this.openFusionPanel();
-  if (!fusion) { await this.closeMenus(); throw new Error('先把模型切换到 Fusion'); }
-  const opened = await this.cdp.evaluate(helpersCall(`clickFusionCombo(${JSON.stringify(part)})`));
-  if (!opened) { await this.closeMenus(); throw new Error('Fusion 的这项没有打开'); }
-  let items = [];
-  for (let i = 0; i < 8 && !items.length; i++) {
-    await new Promise(r => setTimeout(r, 120));
-    items = await this.cdp.evaluate(helpersCall('fusionOptionItems()')) || [];
-  }
-  const current = fusion[part];
-  items = items.map(it => ({ ...it, checked: it.label === current }));
-  await this.closeMenus();
-  if (!items.length) throw new Error('没有读到可切换的模型');
-  this.emit({ t: 'menu', kind: `fusion-${part}`, items, fusion });
-},
-
-async fusionPick(part, value) {
-  const previousFast = part === 'fast' ? await this.cdp.evaluate(helpersCall('fusionConfig()?.fast')) : null;
-  const picked = await this.cdp.evaluate(`(() => { const h = ${PAGE_SRC}; if (!h.fusionConfig()) return false; const rows = h.devinVariants(${JSON.stringify(part)}); const row = rows.find(x => ${part === 'fast' ? '!x.checked' : `x.label === ${JSON.stringify(String(value))}`}); if (!row) return false; h.devinPickerProps().onModelSelect(row.config); return true; })()`);
-  if (picked) {
-    if (part === 'fast') return this.syncFast(!previousFast);
-    const role = part === 'lead' || part === 'sidekick';
-    if (role) await this.waitFor(`fusionConfig()?.[${JSON.stringify(part)}] === ${JSON.stringify(String(value))}`);
-    else await this.pollChat();
-    await this.openMenu('model');
-    if (role) {
-      this.lastChatAt = 0;
-      this.pollChat().catch(() => {});
-    }
-    return;
-  }
-  await this.idleFusionRead();
-  const ready = await this.openFusionPanel();
-  if (!ready) { await this.closeMenus(); throw new Error('先把模型切换到 Fusion'); }
-  if (part === 'fast') {
-    const ok = await this.cdp.evaluate(helpersCall('clickFusionFast()'));
-    if (!ok) throw new Error('没有找到 Fast Mode');
-    try { await this.syncFast(!ready.fast); }
-    finally { await this.closeMenus(); }
-    return;
-  } else {
-    if (!['lead', 'effort', 'sidekick'].includes(part)) throw new Error('没有这个 Fusion 选项');
-    const opened = await this.cdp.evaluate(helpersCall(`clickFusionCombo(${JSON.stringify(part)})`));
-    if (!opened) throw new Error('Fusion 的这项没有打开');
-    const pos = await this.waitFor(`fusionOptionTarget(${JSON.stringify(String(value))})`);
-    if (!pos) { await this.closeMenus(); throw new Error(`没找到选项：${value}`); }
-    await this.tapCss(pos.x, pos.y);
-  }
-  await new Promise(r => setTimeout(r, 250));
-  const fusion = await this.waitFor('fusionConfig()') || ready;
-  this.fusion = fusion;
-  this.fusionMiss = false;
-  this.lastChat = '';
-  await this.closeMenus();
-  this.emit({ t: 'status', ok: true, msg: part === 'fast' ? `Fast Mode 已${fusion.fast ? '打开' : '关闭'}` : `已切换到 ${value}` });
-  await this.openMenu('model');
-  this.refreshSoon(300);
-}
+export const nativeCapabilities = {
+  window: {
+    composer: { directSubmit: true, typeDraft: adapter.typeDraft, submitPrompt: adapter.submitPrompt },
+    actions: { stop: stopWindowThread, question: answerComposerQuestion },
+    queue: windowQueue,
+  },
 };

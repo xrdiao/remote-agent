@@ -1,57 +1,167 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 import { workspaces } from '../../lib/files.mjs';
-import { readState, saveState, computerId, forgetSelection } from '../../lib/auth.mjs';
+import { computerId } from '../../lib/auth.mjs';
 import { normPath, pathKey, findBin, localFilePath } from '../../lib/platform.mjs';
-import { fusionStore } from './store.mjs';
+import { FusionStore } from './store.mjs';
 
-export const fusionRuns = fusionStore.data.owners;
-export const conversationProjects = readState().conversationProjects || {};
-export const fusionWorkers = new Map();
-export const fusionViewers = new Set();
-export const fusionLive = new Map();
 export const FUSION_ACTIVE = ['running', 'waiting', 'recovering', 'stopping'];
 export const NATIVE_UNSETTLED = ['preparing', 'submitting', 'running', 'unknown', 'stopping'];
-const subscribers = new Set();
-let fusionStartupError;
+const records = new WeakMap();
+const emptyOwner = Object.freeze({ current: '', runs: Object.freeze([]) });
 
-export function initializeFusionState(clearLegacyWindows) {
-  try {
-    migrateLegacyFusionState();
-    clearLegacyWindows();
-  } catch (error) { fusionStartupError = error; }
-  return fusionStartupError;
+function freeze(value) {
+  const pending = [value];
+  while (pending.length) {
+    const object = pending.pop();
+    if (!object || typeof object !== 'object' || Object.isFrozen(object)) continue;
+    for (const child of Object.values(object)) if (child && typeof child === 'object') pending.push(child);
+    Object.freeze(object);
+  }
+  return value;
 }
 
-export function assertFusionReady() {
-  if (fusionStartupError) throw fusionStartupError;
+export class FusionState {
+  #owners = Object.create(null);
+  #listeners = new Set();
+  constructor({ store = new FusionStore(), logger = console.error } = {}) {
+    this.store = store;
+    this.logger = logger;
+    this.failures = new Map();
+  }
+  initialize() {
+    if (this.initialized) return;
+    this.initialized = true;
+    try {
+      const owners = this.store.load((file, error, identity) => this.report('load', error, identity, file));
+      const seen = new Map(), conflicts = new Set();
+      const claim = (key, run) => {
+        const previous = seen.get(key);
+        if (previous && previous !== run) { conflicts.add(previous); conflicts.add(run); }
+        seen.set(key, run);
+      };
+      for (const run of Object.values(owners).flatMap(owner => owner.runs)) {
+        claim(JSON.stringify(['run', run.id]), run);
+        if (!run.removedAt) for (const binding of run.bindings.filter(row => row.threadId))
+          claim(JSON.stringify([binding.app, binding.host || '', binding.threadId]), run);
+      }
+      for (const run of conflicts) this.report('load', new Error('Fusion 工作台或原生会话的归属冲突'), run);
+      for (const [deviceId, owner] of Object.entries(owners)) this.#owners[deviceId] = { current: owner.current,
+        runs: owner.runs.filter(run => !conflicts.has(run)).map(run => this.#track(run)) };
+    } catch (error) {
+      this.startupError = error;
+      this.report('load', error, {}, this.store.directory);
+    }
+  }
+  #track(value) {
+    const record = { state: this, value: freeze(value) };
+    const run = new Proxy({}, {
+      get: (_target, key) => record.value[key],
+      ownKeys: () => Reflect.ownKeys(record.value),
+      getOwnPropertyDescriptor: (_target, key) => Object.hasOwn(record.value, key)
+        ? { enumerable: true, configurable: true, writable: false, value: record.value[key] } : undefined,
+      set: () => false,
+      deleteProperty: () => false,
+    });
+    records.set(run, record);
+    return run;
+  }
+  report(stage, error, { deviceId, runId, id } = {}, file = '') {
+    const identifier = value => typeof value === 'string' ? value.slice(0, 240) : '';
+    deviceId = identifier(deviceId); runId = identifier(runId || id);
+    // JSON parsing errors can quote raw file contents. Diagnostics only identify the record.
+    const message = (error instanceof SyntaxError ? 'JSON 无法解析' : String(error?.message || error)).slice(0, 400);
+    const key = JSON.stringify([stage, deviceId, runId, file]);
+    const previous = this.failures.get(key);
+    this.failures.set(key, { stage, deviceId, runId, file, message, at: Date.now() });
+    if (previous?.message !== message) this.logger(`[Fusion] ${stage} ${[deviceId, runId, file].filter(Boolean).join(' ')} ${message}`);
+  }
+  assertReady() {
+    if (!this.initialized) throw new Error('Fusion 尚未初始化');
+    if (this.startupError) throw new Error('Fusion 状态目录无法读取，请检查 Relay 日志');
+  }
+  owner(deviceId) {
+    const owner = this.#owners[deviceId];
+    return owner ? { current: owner.current, runs: [...owner.runs] } : emptyOwner;
+  }
+  all({ removed = false } = {}) {
+    return Object.values(this.#owners).flatMap(owner => owner.runs).filter(run => removed || !run.removedAt);
+  }
+  find(id) {
+    this.assertReady();
+    const run = this.all().find(row => row.id === id);
+    if (run) return run;
+    if ([...this.failures.values()].some(failure => failure.runId === id && failure.stage === 'load'))
+      throw new Error('该 Fusion 工作台记录无法读取，原始文件已保留，请检查 Relay 日志');
+    throw new Error('没有这个 Fusion 工作台，请重新选择');
+  }
+  #write(value, current) {
+    try { this.store.write(value, current); }
+    catch (error) {
+      this.report('write', error, value);
+      throw Object.assign(new Error('Fusion 状态写入失败，请检查 Relay 日志', { cause: error }), { fusionStoreError: true });
+    }
+    this.failures.delete(JSON.stringify(['write', value.deviceId, value.id, '']));
+  }
+  create(value) {
+    this.assertReady();
+    if (this.all({ removed: true }).some(run => run.id === value.id)
+      || [...this.failures.values()].some(row => row.stage === 'load' && row.runId === value.id))
+      throw new Error('这个 Fusion 工作台已存在或待恢复');
+    const next = structuredClone(value);
+    next.updated = Date.now(); next.revision++;
+    this.#write(next, next.id);
+    const run = this.#track(next);
+    const owner = this.#owners[run.deviceId] ||= { current: '', runs: [] };
+    owner.runs.push(run); owner.current = run.id;
+    this.notify(run);
+    return run;
+  }
+  select(deviceId, run) {
+    this.assertReady();
+    const record = records.get(run);
+    if (record?.state !== this || run.removedAt) throw new Error('这个 Fusion 工作台已不可用');
+    const owner = this.#owners[deviceId];
+    if (owner?.current === run.id) return;
+    if (deviceId === run.deviceId) this.#write(record.value, run.id);
+    (this.#owners[deviceId] ||= { current: '', runs: [] }).current = run.id;
+  }
+  commit(run, edit) {
+    const record = records.get(run);
+    if (record?.state !== this) throw new Error('Fusion 工作台不属于此状态存储');
+    const next = structuredClone(record.value);
+    const result = edit(next);
+    if (next.id !== run.id || next.deviceId !== run.deviceId || next.computer !== run.computer)
+      throw new Error('不能改变 Fusion 工作台的原始身份');
+    next.updated = Date.now(); next.revision++;
+    const owner = this.#owners[run.deviceId], current = next.removedAt && owner.current === run.id ? '' : owner.current;
+    const value = structuredClone(next);
+    this.#write(value, current);
+    record.value = freeze(value);
+    owner.current = current;
+    if (next.removedAt) for (const selection of Object.values(this.#owners))
+      if (selection.current === run.id) selection.current = '';
+    this.notify(run);
+    return result;
+  }
+  notify(run) {
+    for (const listener of this.#listeners) {
+      try { listener(run); } catch (error) { this.report('view', error, run); }
+    }
+  }
+  subscribe(listener) { this.#listeners.add(listener); return () => this.#listeners.delete(listener); }
 }
 
-function migrateLegacyFusionState() {
-  const state = readState();
-  const legacy = state.fusionRuns;
-  if (!legacy && state.fusionHistory === undefined) return;
-  const unsettled = Object.values(legacy || {}).flatMap(owner => owner.runs || [])
-    .flatMap(run => run.attempts || []).filter(attempt => NATIVE_UNSETTLED.includes(attempt.status));
-  if (unsettled.length) throw new Error(`旧 Fusion 仍有 ${unsettled.length} 个原生执行待核对，切换前不能清理或重发`);
-  const directory = fileURLToPath(new URL('../../_shots/fusion-superagent-cutover/', import.meta.url));
-  fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
-  fs.writeFileSync(path.join(directory, `legacy-${Date.now()}.json`), JSON.stringify({ fusionRuns: legacy, fusionHistory: state.fusionHistory }), { mode: 0o600 });
-  saveState({ fusionRuns: undefined, fusionHistory: undefined });
-  for (const [deviceId, saved] of Object.entries(state.entrySelections?.[computerId()] || {}))
-    if (saved.last?.app === 'fusion' || saved.apps?.fusion) forgetSelection(deviceId, 'fusion');
-}
+export const fusionState = new FusionState();
+export const stateOfFusionRun = run => records.get(run)?.state || fusionState;
+export const savedFusion = deviceId => fusionState.owner(deviceId);
+export const findFusionRun = id => fusionState.find(id);
+export const assertFusionReady = () => fusionState.assertReady();
+export const allFusionRuns = options => fusionState.all(options);
+export const commitFusion = (run, edit) => stateOfFusionRun(run).commit(run, edit);
 
-export function savedFusion(deviceId) { return fusionRuns[deviceId] ||= { current: '', runs: [] }; }
-export function findFusionRun(id) {
-  assertFusionReady();
-  const controller = allFusionRuns().find(row => row.id === id);
-  if (!controller) throw new Error('没有这个 Fusion 工作台，请重新选择');
-  return controller;
-}
 export function newFusionRun(deviceId, project, main, tier = 'balanced') {
   const now = Date.now();
   return { id: crypto.randomUUID(), computer: computerId(), deviceId, created: now, updated: now, revision: 0,
@@ -60,29 +170,15 @@ export function newFusionRun(deviceId, project, main, tier = 'balanced') {
     attempts: [], bindings: [], events: [], commands: [], effects: [], questions: [], capabilities: [],
     observedMainMessages: [], observedMainTurns: [] };
 }
-export function publishFusion(controller, persist = true) {
-  controller.updated = Date.now();
-  controller.revision++;
-  if (persist) fusionStore.write(controller);
-  for (const changed of subscribers) changed(controller);
-}
 export function rememberFusionMainWindow(controller, selection, roots) {
   const binding = controller.bindings.find(row => row.id === controller.main.bindingId);
   if (!binding || binding.app !== selection.app || binding.threadId !== selection.threadId
       || !roots.some(root => fusionProject(root.root, root.host || '')?.id === binding.project.id)) return;
   if (binding.windowId === selection.windowId && controller.main.windowId === selection.windowId) return;
-  binding.windowId = controller.main.windowId = selection.windowId;
-  publishFusion(controller);
+  commitFusion(controller, next => {
+    next.bindings.find(row => row.id === binding.id).windowId = next.main.windowId = selection.windowId;
+  });
 }
-export function commitFusion(controller, edit) {
-  const next = structuredClone(controller);
-  const result = edit(next);
-  next.updated = Date.now(); next.revision++;
-  fusionStore.replace(controller, next);
-  for (const changed of subscribers) changed(controller);
-  return result;
-}
-export function subscribeFusion(changed) { subscribers.add(changed); return () => subscribers.delete(changed); }
 export function fusionEvent(controller, type, data, id = crypto.randomUUID()) {
   const existing = controller.events.find(event => event.id === id);
   if (existing) return existing;
@@ -147,16 +243,19 @@ export function fusionAttemptWorkIds(controller, attempt) {
   ].filter(Boolean))];
 }
 export function fusionSummary(controller) {
+  // The overview response is available to paired clients. Never publish the
+  // internal main owner (it contains native creations and MCP bearer grants).
+  const { app, model, effort, bindingId, windowId, preparing, error, projectTrust, target } = controller.main;
+  const main = { app, model, effort, bindingId, windowId, preparing, error, projectTrust, target };
   return { id: controller.id, computer: controller.computer, title: controller.title, favorite: controller.favorite === true,
     removedAt: controller.removedAt || 0, status: controller.status,
     ...(controller.removal ? { removal: controller.removal } : {}),
-    project: controller.project, main: controller.main, tier: controller.tier, updated: controller.updated,
+    project: controller.project, main, tier: controller.tier, updated: controller.updated,
     blockedReason: controller.blockedReason,
     works: { done: controller.works.filter(work => work.status === 'completed').length, total: controller.works.length },
     tasks: { done: controller.tasks.filter(task => task.status === 'accepted').length,
       total: controller.tasks.length, running: controller.tasks.filter(task => task.status === 'running').length } };
 }
-export function allFusionRuns() { return Object.values(fusionRuns).flatMap(owner => owner.runs).filter(run => !run.removedAt); }
 export function fusionBindingInUse(app, thread) {
   return allFusionRuns().some(controller => controller.bindings.some(binding => binding.role !== 'main' && binding.app === app && binding.threadId === thread
     && controller.attempts.some(attempt => attempt.bindingId === binding.id && NATIVE_UNSETTLED.includes(attempt.status))));
