@@ -209,7 +209,7 @@ function sameWinTarget(a, b) {
     && (a.project?.root || '') === (b.project?.root || '') && (a.project?.host || '') === (b.project?.host || '');
 }
 function winTargetPending(target) {
-  return authed && ws?.readyState === 1 && navigationPending?.generation === connGen && sameWinTarget(navigationPending.target, target);
+  return authed && ws?.readyState === 1 && selectedConversation.navigation?.generation === connGen && sameWinTarget(selectedConversation.navigation.target, target);
 }
 function openWin(id) {
   const parsed = noticeTarget(id);
@@ -240,7 +240,7 @@ window.openWin = openWin;
 let winBinding = null;
 function winTargetReady(target) {
   const current = currentComputer();
-  return authed && windowReady && !navigationPending && current?.id === target.computer
+  return authed && windowReady && !selectedConversation.navigation && current?.id === target.computer
     && current.windowId === target.windowId && (target.threadId === undefined || current.threadId === target.threadId) && currentApp === target.win.split(':')[0];
 }
 function finishWinBinding(error, nextTarget) {
@@ -252,7 +252,7 @@ function finishWinBinding(error, nextTarget) {
     binding.reject(error);
     return;
   }
-  if (!authed || !windowReady || navigationPending || currentComputer()?.id !== binding.target.computer) return;
+  if (!authed || !windowReady || selectedConversation.navigation || currentComputer()?.id !== binding.target.computer) return;
   const current = currentComputer();
   if (currentApp === 'codex' && binding.target.win === 'codex' && binding.target.threadId
       && current.threadId === binding.target.threadId) binding.target = { ...binding.target, windowId: current.windowId };
@@ -362,7 +362,7 @@ $('sheet').addEventListener('click', async e => {
   if (b.dataset.computerLaunch) {
     const entry = ovList.find(e => e.id === b.dataset.computerId);
     closeSheet(); status('正在启动 Agent…');
-    return computerSockets.get(entry.c.key).send({ t: 'launchAgents', apps: [b.dataset.computerLaunch] });
+    return linkForComputerKey(entry.c.key).send({ t: 'launchAgents', apps: [b.dataset.computerLaunch] });
   }
   if (sheetKind === 'agent-actions' && b.dataset.agentAction) {
     const id = b.dataset.agentActionId || '', name = b.dataset.agentActionTitle || '';
@@ -536,8 +536,10 @@ $('sheet').addEventListener('click', async e => {
   if (b.dataset.settingsNav) { status('正在读取设置…'); return send({ t: 'settings', section: b.dataset.settingsNav }); }
   if (b.dataset.setting) { status('正在修改…'); return send({ t: 'toggleSetting', label: b.dataset.setting }); }
   if (b.dataset.termDel) {
+    const source = SourceRef.current('computer-terminal', false);
     if (!await ask(`删除终端「${b.dataset.termName || ''}」？\n里面正在跑的命令会停掉。`, '删除')) return;
-    closeSheet(); return removeRaTerminal(b.dataset.termDel);
+    if (!source.isCurrent() || mode !== 'terminal') return;
+    closeSheet(); return removeRaTerminal(b.dataset.termDel, source);
   }
   if (b.dataset.fusionPick) { menuSheetKind = 'model'; status('正在修改…'); return send({ t: 'fusionPick', part: b.dataset.fusionPick, value: b.dataset.label }); }
   if (b.dataset.fusion) {
@@ -766,12 +768,14 @@ async function useComputer(i) {
   if (c.discovery && new URL(c.discovery).origin !== location.origin) {
     return openComputerEntry(new URL('./', c.discovery).href, c.id || await computerIdFromKey(c.key));
   }
+  failFileRead('目标已切换，文件读取已中断，请重新打开');
   parkComputerSocket();
+  ws = null;
+  authed = false;
   invalidateChatRender();
   setWindowReady(false);
-  viewSel = liveChatSelection = '';
-  selectionReady = false;
-  navigationPending = null;
+  viewSel = '';
+  resetSelectionProjection();
   beginChatSelection();
   currentProject = '';
   renderChat(null, false, true);

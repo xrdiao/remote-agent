@@ -7,7 +7,7 @@ const store = {
 const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 const themeName = () => ({ dark: '深色', light: '浅色', auto: '跟随系统' })[store.get('theme') || 'dark'];
 const sleep = ms => new Promise(r => setTimeout(r, ms));
-const APP_VERSION = 'v514'; // keep in sync with the CACHE name in sw.js
+const APP_VERSION = 'v527'; // keep in sync with the CACHE name in sw.js
 
 let base = null, info = null, ws = null, authed = false;
 let windowReady = false;
@@ -50,9 +50,9 @@ function receiveAgents(m) {
   if (m.error) {
     finishPending(['正在读取 Agent 列表…']);
     if (sheetKind === 'agents') {
-      openSheet('agents', `<h3>项目与会话</h3><p class="hint err">${esc(m.error)}</p><button class="opt" id="retryAgentList"><span class="lbl">${I18N.tr(selectionReady ? '重试' : '重试当前会话')}</span></button>`);
+      openSheet('agents', `<h3>项目与会话</h3><p class="hint err">${esc(m.error)}</p><button class="opt" id="retryAgentList"><span class="lbl">${I18N.tr(selectedConversation.ready ? '重试' : '重试当前会话')}</span></button>`);
       $('retryAgentList').onclick = () => {
-        if (selectionReady) openAgentList(true);
+        if (selectedConversation.ready) openAgentList(true);
         else { closeSheet(); connRetryCurrent(); }
       };
     }
@@ -77,7 +77,7 @@ function receiveAgents(m) {
   if (sheetKind === 'agents' && changed) showAgents(list);
 }
 function requestAgentCatalog() {
-  if (mode !== 'terminal' && authed && windowReady && !navigationPending && ['cursor', 'devin', 'codex', 'opencode'].includes(currentApp))
+  if (mode !== 'terminal' && authed && windowReady && !selectedConversation.navigation && ['cursor', 'devin', 'codex', 'opencode'].includes(currentApp))
     return send({ t: 'agents', automatic: true, silent: true });
 }
 function openAgentList(refresh = false, entry = null) {
@@ -262,7 +262,7 @@ function recordViewportTrace(source, decision) {
     sample.root = viewportTraceNode(body);
     sample.overview = viewportTraceNode($('overview'));
     sample.header = viewportTraceNode(page === 'overview' ? document.querySelector('#overview .ov-top') : document.querySelector('body > header'));
-    sample.footer = viewportTraceNode(page === 'overview' ? $('ovLevels') : document.querySelector('footer'));
+    sample.footer = viewportTraceNode(page === 'overview' ? $('ovTabs') : document.querySelector('footer'));
     sample.chatHeader = viewportTraceNode(document.querySelector('body > header'));
     sample.input = viewportTraceRect(focus !== 'none' ? active : mode === 'terminal' ? $('termText') : $('text'));
     sample.units = Object.fromEntries(['vh', 'dvh', 'svh', 'lvh'].map(unit => [unit, getComputedStyle(trace.measures[unit]).height]));
@@ -409,46 +409,6 @@ function finishPending(list) {
   if (list.includes(pendingStatus)) status('');
 }
 
-const desktopRequests = new Map();
-function desktopAction(obj) {
-  return RemoteAgentRules.desktopAction(obj, currentApp, mode);
-}
-function sendDesktopOperation(obj, computer = currentComputer()?.id || '', socket = ws, pending = {}) {
-  obj.operationId ||= crypto.randomUUID();
-  desktopRequests.set(obj.operationId, { computer, kind: obj.t, requestId: obj.requestId, device: currentComputer()?.device,
-    revision: 0, ...pending });
-  socket.sendCommand(obj);
-}
-function send(obj, target) {
-  if (!['terminals', 'openTerminal', 'closeTerminal', 'newTerminal', 'termWrite', 'termResize', 'termSend', 'termComplete', 'termHistory'].includes(obj.t)) obj.sel ??= viewSel;
-  if (['attach', 'openAgent', 'openProject'].includes(obj.t)) beginNavigation(obj, target);
-  if (obj.t === 'attach') {
-    const name = {cursor: 'Cursor', devin: 'Devin', codex: 'Codex', fusion: 'Fusion', opencode: 'OpenCode'}[String(obj.id || '').split(':')[0]];
-    if (name) $('titleText').textContent = name + '…';
-  }
-  if (obj.t === 'openMenu') {
-    obj.requestId = ++menuRequest;
-    menuPending = { requestId: obj.requestId, kind: obj.kind, sel: viewSel };
-  }
-  if (obj.t === 'pickMenu' && (obj.kind === 'model' || obj.kind === 'effort' || obj.kind === 'fast' || currentApp === 'opencode' && obj.kind === 'permission')) {
-    clearSwitchWatch();
-    obj.requestId = ++menuPickRequest;
-    modelSwitchRequest = { requestId: obj.requestId, sel: viewSel };
-    status(obj.kind === 'fast' ? '设置中…' : '切换中…');
-  }
-  if (obj.t === 'docs') {
-    obj.requestId = ++docsRequest;
-    docsPending = { id: obj.requestId, sel: viewSel, computer: currentComputer()?.id || '' };
-  }
-  if (currentApp === 'codex' && ['settings', 'codexSetting', 'codexInstructions'].includes(obj.t)) obj.requestId = ++codexSettingsRequest;
-  if (ws && ws.readyState === 1 && authed) {
-    if (desktopAction(obj)) sendDesktopOperation(obj);
-    else ws.sendCommand(obj);
-    return true;
-  }
-  status('未连接', false);
-  return false;
-}
 function setWindowReady(ready) {
   if (!ready && typeof cancelVoice === 'function') cancelVoice();
   windowReady = ready;

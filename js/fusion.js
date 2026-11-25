@@ -8,12 +8,15 @@ let fusionFocusInteraction = '', fusionPendingGroup = null;
 let fusionPanelOpen = false, fusionPanelCollapsed = false, fusionChatKey = '', fusionFocusTask = '', fusionFocusPending = false;
 const fusionStateKey = (computer, run) => `${computer}|${run}`;
 const fusionResultSeen = JSON.parse(store.get('fusion-result-seen') || '{}');
+// Keep persisted native titles unchanged. Only the old generated default
+// should adopt the product-visible name; user-renamed workspaces stay intact.
+const fusionDisplayTitle = value => value === 'Fusion 主工作台' ? I18N.tr('自主编排工作台') : value;
 const fusionStatus = value => I18N.tr(({ ready: '待启用', running: '运行中', waiting: '等待新事件', awaiting_user: '待处理',
   recovering: '核对原生执行', blocked: '执行阻塞', stopping: '正在停止', stopped: '已停止', completed: '已完成', closing: '核对交付',
   planned: '已规划', queued: '排队中', preparing: '准备中', submitting: '提交中', unknown: '结果待核对', awaiting_review: '等待主 Agent 验收',
   accepted: '已验收', needs_work: '需要补做', failed: '执行失败', cancelled: '已取消', ended: '本轮结束' })[value] || value || '');
 function sendFusion(computer, message, projectOwner) {
-  const entry = ovList.find(value => value.id === computer), link = entry?.c && computerSockets.get(entry.c.key);
+  const entry = ovList.find(value => value.id === computer), link = entry?.c && linkForComputerKey(entry.c.key);
   if (!link?.authed || link.socket.readyState !== 1) { status('这台电脑尚未连接', false); return false; }
   message.requestId ||= crypto.randomUUID();
   if (['fusionPrepare', 'fusionConfigure'].includes(message.t)) Object.assign(message, { view: 'config', subscriptionId: fusionViewOwner?.requestId });
@@ -26,7 +29,7 @@ function sendFusion(computer, message, projectOwner) {
 }
 function refreshFusionWorkspace() {
   for (const entry of ovList.filter(value => !ovS.comp || value.id === ovS.comp)) {
-    const link = entry.c && computerSockets.get(entry.c.key);
+    const link = entry.c && linkForComputerKey(entry.c.key);
     if (link?.authed && link.socket.readyState === 1) sendFusion(entry.id, { t: 'fusionWorkspace' });
   }
 }
@@ -37,7 +40,7 @@ function fusionOverviewState(run) {
 function fusionMarkResultRead() {
   const run = currentFusionRun();
   if (!run?.overview?.resultKey || !fusionChatActive(run) || !conversationVisible() || !authed || !windowReady
-    || navigationPending || chatStale) return false;
+    || selectedConversation.navigation || chatStale) return false;
   const computer = currentComputer();
   if (run.computer !== computer?.id || lastChat?.thread !== computer.threadId) return false;
   return fusionReadResult(run);
@@ -53,7 +56,7 @@ function fusionReadResult(run) {
 function fusionWorkbenchRecord(run) {
   const entry = ovList.find(value => value.id === run.computer), state = fusionOverviewState(run);
   return { key: 'fusion:' + fusionStateKey(run.computer, run.id), comp: run.computer, app: 'fusion', win: 'fusion', windowId: 'fusion',
-    threadId: run.id, fusion: true, main: run.main, title: run.title, projName: run.project.name,
+    threadId: run.id, fusion: true, main: run.main, title: fusionDisplayTitle(run.title), projName: run.project.name,
     workspace: run.project.root, host: run.project.host, project: run.project.id, state, busy: state === 'run',
     favorite: run.favorite === true, resultKey: run.overview.resultKey, removal: run.removal, common: true, used: run.updated,
     off: ovComputerStatus(entry) !== 'online' };
@@ -72,7 +75,7 @@ function fusionWorkbenchTile(entry, run) {
   const progress = run.tasks.total ? run.tasks : run.works, context = `${entry.name} · ${run.project.name}`;
   return `<div class="ov-tile ov-session ov-compact ov-st-${state} fusion-workbench${!online ? ' ov-off' : ''}" style="--p:${progress.total ? progress.done / progress.total * 100 : 0}%" role="button" tabindex="0" data-fusion-open="${esc(run.id)}" data-computer="${esc(entry.id)}" data-ov-menu="${esc(fusionWorkbenchRecord(run).key)}">`
     + `<span class="ov-card-surface" aria-hidden="true"></span>${ovOpenFeedback(target)}${ovLogo(fusionLogo('fusion'))}`
-    + `<div class="ov-state"><span class="ov-badge">${I18N.tr(ovT(label))}</span></div><div class="ov-title ovRaw">${esc(run.title)}</div>`
+    + `<div class="ov-state"><span class="ov-badge">${I18N.tr(ovT(label))}</span></div><div class="ov-title ovRaw">${esc(fusionDisplayTitle(run.title))}</div>`
     + `<div class="ov-context ovRaw" title="${esc(context)}">${esc(context)}</div>`
     + `<div class="ov-foot"><span class="ov-num">${run.tasks.done}<small>/${run.tasks.total} ${I18N.tr('任务')}</small></span>${ovSeg(run.overview.counts)}</div></div>`;
 }
@@ -98,7 +101,8 @@ function fusionBoard() {
     `<button class="ov-lane-item" ${item.kind === 'question' || item.kind === 'plan'
       ? `data-fusion-locate="${item.kind}:${esc(item.questionId || item.planId)}" data-fusion-run="${esc(run.id)}"`
       : `data-fusion-board-tasks="${esc(run.id)}" data-focus-task="${esc(item.taskId || '')}"`} data-computer="${esc(entry.id)}">${fusionLogo(run.main.app)}<span class="ovRaw">${esc(item.kind === 'plan' ? I18N.tr('确认方案') + ' · ' + item.text : item.text)}</span><small class="ovRaw">${esc(entry.name)}</small></button>`)).join('');
-  return `<div class="fusion-board"><div class="fusion-home-summary">${stats || `<span class="hint">${I18N.tr('一个主 Agent，持续管理多项工作')}</span>`}</div>`
+  return `<section class="fusion-board ra-section" aria-labelledby="ra-orchestration-title"><div class="ra-section-head"><h2 id="ra-orchestration-title">${I18N.tr('自主编排')}</h2></div>`
+    + (stats ? `<div class="fusion-home-summary">${stats}</div>` : '')
     + (attention ? `<div class="ov-lane fusion-attention">${attention}</div>` : '')
     + computers.map(entry => {
       const workspace = fusionWorkspaces.get(entry.id), runs = workspace?.runs || [], online = ovComputerStatus(entry) === 'online';
@@ -108,8 +112,8 @@ function fusionBoard() {
         + `<button class="ov-computer-toggle" data-fusion-fold="${esc(entry.id)}" aria-expanded="${!folded}"><i class="fusion-computer-dot${online ? ' online' : ''}"></i><span class="lbl"><strong class="ovRaw">${esc(entry.name)}</strong><small>${!online ? I18N.tr('未连接') + ' · ' : ''}${runs.length} ${I18N.tr('个工作台')}${running ? ' · ' + running + ' ' + I18N.tr('运行中') : ''}</small></span></button>`
         + `<button class="ov-computer-action" data-fusion-new data-computer="${esc(entry.id)}" ${online ? '' : 'disabled'}>＋ ${I18N.tr('启用')}</button>`
         + `<button class="ov-computer-fold" data-fusion-fold="${esc(entry.id)}" aria-expanded="${!folded}" aria-label="${I18N.tr(folded ? '展开电脑' : '收起电脑')}"><svg class="ov-computer-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="m9 5 7 7-7 7"/></svg></button></div>`
-        + (folded ? '' : `<div class="ov-board fusion-grid">${!workspace ? `<p class="hint">${I18N.tr(online ? '正在读取 Fusion 状态…' : '电脑尚未连接')}</p>` : !runs.length ? `<p class="hint">${I18N.tr('暂无主工作台')}</p>` : runs.map(run => fusionWorkbenchTile(entry, run)).join('')}</div>`) + '</section>';
-    }).join('') + '</div>';
+        + (folded ? '' : `<div class="ov-board fusion-grid">${!workspace ? `<p class="hint">${I18N.tr(online ? '正在读取自主编排状态…' : '电脑尚未连接')}</p>` : !runs.length ? `<p class="hint">${I18N.tr('暂无主工作台')}</p>` : runs.map(run => fusionWorkbenchTile(entry, run)).join('')}</div>`) + '</section>';
+    }).join('') + (computers.length ? '' : `<p class="hint">${I18N.tr('还没有配对的电脑')}</p>`) + '</section>';
 }
 function fusionLogo(app) { return `<span class="fusion-logo" data-logo="${esc(app)}" aria-label="${esc(OV_AGENT[app] || app)}"></span>`; }
 function fusionTaskStatus(task) { return task.needsUser ? I18N.tr('待处理') : fusionStatus(task.status); }
@@ -214,7 +218,7 @@ function fusionAppSelect(computer, selected, disabled = false) {
 }
 function paintFusionNew() {
   const draft = fusionNewDraft, computers = ovList.filter(value => !ovS.comp || value.id === ovS.comp);
-  openSheet('fusion-create', `<h3>${I18N.tr('启用 Fusion 主工作台')}</h3><form class="fusion-form" id="fusionNewForm">`
+  openSheet('fusion-create', `<h3>${I18N.tr('启用自主编排工作台')}</h3><form class="fusion-form" id="fusionNewForm">`
     + `<label>${I18N.tr('所属电脑')}<select name="computer" required><option value="">${I18N.tr('请选择执行电脑')}</option>${computers.map(entry => `<option value="${esc(entry.id)}" ${entry.id === draft.computer ? 'selected' : ''}>${esc(entry.name)}</option>`).join('')}</select></label>`
     + fusionAppSelect(draft.computer, draft.app) + `<p class="hint">${I18N.tr('子 Agent 的软件和模型由主 Agent 按任务选择。')}</p>` + fusionTierSelect(draft.tier)
     + `<p class="hint">${I18N.tr('复用已有项目窗口；没有该项目窗口时，使用现有打开项目流程。启用时创建独立的原生主会话。')}</p><button class="primary" type="submit">${I18N.tr('打开／新建项目')}</button></form>`);
@@ -514,9 +518,34 @@ function fusionNativeHtml(run, attempt) {
     + (questions.pager ? questionButton('‹', 0, 0, 'prev', questions.canPrev ? '' : 'disabled') + questionButton('›', 0, 0, 'next', questions.canNext ? '' : 'disabled') : '') : '';
   const openCode = (attempt.openCodeQuestions || []).map(question => openCodeQuestionHtml(question,
     `data-fusion-opencode data-attempt="${esc(attempt.attemptId)}" data-binding="${esc(attempt.bindingId)}"`)).join('');
-  return buttons + requests + questionRows + questionActions + openCode;
+  const waiting = attempt.remoteWaiting;
+  const approval = !waiting ? '' : waiting.kind === 'permission'
+    ? `<div class="fusion-task"><p class="ovRaw">${esc(waiting.detail || '远程权限请求')}</p>
+      <button data-fusion-native="remotePermission" data-attempt="${esc(attempt.attemptId)}" data-binding="${esc(attempt.bindingId)}" data-native-request="${esc(waiting.id)}" data-remote-reply="once">允许一次</button>
+      <button data-fusion-native="remotePermission" data-attempt="${esc(attempt.attemptId)}" data-binding="${esc(attempt.bindingId)}" data-native-request="${esc(waiting.id)}" data-remote-reply="reject">拒绝</button></div>`
+    : `<form class="fusion-task" data-fusion-remote-question data-attempt="${esc(attempt.attemptId)}" data-binding="${esc(attempt.bindingId)}" data-native-request="${esc(waiting.id)}">
+      <p class="ovRaw">${esc(waiting.detail || '远程 Agent 提问')}</p>
+      <label>答案（按问题顺序填写 JSON 二维数组，如 [["确认"]]）<textarea name="remoteAnswers" required rows="3"></textarea></label>
+      <button type="submit">提交给远程 Agent</button></form>`;
+  return buttons + requests + questionRows + questionActions + openCode + approval;
 }
 document.addEventListener('submit', event => {
+  const remote = event.target.closest('form[data-fusion-remote-question]');
+  if (remote) {
+    event.preventDefault();
+    const card = remote.closest('[data-fusion-native-card]');
+    if (!card) return;
+    let answers;
+    try {
+      answers = JSON.parse(remote.elements.remoteAnswers.value);
+      if (!Array.isArray(answers) || !answers.length || answers.some(row => !Array.isArray(row)
+          || row.some(value => typeof value !== 'string'))) throw Error('invalid');
+    } catch { status('远端问题答案必须是非空 JSON 二维字符串数组', false); return; }
+    sendFusion(card.dataset.fusionComputer, { t: 'fusionNative', runId: card.dataset.fusionRun,
+      attemptId: remote.dataset.attempt, action: { kind: 'remoteQuestion', bindingId: remote.dataset.binding,
+        id: remote.dataset.nativeRequest, answers } });
+    return;
+  }
   const form = event.target.closest('form[data-fusion-opencode]');
   const card = form?.closest('[data-fusion-native-card]');
   if (!card) return;
@@ -792,6 +821,7 @@ document.addEventListener('click', event => {
     const action = { kind: button.dataset.fusionNative, bindingId: button.dataset.binding, item: button.dataset.fusionItem,
       actionId: button.dataset.actionId, label: button.dataset.label, n: Number(button.dataset.n), id: button.dataset.nativeRequest };
     const nativeCard = button.closest('[data-fusion-native-card]');
+    if (action.kind === 'remotePermission') action.reply = button.dataset.remoteReply;
     if (action.kind === 'codexRequest') action.fields = [...nativeCard.querySelectorAll('[data-fusion-field]')].filter(input => input.dataset.nativeRequest === action.id).map(input => ({ n: Number(input.dataset.fusionField), value: questionFieldValue(input) }));
     if (action.kind === 'question') {
       Object.assign(action, { qi: Number(button.dataset.qi), oi: Number(button.dataset.oi), part: button.dataset.part, questionKey: button.dataset.questionKey });

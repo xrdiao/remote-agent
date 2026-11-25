@@ -223,11 +223,11 @@ function renderTransferUploads() {
   for (const item of transferUploads) {
     if (!item.row) {
       item.row = document.createElement('div'); item.row.className = 'transferUploadItem';
-      item.row.innerHTML = `<span class="transferFileIcon" aria-hidden="true">${fileEntryIcon(false)}</span><span class="transferFileInfo"><span class="transferName">${esc(item.name)}</span><span class="hint transferItemStatus"></span></span><button class="transferRemove transferIcon" aria-label="移除 ${esc(item.name)}">×</button>`;
+      item.row.innerHTML = `<span class="transferFileIcon" aria-hidden="true">${fileEntryIcon(item.kind === 'directory')}</span><span class="transferFileInfo"><span class="transferName">${esc(item.name)}</span><span class="hint transferItemStatus"></span></span><button class="transferRemove transferIcon" aria-label="移除 ${esc(item.name)}">×</button>`;
       item.row.querySelector('button').onclick = () => { if (transferUploadRuns.has(queue)) return; item.row.remove(); queue.splice(queue.indexOf(item), 1); renderTransferUploads(); };
       $('transferProgress').append(item.row);
     }
-    const text = `${fmtSize(item.file.size)} · ${item.status}`;
+    const text = `${item.kind === 'directory' ? '目录' : fmtSize(item.file.size)} · ${item.status}`;
     const label = item.row.querySelector('.transferItemStatus');
     if (label.textContent !== text) label.textContent = text;
     item.row.querySelector('button').disabled = transferUploading;
@@ -243,6 +243,7 @@ function renderTransferUploads() {
 }
 async function transferSendFile(item, batch, render) {
   const query = new URLSearchParams({ directory: item.directory, name: item.name, mode: item.mode });
+  if (item.kind === 'directory') query.set('kind', item.kind);
   const path = '/api/transfer/upload?' + query;
   return uploadBinary({ target: item.base, computer: item.computer, path, file: item.file,
     cancelled: () => batch.cancelled,
@@ -287,14 +288,43 @@ async function runTransferUploads(items) {
   try { await Promise.all(Array.from({ length: Math.min(2, items.length) }, () => worker())); }
   finally { transferUploadRuns.delete(queue); render(); }
 }
-function chooseTransferFiles(files) {
-  if (!files.length || !transferUploadPath || transferUploading) return;
-  transferUploads.push(...Array.from(files, file => ({ base: transferComputer.relay, computer: { ...transferComputer }, file, name: file.webkitRelativePath || file.name, directory: transferUploadPath, mode: $('transferCollision').value, status: '待上传', pending: true, failed: false })));
+function chooseTransferEntries(entries) {
+  if (!entries.length || !transferUploadPath || transferUploading) return;
+  for (const entry of entries) transferUploads.push({ ...entry, base: transferComputer.relay, computer: { ...transferComputer }, directory: transferUploadPath, mode: $('transferCollision').value, status: '待上传', pending: true, failed: false });
   renderTransferUploads();
 }
+async function collectTransferFolder(folder, prefix, entries) {
+  let empty = true;
+  for await (const entry of folder.values()) {
+    empty = false;
+    const name = prefix + '/' + entry.name;
+    if (entry.kind === 'directory') await collectTransferFolder(entry, name, entries);
+    else entries.push({ file: await entry.getFile(), name });
+  }
+  if (empty) entries.push({ file: new Blob(), name: prefix, kind: 'directory' });
+}
 $('transferFiles').onclick = () => $('transferFileInput').click();
-$('transferFolder').onclick = () => $('transferFolderInput').click();
-for (const id of ['transferFileInput', 'transferFolderInput']) $(id).onchange = e => { chooseTransferFiles(e.target.files); e.target.value = ''; };
+$('transferFolder').onclick = async () => {
+  if (typeof window.showDirectoryPicker !== 'function') {
+    transferStatus('此浏览器的目录选择器只提供文件。需要保留空目录时可上传 ZIP。');
+    $('transferFolderInput').click();
+    return;
+  }
+  const queue = transferUploads, destination = transferUploadPath;
+  try {
+    const folder = await window.showDirectoryPicker({ mode: 'read' });
+    const entries = [];
+    await collectTransferFolder(folder, folder.name, entries);
+    if (transferUploads !== queue || transferUploadPath !== destination) return;
+    chooseTransferEntries(entries);
+  } catch (error) {
+    if (error.name !== 'AbortError' && transferUploads === queue) transferStatus(error.message, true);
+  }
+};
+for (const id of ['transferFileInput', 'transferFolderInput']) $(id).onchange = e => {
+  chooseTransferEntries(Array.from(e.target.files, file => ({ file, name: file.webkitRelativePath || file.name })));
+  e.target.value = '';
+};
 $('transferStart').onclick = () => runTransferUploads(transferUploads.filter(item => item.pending));
 $('transferCancel').onclick = () => {
   const batch = transferUploadRuns.get(transferUploads);
@@ -307,23 +337,24 @@ $('transferCollision').onchange = () => { $('transferCollisionLabel').textConten
 
 async function transferFileAction(action, extra = {}) {
   if (transferFileOperation) return;
-  const computer = { ...transferComputer }, link = computerSockets.get(computer.key);
-  if (!link?.authed || link.socket.readyState !== 1) return transferStatus('未连接，文件操作未发送', true);
   const directory = transferCurrentDirectory();
-  const message = { t: 'computerFileAction', requestId: crypto.randomUUID(), action, directory: directory.path,
-    paths: [...transferSelection.keys()], collision: $('transferCollision').value, ...extra };
-  const operation = transferFileOperation = { computer: computer.id, message, request: transferRequest };
+  const source = new SourceRef(transferComputer, 'computer-file', { root: directory.path });
+  const link = source.link();
+  if (!link) return transferStatus('未连接，文件操作未发送', true);
+  const message = { t: 'computerFileAction', requestId: crypto.randomUUID(), action,
+    paths: [...transferSelection.keys()], collision: $('transferCollision').value, ...extra, directory: source.root };
+  const operation = transferFileOperation = { source, message, request: transferRequest };
   $('transferMore').open = false; renderTransferPage(); transferStatus('正在处理文件…');
-  sendDesktopOperation(message, computer.id, link.socket, { message, device: link.auth.device, resultType: 'computerFileDone', complete(result) {
+  sendDesktopOperation(message, source.computerId, link.socket, { device: source.deviceId, resultType: 'computerFileDone', complete(result) {
     if (transferFileOperation !== operation) return;
     transferFileOperation = null;
-    if (action === 'move' && result.ok && transferClipboard?.computer === computer.id) {
+    if (action === 'move' && result.ok && transferClipboard?.computer === source.computerId) {
       const moved = new Set(result.results.filter(row => row.ok && !row.skipped).map(row => row.source));
       transferClipboard.paths = transferClipboard.paths.filter(file => !moved.has(file));
       if (!transferClipboard.paths.length) transferClipboard = null;
     }
     const current = transferCurrentDirectory();
-    if (transferComputer.id !== computer.id || transferRequest !== operation.request || current !== directory) {
+    if (transferComputer.id !== source.computerId || transferRequest !== operation.request || current !== directory) {
       updateTransferActions(current);
       return;
     }

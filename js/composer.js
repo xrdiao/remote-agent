@@ -21,192 +21,13 @@ function rememberInputHistory(chat) {
   }
   chatInputCache.set(key, [...rows].slice(-10));
 }
-const pendingSends = new Map(), draftVersions = new Map();
-// Optimistic echoes: the sent message/queue row is drawn immediately, then dropped when the real item arrives in a chat update.
-let pendingEchoes = [];
-function echoTextMatches(it, t) {
-  const s = (it.t || '').trim(), x = t.trim();
-  return s === x || s.startsWith(x + '\n\n附加文件（')
-    || RemoteAgentRules.withoutAttachmentLabels(s).trim() === x;
-}
-function pushEcho(requestId, text, kind) {
-  const images = desktopAttachments.map(file => file.preview).filter(Boolean);
-  pendingEchoes.push({ requestId, text, kind, images, at: Date.now(), sel: viewSel });
-  queueChatRender();
-}
+const draftVersions = new Map();
 let inputRevision = 0;
 let draftEpoch = '';
 let draftRevision = 0, draftAckRevision = 0, pendingDesktopDraft = null;
 let activeDraft = '';
-function composerSendMatches(sent, value = text.value) {
-  return sent.computer === (currentComputer()?.id || '')
-    && sent.mode === mode && sent.draft === activeDraft && sent.version === (draftVersions.get(activeDraft) || 0)
-    && sent.text === value && sent.mentions === JSON.stringify(mentionsFor(value))
-    && desktopAttachments.every(file => sent.attachmentIds.includes(file.id));
-}
-function pendingComposerSend(value = text.value) {
-  if (mode !== 'chat' || currentApp === 'fusion' || questionCompose?.sel === viewSel) return;
-  return [...pendingSends.values()].find(sent => composerSendMatches(sent, value));
-}
-function updateComposerSendAvailability() {
-  $('send').disabled = $('sendNow').disabled = !windowReady || !!pendingComposerSend();
-}
 document.addEventListener('composer-state', updateComposerSendAvailability, true);
 updateComposerSendAvailability();
-function sendReceipt(value) {
-  if (pendingComposerSend(value)) return null;
-  const requestId = [...crypto.getRandomValues(new Uint8Array(16))].map(b => b.toString(16).padStart(2, '0')).join('');
-  if (mode === 'chat') {
-    clearTimeout(draftPushTimer);
-    draftRevision++;
-    pendingDesktopDraft = null;
-    draftEpoch = requestId;
-  }
-  const targetThread = viewSel.split('|').pop() || '';
-  const candidate = queuedChat?.sel === viewSel ? queuedChat.chat : lastChat;
-  const latest = candidate?.thread === targetThread ? candidate : null;
-  pendingSends.set(requestId, { requestId, draft: activeDraft, text: value, computer: currentComputer()?.id || '', app: currentApp, mode, version: draftVersions.get(activeDraft) || 0, revision: inputRevision,
-    mentions: JSON.stringify(mentionsFor(value)), attachmentIds: desktopAttachments.map(file => file.id),
-    imageCount: currentApp === 'devin' ? desktopAttachments.filter(file => file.preview).length : 0,
-    ...(mode === 'chat' ? { scope: messageScope(), thread: targetThread, before: new Set((latest?.items || []).filter(it => it.k === 'human').map(it => it.i)),
-      beforeQueues: new Set((latest?.queued || []).map(it => it.id)), queuedSameText: (latest?.queued || []).filter(it => echoTextMatches(it, value)).length } : {}) });
-  document.dispatchEvent(new Event('composer-state'));
-  return { requestId, draft: activeDraft, draftEpoch };
-}
-function rememberSentInput(sent, receipt) {
-  const thread = receipt.sel?.split('|').pop() || sent.thread || '';
-  const key = [sent.computer, sent.app, thread].join('|');
-  const rows = (sentInputCache.get(key) || []).filter(row => row.requestId !== sent.requestId);
-  rows.push({ requestId: sent.requestId, ids: [...new Set([receipt.messageId, receipt.queueId].filter(Boolean))], text: sent.text });
-  sentInputCache.set(key, rows.slice(-10));
-}
-function confirmSent(m, render = true) {
-  if (m.pending) {
-    const sent = pendingSends.get(m.requestId);
-    if (sent && m.message) {
-      sent.confirmationError = m.message;
-      const echo = pendingEchoes.find(p => p.requestId === m.requestId);
-      if (echo) echo.unknown = true;
-      if (render) queueChatRender();
-    }
-    if (sent && sent.computer === (currentComputer()?.id || '') && sent.draft === draftKey()) {
-      if (m.message) status('发送结果未确认：' + m.message, false);
-      else if (!sent.confirmationError && ['正在发送…', '正在确认电脑端接收…', '连接已断开，发送结果待确认'].includes(pendingStatus)) status('正在确认电脑端接收…');
-    }
-    return;
-  }
-  const echo = pendingEchoes.find(p => p.requestId === m.requestId);
-  if (echo && m.hasUserMessage === false) {
-    pendingEchoes = pendingEchoes.filter(row => row !== echo);
-    if (render) queueChatRender();
-  } else if (echo) {
-    echo.confirmed = true;
-    if (m.messageId) echo.messageId = m.messageId;
-    if (m.queueId) echo.queueId = m.queueId;
-    if (m.queued !== undefined) echo.kind = m.queued ? 'queue' : 'chat';
-    if (render) queueChatRender();
-  }
-  const sent = pendingSends.get(m.requestId);
-  if (!sent) return;
-  pendingSends.delete(m.requestId);
-  if (sent.mode === 'chat' && sent.app === 'codex' && (m.messageId || m.queueId)) rememberSentInput(sent, m);
-  for (const key of inputHistory.keys()) if (key.startsWith(sent.draft + '|')) inputHistory.delete(key);
-  const here = (currentComputer()?.id || '') === sent.computer && mode === sent.mode && (draftKey() === sent.draft || m.sel === viewSel);
-  const unchanged = sent.mode === 'chat' && currentApp !== 'fusion' ? composerSendMatches(sent)
-    : inputRevision === sent.revision && text.value === sent.text;
-  if ((!here || unchanged) && drafts.get(sent.draft) === sent.text && (draftVersions.get(sent.draft) || 0) === sent.version) {
-    drafts.delete(sent.draft); draftMentions.delete(sent.draft);
-    if (sent.mode === 'chat') dirtyDrafts.add(sent.draft);
-  }
-  if (here && (['正在发送…', '正在确认电脑端接收…', '连接已断开，发送结果待确认'].includes(pendingStatus) || $('msg').textContent === '发送结果未确认：' + sent.confirmationError) && ![...pendingSends.values()].some(p => p.draft === activeDraft)) {
-    status(m.queued ? 'Agent 正在运行，已加入排队，这一轮结束后自动发送' : '已发送');
-  }
-  if (here && unchanged) {
-    if (sent.mode === 'chat') { draftRevision++; pendingDesktopDraft = null; }
-    drafts.delete(activeDraft); draftMentions.delete(activeDraft);
-    text.value = ''; MN.mentions = []; MN.value = ''; mentionHide(text); autosize(); mirroredDraft = '';
-    if (sent.mode === 'chat') dirtyDrafts.add(activeDraft);
-    else dirtyDrafts.delete(activeDraft);
-    queueDraftSync();
-  } else if (here && sent.mode === 'chat' && !unchanged) {
-    draftRevision++; pendingDesktopDraft = null;
-    dirtyDrafts.add(activeDraft); queueDraftSync();
-  }
-  if (sent.mode === 'chat') {
-    submittedMessages.push({ ...sent, messageId: m.messageId, queueId: m.queueId, sentAt: m.sentAt || Date.now() });
-    if (here && lastChat && render) queueChatRender();
-  }
-  document.dispatchEvent(new Event('composer-state'));
-}
-function failPendingSend(requestId, message = '发送失败，请重试', report = true) {
-  const sent = pendingSends.get(requestId);
-  if (!sent) return;
-  pendingSends.delete(requestId);
-  const hadEcho = pendingEchoes.some(p => p.requestId === requestId);
-  pendingEchoes = pendingEchoes.filter(p => p.requestId !== requestId);
-  if (hadEcho) queueChatRender();
-  if ((currentComputer()?.id || '') === sent.computer && draftKey() === sent.draft) {
-    if (text.value === '') { text.value = sent.text; autosize(); saveDraft(); }
-    if (sent.mode === 'chat') queueDraftSync();
-  }
-  if (report && (currentComputer()?.id || '') === sent.computer && draftKey() === sent.draft) status(message, false);
-  document.dispatchEvent(new Event('composer-state'));
-}
-function disconnectPendingSends() {
-  if (queueEditRequest) receiveQueueEdit({ ...queueEditRequest, ok: false, error: '连接已断开，操作结果待确认，编辑内容已保留' });
-  for (const sent of pendingSends.values()) {
-    const echo = pendingEchoes.find(p => p.requestId === sent.requestId);
-    if (echo) echo.unknown = true;
-    if ((currentComputer()?.id || '') === sent.computer && draftKey() === sent.draft) status('连接已断开，发送结果待确认');
-  }
-  if (pendingEchoes.length) queueChatRender();
-}
-function reconcileSent(chat) {
-  if (currentApp === 'codex' || currentApp === 'opencode') return;
-  const matched = new Set(submittedMessages.filter(sent => sent.scope === messageScope() && (!sent.thread || sent.thread === chat.thread))
-    .flatMap(sent => [sent.messageId, sent.queueId].filter(Boolean)));
-  for (const [requestId, sent] of pendingSends) {
-    if (sent.mode !== 'chat' || sent.scope !== messageScope() || (sent.thread && sent.thread !== chat.thread)) continue;
-    const queued = (chat.queued || []).find(it => !sent.beforeQueues.has(it.id) && !matched.has(it.id)
-      && (it.imageCount || 0) >= sent.imageCount && it.t?.trim() === sent.text.trim().slice(0, 4000));
-    if (queued) { matched.add(queued.id); confirmSent({ requestId, queueId: queued.id, messageId: queued.messageId, sel: viewSel, queued: true }, false); continue; }
-    if (sent.queuedSameText) continue;
-    const item = chat.items.find(it => receiptMatchesHuman(it, sent) && !matched.has(it.i) && !it.nativeIds?.some(id => matched.has(id)) && !messageTimes.has(generationKey(chat) + '|' + it.i));
-    if (item) { matched.add(item.i); confirmSent({ requestId, messageId: item.i, sel: viewSel, queued: false, sentAt: item.sentAt || Date.now() }, false); }
-  }
-}
-function receiptMatchesHuman(it, receipt) {
-  if (it.k !== 'human' || receipt.before.has(it.i) || (it.nativeIds || []).some(id => receipt.beforeQueues.has(id))) return false;
-  if ((it.images?.length || 0) < (receipt.imageCount || 0)) return false;
-  if (receipt.messageId) return it.i === receipt.messageId;
-  if (receipt.queueId && it.nativeIds?.length) return it.nativeIds.includes(receipt.queueId);
-  return echoTextMatches(it, receipt.text);
-}
-function receiveQueueDone(m) {
-  receiveQueueEdit(m);
-  if (!m.ok || m.sel !== viewSel || m.action === 'read') return;
-  if (currentApp === 'codex' && m.action === 'edit') {
-    const key = [currentComputer()?.id || '', currentApp, viewSel.split('|').pop() || ''].join('|');
-    for (const row of sentInputCache.get(key) || []) if ((m.echoes || []).includes(row.requestId)) {
-      row.text = m.text;
-      row.ids = [...new Set([...row.ids, m.messageId, m.queueId].filter(Boolean))];
-    }
-  }
-  const removed = new Set();
-  for (const echo of pendingEchoes) {
-    if (echo.sel !== viewSel || !(m.echoes || []).includes(echo.requestId)) continue;
-    if (m.action === 'edit' && currentApp !== 'devin') {
-      echo.text = m.text;
-      if (m.queueId) echo.queueId = m.queueId;
-      if (m.messageId) echo.messageId = m.messageId;
-      const receipt = submittedMessages.find(row => row.requestId === echo.requestId);
-      if (receipt) Object.assign(receipt, { text: m.text, ...(m.queueId && { queueId: m.queueId }), ...(m.messageId && { messageId: m.messageId }) });
-    } else if (m.action !== 'send') removed.add(echo.requestId);
-  }
-  pendingEchoes = pendingEchoes.filter(row => !removed.has(row.requestId));
-  for (let n = submittedMessages.length - 1; n >= 0; n--) if (removed.has(submittedMessages[n].requestId)) submittedMessages.splice(n, 1);
-  queueChatRender();
-}
 function draftKey() { return [currentComputer()?.id || '', mode === 'terminal' ? currentTerminalId : viewSel, mode, ...(questionCompose?.sel === viewSel && mode === 'chat' ? [questionCompose.id] : [])].join('|'); }
 function saveDraft() { if (activeDraft) { drafts.set(activeDraft, text.value); draftMentions.set(activeDraft, MN.mentions.slice()); } }
 function restoreDraft() {
@@ -543,11 +364,9 @@ function codexFollow() {
   return mode === 'chat' && currentApp === 'codex' && chatBusy && (follow === 'queue' || follow === 'steer') ? follow : '';
 }
 $('stop').onclick = async () => {
+  const source = SourceRef.current('stop'), originalMode = mode;
   if (!await ask('停止 Agent？\n它这一轮正在做的事会中断。', '停止', true)) return;
-  if (send({ t: 'stop' }) === false) return;
-  if (currentApp !== 'fusion') for (const [id, pending] of pendingSends) {
-    if (pending.mode === 'chat' && pending.scope === messageScope() && (!pending.thread || pending.thread === lastChat?.thread)) failPendingSend(id, '', false);
-  }
+  if (mode !== originalMode || !source.isCurrent() || send({ t: 'stop', sel: source.selection }) === false) return;
   status('正在停止…');
 };
 function updateSendMode() {
@@ -760,10 +579,12 @@ async function sendComposerNow() {
   if (!v.trim() && !$('attachments').children.length) return;
   if (submitGoalCommand(text)) return;
   saveDraft();
+  const source = SourceRef.current('send'), originalMode = mode;
+  const revision = inputRevision;
   const follow = codexFollow();
   const steer = !follow || follow === 'queue';
   if (!await ask(steer ? '立即追加到当前任务？' : '改为排队，等当前任务结束后再发送？', steer ? '立即追加' : '排队', true)) return;
-  if (!composerUploadsReady()) return;
+  if (mode !== originalMode || !source.isCurrent() || revision !== inputRevision || text.value !== v || !windowReady || !composerUploadsReady()) return;
   submitComposerReceipt(v, steer ? 'now' : 'queue');
 }
 $('send').onclick = sendComposer;

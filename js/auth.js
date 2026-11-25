@@ -72,18 +72,3 @@ async function entryHeaders(computer, method, path, body, cancelled) {
   const proof = await entryProof(computer, method + ' ' + path, digest);
   return { authorization: 'Bearer ' + computer.token, 'x-ra-proof': authB64(new TextEncoder().encode(JSON.stringify(proof))) };
 }
-
-function signedCommands(socket, scope, connection, onError) {
-  const prefix = ['ra-command-v1', scope, connection].join('\n') + '\n';
-  let sequence = 0, pending = Promise.resolve();
-  return message => {
-    if (socket.readyState !== WebSocket.OPEN) return;
-    const payload = JSON.stringify(message);
-    pending = pending.then(async () => {
-      if (socket.readyState !== WebSocket.OPEN) return;
-      const number = ++sequence;
-      const signature = await signEntry(prefix + number + '\n' + payload);
-      if (socket.readyState === WebSocket.OPEN) socket.send(number + '.' + signature + '\n' + payload);
-    }).catch(onError);
-  };
-}

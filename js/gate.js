@@ -59,7 +59,6 @@ $('gatePaste').onclick = async () => {
 $('gateHelp').onclick = () => openSheet('pair-help', '<h3>配对遇到问题？</h3><p>在电脑端运行 npm run pair，使用新生成的二维码、链接或完整手动配对码。</p><p>配对码 3 分钟内可重复申请，每个入口都需在电脑配对窗口批准。</p>');
 $('gateRetry').onclick = () => { if (gateRetryFn) gateRetryFn(); else boot(); };
 $('gateComputers').onclick = () => showComputers();
-let connGen = 0;
 function repairPairing() {
   connGen++;
   clearComputerRetry(currentComputer());
@@ -208,7 +207,7 @@ function connContentReady() {
 
 function ensureReadyAgent() {
   if (mode === 'terminal') return;
-  if (!conn.initialSelection || navigationPending || windowReady) return;
+  if (!conn.initialSelection || selectedConversation.navigation || windowReady) return;
   const ready = (conn.agents || []).filter(a => a.windows).map(a => a.app);
   if (!ready.length) return;
   const appOf = id => String(id || '').split(':')[0];
@@ -224,11 +223,10 @@ function ensureReadyAgent() {
   send({ t: 'attach', ...(saved || { id: pick.id }), initial: true });
 }
 function connReadFailed(message) {
-  const target = navigationPending?.targetId || currentWindow;
+  const target = selectedConversation.navigation?.targetId || currentWindow;
   if (target) conn.failedTargets.set(target, message);
-  navigationPending = null;
+  failSelectionProjection();
   conn.attachFailed = true;
-  selectionReady = false;
   setWindowReady(false);
   $('retryChat').hidden = false;
   status(message, false);

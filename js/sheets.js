@@ -111,7 +111,7 @@ function receiveSessionLibrary(message) {
   }
   if (sheetKind === 'agents') renderAgentList();
   const here = currentComputer();
-  if (windowReady && !navigationPending && !agentSessionAvailable({ id: here.threadId }))
+  if (windowReady && !selectedConversation.navigation && !agentSessionAvailable({ id: here.threadId }))
     send({ t: 'attach', id: here.win, windowId: here.windowId, threadId: '' });
 }
 function receiveSessionChange(message) {
@@ -186,6 +186,7 @@ function openSheet(kind, content) {
   if (kind !== 'devices') clearTimeout(deviceListTimer);
   const leavingVoice = sheetKind === 'local-voice' && kind !== 'local-voice';
   const sheet = $('sheet');
+  const freshContent = !sheet.classList.contains('open') || sheetKind !== kind;
   const navScroll = sheetKind === kind ? sheet.querySelector('.codexSettingsNav')?.scrollLeft : 0;
   const swap = sheet.classList.contains('open') && sheetKind && sheetKind !== kind
     && !matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -212,7 +213,9 @@ function openSheet(kind, content) {
   }
   $('shade').classList.add('open');
   sheet.classList.add('open');
-  if (kind === 'agents') sheet.scrollTop = 0;
+  // Reusing the same sheet DOM retained the previous menu's scrollTop.
+  // A freshly opened menu could place its first action behind the sticky header.
+  if (freshContent || kind === 'agents') sheet.scrollTop = 0;
   if (leavingVoice) scheduleVoiceWarmup();
 }
 function closeSheet() {
@@ -461,7 +464,7 @@ $('pickEditor').onclick = startEditor;
 function showComputerActions(id, app = '') {
   const entry = ovList.find(e => e.id === id);
   const list = ovSt.get(id)?.data?.windows || [];
-  const link = computerSockets.get(entry.c.key);
+  const link = linkForComputerKey(entry.c.key);
   const catalog = link.metadata.get('agentCatalog')?.agents || [];
   app ||= list.find(w => w.windowId === entry.c.windowId)?.app || list[0]?.app || 'cursor';
   const names = { cursor: 'Cursor', devin: 'Devin', codex: 'Codex', opencode: 'OpenCode' };
@@ -1406,7 +1409,10 @@ function showMainMenu() {
   const fusionItem = fusionRun ? `<button class="opt" data-fusion-config data-computer="${esc(fusionRun.computer)}" data-fusion-run="${esc(fusionRun.id)}"><span class="lbl">${I18N.tr(fusionRun.main.bindingId ? '工作台设置' : '启用主 Agent')}</span></button>` : '';
   const startConversation = store.get('start-view') === 'conversation';
   const entryItem = `<div class="opt"><span class="lbl">默认进入<span class="sub">下次打开或刷新生效</span></span><div class="agentSessionFilter${startConversation ? ' common' : ''}" style="width:176px;max-width:70%;margin:0" role="group" aria-label="${esc(I18N.tr('默认进入'))}"><button type="button" data-start-view="overview" aria-pressed="${!startConversation}" style="padding:4px 2px">${I18N.tr('缩略图')}</button><button type="button" data-start-view="conversation" aria-pressed="${startConversation}" style="padding:4px 2px">${I18N.tr('会话内容')}</button></div></div>`;
-  const manageItem = !document.body.classList.contains('conv') && ovS.level !== 'projects'
+  // Projects and Favorites are now Overview filters; batch management remains
+  // available for their visible sessions. Work and Device views aren't session
+  // collections and must not expose a misleading batch action.
+  const manageItem = !document.body.classList.contains('conv') && ovIsOverview()
     ? '<button class="opt" data-act="overviewBatch"><span class="lbl">批量管理会话</span></button>' : '';
   const notifyItem = `<button class="opt" id="notifySwitchRow" data-act="notifyToggle" role="switch" aria-checked="${notifyOn}"><span class="lbl">开启通知<span class="sub">Agent 完成或等你确认时提醒</span></span><span class="switch${notifyOn ? ' on' : ''}" aria-hidden="true"></span></button>`;
   const autoLaunchOn = store.get('conn-auto-launch') === '1';
