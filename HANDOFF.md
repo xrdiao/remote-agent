@@ -741,3 +741,12 @@ ChatGPT QA 连接刷新后复查：本会话的 Remote Agent QA 调用 list_devi
 - RA `submit_task` 通过同一既有会话派一条仅要求固定标记回复、禁止读写/命令/工具的任务；task `195dba9c-ba22-4941-bca1-15dfb9584793` 原生提交被确认，`get_task` 与 `read_task_output` 均为 `COMPLETED`，唯一答复 `RA_FINAL_CODEX_20261125_OK`。随后由新的 MCP `read_session` 从**桌面会话真实历史**独立核对相同用户指令与助手回复，`preview_only=false`。另用 `limit=3` 实际读取连续两页各 3 条，原生消息 ID 无重叠，游标有效，状态消息 `context-compaction` 也被投影。
 - `operation_status` 对 `submit_task` 仅是提交瞬间的 `RUNNING` 持久回执，不代表任务最终仍运行；最终以 `get_task` 的 `COMPLETED` 和历史回读为准。没有重复发送、没有新开窗口、没有对其他 Agent、B、3939 生产服务做操作。
 - 本轮将 **F1.codex.desktop-history** 从 NOT_VERIFIED 更新为“当前 A 机新版 ChatGPT RA 插件真实桌面调用 PASS”，证据 `_shots/ra-agent-control-20261125/final-native-codex-ra-20261125.json`；其他先前未验证项、平台边界与 Git 未跟踪交付问题保持原状。此为定向完成证据，不等于自动宣布整个 RA 已可发布。
+
+
+## 2026-11-25 21:49 CST — 正式版以 Git Fast-forward 替换隔离版（部署完成）
+
+- 用户授权使用 A 机本地 Git 将当前正式版替换为隔离候选。隔离分支 `refactor/v514-boundaries-20261122` 先检查 `npm run check`（236 语法、91/84 协议、196 helper 导出、183 import）及 `npm run qa:browser -- --list`，再提交 `5af7a37`（167 个变更文件，含 HANDOFF/MCP/共享控制模块，无密钥或 _shots）。正式分支 `feature/ra-peer-tasks` 由 `2db4744` 经 `git merge --ff-only` 前进到 `5af7a37`。未推送、未打 tag、未发 GitHub Release。
+- 切换前保留回滚分支 `backup/prod-before-v514-20261125`（旧提交 `2db4744`），锁文件离线安装依赖成功，旧 `node_modules` 保存在 `.runtime/deploy-20261125-5af7a37/node_modules.before`。正式持久数据 `~/.agent-remote` 未删除／覆盖，备份（排除未修改的 16 GB ASR 模型缓存）在 `.runtime/deploy-20261125-5af7a37/agent-data-before.tgz`，权限 0600，约 52 MB；正式版原有未跟踪 `opencode-web.js` 原样保留。
+- 用原 systemd 单元 `remote-agent.service` 停止／启动，原始 service drop-in、代理、配对和存储配置保持不变。新 PID `1396077`，3939 本地 HTTP `/`、`/url.json`、manifest 及新 JS 资源均 200，npm 生产依赖校验通过，3949 与 3961 QA 进程和端口未受影响。
+- Cloudflare Quick Tunnel 重建后域名变化，新地址 `https://garlic-bits-inquiry-firewall.trycloudflare.com` 已登记，HTTPS 公网 `/url.json` 实测 200。App 固定入口仍是 `https://xrdiao.github.io/remote-agent/`。此前记住旧临时域名的设备可能需要刷新网址；未完成真实 Android/iOS 手机操作验收，因此不把公网 200 说成真机 PASS。
+- 启动日志中的旧 Codex Fusion 会话因缺少**新版会话级 MCP 配置**被保护性拒绝转接／重放，不能悄悄重试或删除；新的 Fusion 运行应依赖隔离版既有验收证据，真实正式版运行未再次验收。发布事实与回滚路径见 `_shots/ra-agent-control-20261125/release-official-state.json`；下一步仅按真实新异常增量检查，避免重跑旧 PASS。
