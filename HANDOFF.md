@@ -750,3 +750,11 @@ ChatGPT QA 连接刷新后复查：本会话的 Remote Agent QA 调用 list_devi
 - 用原 systemd 单元 `remote-agent.service` 停止／启动，原始 service drop-in、代理、配对和存储配置保持不变。新 PID `1396077`，3939 本地 HTTP `/`、`/url.json`、manifest 及新 JS 资源均 200，npm 生产依赖校验通过，3949 与 3961 QA 进程和端口未受影响。
 - Cloudflare Quick Tunnel 重建后域名变化，新地址 `https://garlic-bits-inquiry-firewall.trycloudflare.com` 已登记，HTTPS 公网 `/url.json` 实测 200。App 固定入口仍是 `https://xrdiao.github.io/remote-agent/`。此前记住旧临时域名的设备可能需要刷新网址；未完成真实 Android/iOS 手机操作验收，因此不把公网 200 说成真机 PASS。
 - 启动日志中的旧 Codex Fusion 会话因缺少**新版会话级 MCP 配置**被保护性拒绝转接／重放，不能悄悄重试或删除；新的 Fusion 运行应依赖隔离版既有验收证据，真实正式版运行未再次验收。发布事实与回滚路径见 `_shots/ra-agent-control-20261125/release-official-state.json`；下一步仅按真实新异常增量检查，避免重跑旧 PASS。
+
+
+## 2026-11-25 — 手机旧 UI：GitHub Pages v527 静态资源发布闭环
+
+- 现象：A 机正式版已运行新 UI，手机端通过 `https://xrdiao.github.io/remote-agent/` 仍显示旧 UI。核查发现 A 机本地 `app/sw.js`、`js/core.js` 为 `v527`，但远端 `gh-pages` 的文件仍为旧资源，新 `js/ra-core-ui.js` 等 9 个模块不存在，根因是 Named Tunnel 切换时只同步了加密连接地址，未同步 `app/` 静态资源。
+- 修复：按现有 `syncApp` 公共资源清单筛选 72 个变动静态文件（含 9 个新增模块），仅以 GitHub API 创建 blob/tree/commit，并通过 `force:false` 将 `gh-pages` 快进至 `ac371badec3c78a0876356b3b7611ecf49b76e3b`；未触及正式分支、服务、MCP、Android/iOS 安装包或设备授权。单次串行脚本超时后改用有界并发上传和有限网络重试；发布后旧流程不必重复调用。
+- 真实验收：GitHub Pages Workflow `45642447870` 状态为 `completed/success`。外部公网逐字节读取 `index.html`、`sw.js`、`js/core.js`、`js/overview.js`、`js/ra-core-ui.js`、`js/computer-connection.js`、`js/command-transport.js`，均与 A 机本地源码完全一致；Service Worker 缓存已提升到 `v527`。远端 `url.json` 的 Git blob SHA 与发布前完全一致，三台设备的加密地址记录未受影响；正式 RA 服务仍 active。
+- 记录：`_shots/ra-phone-ui-sync-20261125/parallel-result.json` 和 `verified-result.json`。手机实际 PWA/Android/iOS 安装界面的加载与缓存激活**未进行真机验证**；若仍见旧 UI，先关闭并重新打开手机 PWA，再进行页面刷新，不清除配对存储。
