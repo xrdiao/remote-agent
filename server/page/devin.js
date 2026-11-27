@@ -348,15 +348,39 @@
   const devinTranscriptRows = log => !log ? [] : log.matches('[data-chat-history-variant]')
     ? [...log.querySelectorAll('[data-transcript-row-key]')].filter(row => row.closest('[data-chat-history-variant]') === log)
     : [...log.children];
+  // One extraction sees one synchronous ACP transcript snapshot. Index it
+  // once per session, not once per mounted element (row + nested message).
+  let devinTranscriptRead = null;
+  const withDevinTranscriptRead = fn => {
+    const previous = devinTranscriptRead;
+    devinTranscriptRead = { rows: new WeakMap(), sessions: new Map() };
+    try { return fn(); } finally { devinTranscriptRead = previous; }
+  };
   const devinTranscriptIndex = el => {
     const row = el.closest('[data-transcript-row-key]');
     if (!row?.closest('[data-chat-history-variant]')) return null;
+    const read = devinTranscriptRead;
+    if (read?.rows.has(row)) return read.rows.get(row);
     const props = codexFiberProps(row, 40);
     const data = props.find(p => p.row)?.row;
     const sessionId = devinNodeSessionId(row);
-    const messages = devinMessages(sessionId);
-    const index = messages?.findIndex(message => message.id === data?.item?.id || data?.memberIds?.includes(message.id));
-    return index >= 0 ? index : null;
+    let index;
+    if (read && (!data?.memberIds || Array.isArray(data.memberIds))) {
+      let byId = read.sessions.get(sessionId);
+      if (!byId) {
+        byId = new Map();
+        devinMessages(sessionId).forEach((message, i) => {
+          if (!byId.has(message.id)) byId.set(message.id, i);
+        });
+        read.sessions.set(sessionId, byId);
+      }
+      const indices = [data?.item?.id, ...(data?.memberIds || [])]
+        .map(id => byId.get(id)).filter(Number.isInteger);
+      index = indices.length ? Math.min(...indices) : -1;
+    } else index = devinMessages(sessionId)?.findIndex(message => message.id === data?.item?.id || data?.memberIds?.includes(message.id));
+    const value = index >= 0 ? index : null;
+    read?.rows.set(row, value);
+    return value;
   };
   const surfaceTarget = (to, select = false) => {
     if (IS_WIN && select) {

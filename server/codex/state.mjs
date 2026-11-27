@@ -89,9 +89,11 @@ export class CodexState extends EventEmitter {
     this.retrySettings = new Map();
     this.retryAttempts = new Map();
     this.retrying = new Map();
+    this.accountRevision = 0;
     client.on('notification', packet => this.notification(packet));
     client.on('request', packet => this.request(packet));
     client.on('disconnected', error => {
+      this.accountCache = null;
       this.writers.clear();
       this.submissions.clear();
       for (const id of this.phoneTools.keys()) this.losePhoneTools(id, error);
@@ -153,7 +155,15 @@ export class CodexState extends EventEmitter {
   hasWriter(id) { return this.writers.has(id); }
   async account() {
     await this.client.connect();
-    return this.client.request('account/read', { refreshToken: false });
+    const generation = this.client.generation, revision = this.accountRevision;
+    const value = await this.client.request('account/read', { refreshToken: false });
+    if (!this.client.ready || this.client.generation !== generation || this.accountRevision !== revision)
+      throw new Error('Codex 后台账号连接已变化');
+    this.accountCache = { generation, value };
+    return value;
+  }
+  cachedAccount() {
+    if (this.client.ready && this.accountCache?.generation === this.client.generation) return this.accountCache.value;
   }
   async alignAccount(expected) {
     const key = codexAccountKey(expected);
@@ -556,6 +566,11 @@ export class CodexState extends EventEmitter {
   }
 
   notification({ method, params: p }) {
+    if (method === 'account/updated' || method === 'account/login/completed') {
+      this.accountRevision++;
+      this.accountCache = null;
+      return;
+    }
     if (method === 'thread/goal/updated' || method === 'thread/goal/cleared') {
       this.goals.set(p.threadId, p.goal || null);
       this.changed(p.threadId);

@@ -1,4 +1,4 @@
-import { MOD, NAMED_KEYS, cdpRead, awaitCdpRead } from '../cdp.mjs';
+import { MOD, NAMED_KEYS, cdpRead, awaitCdpRead, pollUntil } from '../cdp.mjs';
 import { EDITORS } from '../config.mjs';
 import { helpersCall } from '../page/build.mjs';
 import { tapCss } from './primitives.mjs';
@@ -6,6 +6,7 @@ import { AgentServices } from './services.mjs';
 import { ADAPTERS } from '../apps/index.mjs';
 import { resetThinkingCaches } from './thinking-cache.mjs';
 import { ConversationRef, SessionBinding } from '../session/binding.mjs';
+import { nativeWindow } from '../native-windows.mjs';
 
 export * from './primitives.mjs';
 
@@ -96,22 +97,37 @@ export class AgentContext extends AgentServices {
   }
 
   async waitFor(call, tries = 10) {
-    const deadline = Date.now() + tries * 120;
-    for (let i = 0; i < tries; i++) {
-      const remaining = deadline - Date.now();
-      if (remaining <= 0) break;
-      await awaitCdpRead(new Promise(r => setTimeout(r, Math.min(120, remaining))));
-      const timeout = deadline - Date.now();
-      if (timeout <= 0) break;
-      try {
-        const value = await this.cdp.evaluate(helpersCall(call), { timeout });
-        if (value) return value;
-      } catch (error) {
-        if (!cdpRead.getStore()?.aborted && Date.now() >= deadline) return null;
-        throw error;
-      }
+    const cdp = this.cdp, expression = helpersCall(call);
+    return pollUntil(() => cdp.evaluate(expression), { timeout: tries * 120, delays: [120] });
+  }
+
+  async deferWindowRead(kind, read, source = nativeWindow(this.cdp)) {
+    const signal = cdpRead.getStore(), binding = ConversationRef.capture(this);
+    const view = this.connectionView, connection = view?.generation;
+    const current = () => !signal?.aborted && !this.disposed && binding.isCurrent(this) && (!view || view.current(connection));
+    if (!current()) return;
+    const run = () => {
+      if (!current()) return;
+      return view ? view.run(read, connection) : read();
+    };
+    if (!source) return run();
+    let pending = this.windowReadKeys;
+    if (pending?.sel !== binding.sel || pending?.connection !== connection) {
+      this.cancelWindowReads();
+      this.windowReadKeys = pending = { sel: binding.sel, connection, keys: new Map(), controller: new AbortController() };
     }
-    return null;
+    if (!pending.keys.has(kind)) pending.keys.set(kind, {});
+    const lifetime = pending.controller.signal;
+    try {
+      return await source.deferBackgroundRead(pending.keys.get(kind), run, signal ? AbortSignal.any([signal, lifetime]) : lifetime);
+    } catch (error) {
+      if (!lifetime.aborted) throw error;
+    }
+  }
+
+  cancelWindowReads() {
+    this.windowReadKeys?.controller.abort(new Error('窗口或连接已切换，后台读取已失效'));
+    this.windowReadKeys = null;
   }
 
 

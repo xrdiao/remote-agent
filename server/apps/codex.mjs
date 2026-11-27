@@ -3,24 +3,24 @@ import { withDesktopFiles } from './capabilities/desktop-editor.mjs';
 import { withMentionLock } from './capabilities/mention-lock.mjs';
 import { ConversationRef, SessionBinding } from '../session/binding.mjs';
 import { bindConnectionDelivery } from '../session/connection-view.mjs';
-import { parseAgentRef } from '../../lib/shared-rules.mjs';
+import { parseAgentRef, parseSessionRef } from '../../lib/shared-rules.mjs';
 import { Cdp, cdpRead, awaitCdpRead } from '../cdp.mjs';
 import { windowRoots, editorRoots, workspaceLabel } from '../../lib/files.mjs';
 import { agentMarks } from '../../lib/marks.mjs';
-import { IS_WIN, mod, normPath, pathKey, localFilePath, samePath } from '../../lib/platform.mjs';
+import { IS_WIN, normPath, pathKey, localFilePath, samePath } from '../../lib/platform.mjs';
 import { codexWindows, codexContext } from '../windows.mjs';
 import { CODEX_CDP_URL } from '../config.mjs';
 import { PAGE_SRC, helpersCall } from '../page/build.mjs';
-import { FOCUS_COMPOSER, appPlans, quotaErrorMessage } from '../agent/primitives.mjs';
+import { FOCUS_COMPOSER, quotaErrorMessage } from '../agent/primitives.mjs';
 import { resetThinkingCaches } from '../agent/thinking-cache.mjs';
 import { computerId, readState, saveState } from '../../lib/auth.mjs';
 import { fusionProject, allFusionRuns } from '../fusion/state.mjs';
-import { removeLibrarySession, publishSessionChange, rememberSessionMessage, rememberSessionStatuses } from '../../lib/session-library.mjs';
+import { removeLibrarySession, publishSessionChange, rememberSessionMessage, rememberSessionStatuses, sessionId } from '../../lib/session-library.mjs';
 import { NativeCdp, nativeWindow, nativeWindowAt, nativeSessionCatalog, nativeTargets } from '../native-windows.mjs';
 import { bindOperation, currentOperation } from '../operations.mjs';
 import { markSendSubmitted } from '../ws/send-lifecycle.mjs';
-import { codexBackend, codexAccountKey, CODEX_BACKEND, isCompletedFileChange, codexChildThreadIds } from '../codex/state.mjs';
-import { safeHomePath, createProjectFolder, projectList, openFolder } from '../agent/project-paths.mjs';
+import { codexBackend, CODEX_BACKEND, isCompletedFileChange, codexChildThreadIds } from '../codex/state.mjs';
+import { safeHomePath, createProjectFolder, projectList } from '../agent/project-paths.mjs';
 import { rememberSelection } from '../../lib/auth.mjs';
 import { uploads, pendingUploads, uploadAttachments, removeUpload, updateUpload, consumePendingUploads } from '../../lib/uploads.mjs';
 import fs from 'node:fs/promises';
@@ -29,74 +29,23 @@ import os from 'node:os';
 import { resolveLocal, writeTextFile } from '../../lib/files.mjs';
 import { SourceRef, projectWritablePath } from '../session/source-ref.mjs';
 import { watchChatUpdates } from '../agent/updates.mjs';
-import { orderedProjectWindows, bindProjectWindow, nativeCloseProjectWindow } from '../project-windows.mjs';
-import { leaseWindow } from '../window-use.mjs';
-import { createHash, randomUUID } from 'node:crypto';
+import { orderedProjectWindows } from '../project-windows.mjs';
+import { randomUUID } from 'node:crypto';
+import {
+  backendCodexUsage, chatGptAccountIdentified, codexAccountMetadata, desktopCodexSource,
+  ensureBackendAccount, publishCodexAccount, readCodexUsage, sameChatGptAccount,
+} from './codex/account-usage.mjs';
+import { readCodexModelMenu, pickCodexModelMenu } from './codex/model-settings.mjs';
+import {
+  closeBackendSettings, withBackendSettings, withCodexSettings, showCodexSettings,
+  saveCodexInstructions, closeCodexSettings,
+} from './codex/settings-owner.mjs';
 
 const conversationProjects = readState().conversationProjects || {};
 
-const accountPlan = value => {
-  const plan = value?.account?.planType || '';
-  return plan.charAt(0).toUpperCase() + plan.slice(1);
-};
-const accountStamp = value => value ? createHash('sha256').update(codexAccountKey(value)).digest('hex') : '';
 const goalCommand = { key: 'goal', label: 'Goal', sub: '设置或查看当前会话的目标', section: 'commands' };
-
-function desktopCodexSource(preferred) {
-  const targets = nativeTargets().filter(win => win.app === 'codex');
-  const target = targets.find(win => (win.pageId || win.id) === preferred) || targets[0];
-  return target && nativeWindowAt(target.ws);
-}
-
-async function desktopCodexAccount(preferred) {
-  const source = desktopCodexSource(preferred);
-  if (!source) return null;
-  await source.connect();
-  const account = await source.cdp.evaluate(helpersCall('refreshCodexUsage(false, true)'), { timeout: 8500 });
-  if (!account) throw new Error('Codex 窗口仍在读取账号，请稍后重试');
-  return account;
-}
-
-async function ensureBackendAccount(s) {
-  const expected = await desktopCodexAccount(s.codexAccountWindowId);
-  const account = await codexBackend.alignAccount(expected);
-  if (!account.account && account.requiresOpenaiAuth) throw new Error('请先在电脑端登录 Codex');
-  return account;
-}
-
-function codexAccountMetadata(value) {
-  return { account: accountStamp(value), plan: accountPlan(value) };
-}
-
-async function codexUsageData(readAccount, readLimits, publish = () => {}) {
-  const account = await readAccount();
-  if (!account) throw new Error('Codex 账号尚未加载');
-  const metadata = codexAccountMetadata(account);
-  publish(metadata);
-  if (account.account?.type !== 'chatgpt') return { ...metadata, missing: true, limits: [], quota: [] };
-  const result = await readLimits();
-  const workspace = account.workspaceRouting?.chatgptAccountId;
-  const current = await readAccount();
-  if (codexAccountKey(current) !== codexAccountKey(account)) {
-    publish(codexAccountMetadata(current));
-    throw new Error('Codex 账号已切换，请重新读取额度');
-  }
-  if (result.accountId && workspace && result.accountId !== workspace) throw new Error('Codex 返回的额度属于其他账号');
-  const snapshot = result.rateLimitsByLimitId?.codex || result.rateLimits;
-  const limits = [snapshot?.primary, snapshot?.secondary].filter(Boolean).map(row => ({
-    label: row.windowDurationMins === 10080 ? '每周限制' : row.windowDurationMins === 300 ? '5 小时限制' : '额度限制',
-    kind: 'limit', basis: 'remaining', pct: 100 - row.usedPercent,
-    reset: row.resetsAt ? new Date(row.resetsAt * 1000).toLocaleString('zh-CN') : '',
-  }));
-  return { ...metadata, updated: Date.now(), missing: !limits.length, limits, quota: [] };
-}
-
-function publishCodexAccount(session, metadata) {
-  if (session.codexAccount?.account !== metadata.account) session.codexModelCatalog = null;
-  session.codexAccount = metadata;
-  appPlans.codex = metadata.plan;
-  session.emit({ t: 'codexAccount', sel: session.selectionKey(), ...metadata });
-}
+const permissionModes = ['Ask for approval', 'Approve for me', 'Full access'];
+const permissionItems = current => permissionModes.map(label => ({ label, checked: current === label }));
 
 const goalVersion = goal => goal ? JSON.stringify([goal.updatedAt, goal.status, goal.objective]) : '';
 
@@ -242,12 +191,18 @@ async function syncCodexCatalog(id = '') {
   }));
 }
 
-let codexCatalogSync = Promise.resolve();
 codexBackend.on('catalogChanged', id => {
   if (codexBackend.phoneControl(id)) return;
-  codexCatalogSync = syncCodexCatalog(codexBackend.owns(id) ? id : '');
-  codexCatalogSync.catch(error => console.error('Codex 桌面会话列表同步失败:', error.message));
+  syncCodexCatalog(codexBackend.owns(id) ? id : '').catch(error => console.error('Codex 桌面会话列表同步失败:', error.message));
 });
+
+// Choose the cheap positive-owner probe only when the selected desktop
+// carrier is plausible. A directory root is a scheduling hint, not owner
+// evidence: all required native probes and the same final ranking still run.
+function preferOwnerHint(requestedWindow, expectedRoot, preferredRoots) {
+  if (requestedWindow !== CODEX_BACKEND) return true;
+  return !!expectedRoot && !!preferredRoots?.some(root => !root.host && samePath(localFilePath(root.root), localFilePath(expectedRoot)));
+}
 
 async function bindBackend(s, req) {
   const origin = ConversationRef.capture(s);
@@ -258,20 +213,21 @@ async function bindBackend(s, req) {
     .sort((a, b) => b.updatedAt - a.updatedAt || a.id.localeCompare(b.id))[0]?.id);
   if (id && !codexBackend.canAccess(id, s.deviceId)) throw new Error('当前设备未获准访问此手机会话');
   if (id && !codexBackend.hasWriter(id)) {
-    const owner = await adapter.backendOwner(id, true, preferred);
+    const candidate = nativeTargets().find(win => win.app === 'codex' && win.pageId === preferred);
+    const preferredRoots = candidate && nativeWindowAt(candidate.ws)?.roots;
+    const hintPreferred = preferOwnerHint(req.windowId, directory || codexBackend.records.get(id)?.cwd, preferredRoots);
+    const owner = await adapter.backendOwner(id, true, preferred, { cached: true, hintPreferred });
     if (owner) {
       if (directory && !samePath(path.resolve(localFilePath(owner.cwd)), directory)) throw new Error('Codex 会话不属于所选项目');
       origin.assertCurrent(s);
       cdpRead.getStore()?.throwIfAborted();
-      await s.attach({ id: 'codex', windowId: owner.pageId, threadId: id, nativeOwner: { cwd: owner.cwd }, initial: req.initial });
+      await s.attach({ id: 'codex', windowId: owner.pageId, threadId: id, nativeOwner: owner, initial: req.initial });
       if (req.project) s.projectReady({ root: owner.cwd, newSession: false, threadId: id });
       return;
     }
   }
-  if (!id) await ensureBackendAccount({ codexAccountWindowId: preferred });
   const thread = await awaitCdpRead(id ? codexBackend.read(id) : codexBackend.create(directory));
-  const account = await (async () => await desktopCodexAccount(preferred) || await codexBackend.account())().catch(() => null);
-  if (!id) await awaitCdpRead(codexCatalogSync);
+  const account = codexBackend.cachedAccount();
   directory = safeHomePath(directory || thread.cwd).real;
   if (!samePath(path.resolve(localFilePath(thread.cwd)), directory)) throw new Error('Codex 会话不属于所选项目');
   origin.assertCurrent(s);
@@ -283,259 +239,15 @@ async function bindBackend(s, req) {
   s.codexAccount = codexAccountMetadata(account);
   rememberSelection(s.deviceId, { id: 'codex', app: 'codex', windowId: CODEX_BACKEND, threadId: thread.id, project: { root: thread.cwd, host: '' } });
   backendAttached(s, req.initial === true);
-  s.prefetchMenus().catch(() => {});
   await s.setMode(s.mode, true);
   if (req.project) s.projectReady({ root: directory, newSession: !id, threadId: id });
-}
-
-async function backendSettingsOwner(s) {
-  if (!s.codexBackendSettings) {
-    const { AgentContext } = await import('../agent/context.mjs');
-    const context = new AgentContext({ deviceId: s.deviceId });
-    context.app = 'codex';
-    context.emit = message => s.emit(message);
-    const owner = s.codexBackendSettings = { context };
-    owner.ready = (async () => {
-      let page = orderedProjectWindows('codex', await codexWindows(CODEX_CDP_URL))[0];
-      if (!page) {
-        await openFolder(s.codexDirectory, 'codex', true, true);
-        const deadline = Date.now() + 30000;
-        while (!page && Date.now() < deadline) {
-          page = orderedProjectWindows('codex', await codexWindows(CODEX_CDP_URL))[0];
-          if (!page) await awaitCdpRead(new Promise(resolve => setTimeout(resolve, 120)));
-        }
-        if (!page) throw new Error('Codex 设置窗口尚未就绪');
-        owner.created = true;
-      }
-      owner.page = page;
-      owner.release = leaseWindow('codex', page.pageId, owner);
-      bindProjectWindow('codex', page.pageId);
-      context.editorCdp = new Cdp(page.ws);
-      await context.editorCdp.connect();
-      if (!page.chatWs) {
-        const pageId = page.pageId;
-        await context.withFocus(async () => {
-          await context.key(mod('Shift+p'), { cdp: context.editorCdp });
-          await context.editorCdp.send('Input.insertText', { text: 'Codex: Open Codex Sidebar' });
-          await context.key('Enter', { cdp: context.editorCdp });
-        });
-        const deadline = Date.now() + 30000;
-        while (!page?.chatWs && Date.now() < deadline) {
-          page = (await codexWindows(CODEX_CDP_URL, false, pageId))[0];
-          if (!page?.chatWs) await awaitCdpRead(new Promise(resolve => setTimeout(resolve, 120)));
-        }
-        if (!page?.chatWs) throw new Error('Codex 设置需要已就绪的桌面插件侧边栏');
-      }
-      context.cdp = new Cdp(page.chatWs);
-      await context.cdp.connect();
-      return owner;
-    })();
-  }
-  return awaitCdpRead(s.codexBackendSettings.ready);
-}
-
-async function closeBackendSettings(s, owner = s.codexBackendSettings) {
-  if (s.codexBackendSettings === owner) s.codexBackendSettings = null;
-  if (!owner) return;
-  return owner.closing ||= (async () => {
-    const context = owner.context;
-    try {
-      await owner.ready;
-      await context.closeCodexSettings();
-    } finally {
-      clearTimeout(context.focusTimer);
-      try {
-        try {
-          await Promise.all([...new Set([context.cdp, context.editorCdp])].filter(Boolean).map(async cdp => {
-            try { await cdp.send('Emulation.setFocusEmulationEnabled', { enabled: false }); }
-            finally { cdp.close(); }
-          }));
-        } finally { if (owner.created) await nativeCloseProjectWindow({ webSocketDebuggerUrl: owner.page.ws }); }
-      } finally { owner.release?.(); }
-    }
-  })();
-}
-
-async function withBackendSettings(s, action) {
-  const ready = backendSettingsOwner(s), owner = s.codexBackendSettings;
-  try {
-    const { context } = await ready;
-    return await context.withFocus(() => action(context));
-  } catch (error) {
-    try { await cdpRead.run(null, () => closeBackendSettings(s, owner)); }
-    finally { throw error; }
-  }
-}
-
-async function withCodexModelOwner(s, action, readOnly = false) {
-  const id = s.threadId;
-  if (!id) throw new Error('Codex 会话尚未加载');
-  if (!s.codexBackend) return action({ id, cdp: s.cdp });
-  const owner = await s.adapter.backendOwner(id, !readOnly);
-  if (!owner) {
-    const account = await ensureBackendAccount(s);
-    return readOnly ? action({ id, account, thread: await codexBackend.readModelState(id) })
-      : codexBackend.withWriter(id, thread => action({ id, account, thread }));
-  }
-  const cdp = new Cdp(owner.chatWs), context = { app: 'codex', threadId: id, host: '', cwd: owner.cwd };
-  try {
-    await cdp.connect();
-    return await action({ id, cdp, context });
-  } finally { cdp.close(); }
-}
-
-async function codexModelSettings(owner, withAccount = false) {
-  if (owner.thread) return { ...owner.thread.settings, model: owner.thread.settings.model || owner.thread.model,
-    ...(withAccount ? { account: owner.account } : {}) };
-  return owner.cdp.evaluate(helpersCall(`nativeSessionInfo('codex', ${JSON.stringify(owner.id)}, 'modelSettings', ${withAccount})`, owner.context));
-}
-
-async function codexModelList(owner, settings) {
-  const models = [];
-  let cursor = null;
-  do {
-    const params = { cursor, limit: 100, includeHidden: true, modelProvider: settings.modelProvider || null };
-    const page = owner.thread ? await codexBackend.client.request('model/list', params)
-      : await owner.cdp.evaluate(helpersCall(`nativeSessionInfo('codex', ${JSON.stringify(owner.id)}, 'modelPage', ${JSON.stringify(params)})`, owner.context));
-    models.push(...page.data);
-    cursor = page.nextCursor;
-  } while (cursor);
-  return models;
-}
-
-const codexModelLists = new WeakMap();
-async function codexMenuModels(owner, settings, account) {
-  if (!account?.account) return codexModelList(owner, settings);
-  const source = owner.thread ? codexBackend.client : nativeWindowAt(owner.cdp.wsUrl) || owner.cdp;
-  const key = JSON.stringify([accountStamp(account), accountPlan(account), settings.modelProvider || null,
-    owner.thread ? codexBackend.client.generation : owner.cdp.wsUrl, owner.context?.host || '']);
-  const previous = codexModelLists.get(source);
-  if (previous?.key === key && previous.until > Date.now()) return previous.result;
-  const entry = { key, until: Infinity };
-  entry.result = cdpRead.run(null, () => codexModelList(owner, settings)).then(models => {
-    entry.until = Date.now() + 60000;
-    return models;
-  }, error => {
-    if (codexModelLists.get(source) === entry) codexModelLists.delete(source);
-    throw error;
-  });
-  codexModelLists.set(source, entry);
-  return entry.result;
-}
-
-const codexModelId = model => model.model || model.id;
-const codexTierId = value => value === 'default' ? null : value ?? null;
-const isFastTier = value => value === 'fast' || value === 'priority';
-const sameCodexTier = (a, b) => codexTierId(a) === codexTierId(b) || isFastTier(a) && isFastTier(b);
-async function codexSpeedOptions(owner, model, settings) {
-  if (settings.speed) {
-    const { options, selected } = settings.speed;
-    const effective = settings.serviceTier != null && options.some(option => sameCodexTier(option.id, settings.serviceTier));
-    return { options, selected: effective ? settings.serviceTier : selected };
-  }
-  if (!model?.serviceTiers?.length) return { options: [], selected: null };
-  const data = owner.thread ? await codexBackend.client.request('configRequirements/read', {})
-    : await owner.cdp.evaluate(helpersCall(`nativeSessionInfo('codex', ${JSON.stringify(owner.id)}, 'speedRequirements')`, owner.context));
-  const requirements = data?.requirements?.featureRequirements;
-  const fast = requirements?.fast_mode !== false;
-  const ultrafast = (fast || data?.supportsIndependentSpeedModes === true) && requirements?.ultrafast_mode !== false;
-  const options = [{ id: null, label: 'Standard', description: '', icon: null }];
-  for (const tier of model.serviceTiers) {
-    if (codexTierId(tier.id) == null) continue;
-    const icon = isFastTier(tier.id) || /^fast$/i.test(tier.name) ? 'fast'
-      : tier.id === 'ultrafast' || /^ultrafast$/i.test(tier.name) ? 'ultrafast' : null;
-    if (!(tier.id === 'flex' || (icon === 'ultrafast' ? ultrafast : fast))) continue;
-    options.push({ id: tier.id, label: tier.name || tier.id, description: tier.description || '', icon });
-  }
-  return { options, selected: settings.serviceTier ?? model.defaultServiceTier ?? null };
-}
-function codexSpeedState({ options, selected }) {
-  const items = options.map(row => ({ ...row, checked: sameCodexTier(row.id, selected) }));
-  const fast = items.find(row => row.icon === 'fast');
-  return { items, on: !!fast?.checked, description: fast?.description || '' };
-}
-
-async function readCodexModelMenu(kind, requestId) {
-  const sel = this.selectionKey(), id = this.threadId, generation = this.sel;
-  const prefetch = requestId == null;
-  const previous = this.codexModelRead;
-  const sameSelection = previous && previous.sel === sel && previous.generation === generation;
-  if (prefetch && sameSelection) return;
-  const read = this.codexModelRead = { sel, generation, prefetch };
-  const load = async owner => {
-    const { account, ...settings } = await codexModelSettings(owner, true);
-    const models = await codexMenuModels(owner, settings, account);
-    const current = models.find(row => codexModelId(row) === settings.model);
-    return { settings, models, current, speed: await codexSpeedOptions(owner, current, settings), account: accountStamp(account) };
-  };
-  // A prefetch may use the current backend account, but must not switch it.
-  const query = () => withCodexModelOwner(this, load, true);
-  const warm = async () => {
-    const account = await codexBackend.account();
-    if (accountStamp(account) !== this.codexAccount?.account || !account.account || this.selectionKey() !== sel || this.sel !== generation) return null;
-    return load({ id, account, thread: await codexBackend.readModelState(id) });
-  };
-  const pending = !prefetch && sameSelection && previous.prefetch ? previous.pending : null;
-  read.pending = prefetch && this.codexBackend ? warm() : pending
-    ? pending.then(result => result || query(), query) : query();
-  const result = await read.pending.finally(() => { read.pending = null; });
-  if (!result || this.codexModelRead !== read || this.selectionKey() !== sel || this.threadId !== id || this.sel !== generation) return;
-  const { settings, models, current, speed, account } = result;
-  this.codexModelCatalog = { id, account, provider: settings.modelProvider || null, models };
-  const modelItems = models.filter(row => !row.hidden).map(row => ({ label: row.displayName || codexModelId(row),
-    id: codexModelId(row), checked: codexModelId(row) === settings.model }));
-  if (models.some(row => row.isDefault)) modelItems.unshift({ id: '__codex_default__', label: 'Default Recommended set of models', checked: false });
-  const effortItems = (current?.supportedReasoningEfforts || []).map(row => ({ label: row.reasoningEffort,
-    checked: row.reasoningEffort === (settings.effort ?? settings.reasoningEffort ?? current.defaultReasoningEffort) }));
-  const speedState = codexSpeedState(speed), model = current?.displayName || settings.model;
-  const items = kind === 'effort' ? effortItems : kind === 'fast' ? speedState.items : modelItems;
-  this.emit({ t: 'menu', kind, requestId, sel, items, modelItems, effortItems,
-    fast: speedState.items.length > 1 ? speedState : null, model });
-}
-
-async function pickCodexModelMenu(kind, label, name) {
-  const id = this.threadId, sel = this.selectionKey(), generation = this.sel, catalog = this.codexModelCatalog;
-  if (!catalog || catalog.id !== id) throw new Error('请重新打开 Codex 模型菜单');
-  let speedOptions, chosenSpeed;
-  const result = await withCodexModelOwner(this, async owner => {
-    const { account, ...settings } = await codexModelSettings(owner, true);
-    if (accountStamp(account) !== catalog.account) throw new Error('Codex 账号已切换，请重新打开菜单');
-    if ((settings.modelProvider || null) !== catalog.provider) throw new Error('Codex 模型来源已变化，请重新打开菜单');
-    const current = catalog.models.find(row => codexModelId(row) === settings.model);
-    let update;
-    if (kind === 'model') {
-      const model = name === '__codex_default__' ? catalog.models.find(row => row.isDefault)
-        : catalog.models.find(row => codexModelId(row) === name && !row.hidden);
-      if (!model) throw new Error('Codex 模型已不存在');
-      const effort = name === '__codex_default__' ? model.defaultReasoningEffort
-        : model.supportedReasoningEfforts.find(row => row.reasoningEffort === settings.effort)?.reasoningEffort || model.defaultReasoningEffort;
-      update = { model: codexModelId(model), effort };
-    } else if (kind === 'effort') {
-      if (!current?.supportedReasoningEfforts.some(row => row.reasoningEffort === label)) throw new Error('当前模型不支持这个思考强度');
-      update = { effort: label };
-    } else {
-      ({ options: speedOptions } = await codexSpeedOptions(owner, current, settings));
-      chosenSpeed = speedOptions.find(row => label === 'on' ? row.icon === 'fast'
-        : label === 'off' ? row.id == null : (row.id ?? '') === name);
-      if (!chosenSpeed) throw new Error('当前模型不提供这个速度档位，请重新打开菜单');
-      update = { serviceTier: chosenSpeed.id ?? 'default' };
-    }
-    if (this.selectionKey() !== sel || this.threadId !== id || this.sel !== generation) throw new Error('会话已切换，请重新操作');
-    if (owner.thread) {
-      await codexBackend.client.request('thread/settings/update', { threadId: id, ...update });
-      Object.assign(owner.thread.settings, update);
-      codexBackend.remember(owner.thread);
-      return owner.thread.settings;
-    }
-    return owner.cdp.evaluate(helpersCall(`nativeSessionAction('codex', ${JSON.stringify(id)}, 'modelSettings', ${JSON.stringify(update)})`, owner.context));
-  });
-  if (this.selectionKey() !== sel || this.threadId !== id || this.sel !== generation) return;
-  if (kind === 'fast') {
-    if (!sameCodexTier(result.serviceTier, chosenSpeed.id)) throw new Error('Codex 尚未确认速度切换，请重新读取菜单');
-    this.emit({ t: 'fastState', sel, fast: codexSpeedState({ options: speedOptions, selected: result.serviceTier }) });
-  }
-  if (this.codexBackend) codexBackend.changed(id);
-  else this.refreshModelChat().catch(() => {});
+  const binding = ConversationRef.capture(s);
+  setImmediate(bindConnectionDelivery(() => cdpRead.run(null, async () => {
+    if (!binding.isCurrent(s) || !s.connectionView.matchesDelivery()) return;
+    const updated = await codexBackend.account().catch(() => null);
+    if (updated && binding.isCurrent(s) && s.connectionView.matchesDelivery()) publishCodexAccount(s, codexAccountMetadata(updated));
+    if (binding.isCurrent(s)) s.prefetchMenus().catch(() => {});
+  })));
 }
 
 const backendRoutes = {
@@ -656,10 +368,11 @@ const backendRoutes = {
   async openMenu(m) {
     if (['model', 'effort', 'fast'].includes(m.kind)) return readCodexModelMenu.call(this, m.kind, m.requestId);
     const sel = this.selectionKey();
-    const items = m.kind === 'permission' && !codexBackend.phoneControl(this.threadId) ? ['Ask for approval', 'Approve for me', 'Full access'].map(label => ({ label, checked: label === codexBackend.chat(this.threadId).permission })) : [];
+    const items = m.kind === 'permission' && !codexBackend.phoneControl(this.threadId) ? permissionItems(codexBackend.chat(this.threadId).permission) : [];
     this.emit({ t: 'menu', kind: m.kind, requestId: m.requestId, sel, items });
   },
   async pickMenu(m) {
+    const binding = ConversationRef.capture(this);
     const id = this.threadId, directory = this.codexDirectory;
     if (['model', 'effort', 'fast'].includes(m.kind)) return pickCodexModelMenu.call(this, m.kind, m.label, m.name);
     let update;
@@ -668,13 +381,46 @@ const backendRoutes = {
       return backendRoutes.codexRename.call(this, { id: `thread:backend:${id}`, name: m.name });
     }
     if (m.kind === 'permission' && codexBackend.phoneControl(id)) throw new Error('手机控制会话使用固定的本机权限');
+    if (m.kind === 'permission' && (m.sel && m.sel !== this.selectionKey() || !permissionModes.includes(m.label)))
+      throw new Error('会话已切换或权限模式无效');
     if (m.kind === 'permission') update = { approvalPolicy: m.label === 'Full access' ? 'never' : 'on-request', approvalsReviewer: m.label === 'Approve for me' ? (IS_WIN ? 'guardian_subagent' : 'auto_review') : 'user', sandboxPolicy: { type: m.label === 'Full access' ? 'dangerFullAccess' : 'workspaceWrite', ...(m.label === 'Full access' ? {} : { writableRoots: [directory], networkAccess: false, excludeTmpdirEnvVar: false, excludeSlashTmp: false }) } };
     else throw new Error('当前后台没有此设置');
     await codexBackend.withWriter(id, async thread => {
+      binding.assertCurrent(this);
       await codexBackend.client.request('thread/settings/update', { threadId: id, ...update });
-      Object.assign(thread.settings, update); codexBackend.remember(thread);
+      const turn = thread.turns.findLast(turn => turn.status === 'inProgress');
+      const result = turn && await codexBackend.client.request('turn/settings/update', {
+        threadId: id, turnId: turn.id, approvalsReviewer: update.approvalsReviewer,
+      });
+      const settingsMatch = () => thread.settings.approvalPolicy === update.approvalPolicy
+        && thread.settings.approvalsReviewer === update.approvalsReviewer
+        && thread.settings.sandboxPolicy?.type === update.sandboxPolicy.type;
+      if (!settingsMatch()) await new Promise((resolve, reject) => {
+        const complete = error => {
+          clearTimeout(timer);
+          codexBackend.client.off('notification', observe);
+          codexBackend.client.off('disconnected', complete);
+          if (error) reject(error);
+          else resolve();
+        };
+        const observe = ({ method, params }) => {
+          if (method === 'thread/settings/updated' && params.threadId === id && settingsMatch()) complete();
+        };
+        const timer = setTimeout(() => complete(new Error('Codex 尚未返回当前会话的权限读回')), 1500);
+        codexBackend.client.on('notification', observe);
+        codexBackend.client.once('disconnected', complete);
+      });
+      codexBackend.remember(thread);
+      codexBackend.changed(id);
+      if (!turn || result?.status === 'applied') return;
+      const ended = row => ['completed', 'interrupted', 'failed'].includes(row?.status);
+      if (result?.status === 'targetUnavailable') {
+        if (ended(thread.turns.find(row => row.id === turn.id))) return;
+        const { thread: current } = await codexBackend.client.request('thread/read', { threadId: id, includeTurns: true });
+        if (current.id === id && ended(current.turns.find(row => row.id === turn.id))) return;
+      }
+      throw new Error('下轮权限已保存，当前轮次的审批方式未获确认');
     });
-    codexBackend.changed(id);
   },
   async codexRequest(m) {
     if (codexBackend.requestRows(this.threadId).some(row => row.id === m.id)) {
@@ -769,19 +515,53 @@ const backendRoutes = {
   },
   async usage(m) {
     const sel = this.selectionKey(), generation = this.sel, thread = this.threadId;
-    const request = this.codexUsageRequest = {};
+    if (m.sel && m.sel !== sel) return;
+    const previous = this.codexUsageRequest;
+    if (previous?.generation === generation && previous.sel === sel) {
+      if (!m.automatic) {
+        previous.automatic = false;
+        previous.promoteDesktop?.();
+      }
+      return previous.promise;
+    }
+    const request = this.codexUsageRequest = { sel, generation, automatic: m.automatic === true };
     const current = () => this.sel === generation && this.selectionKey() === sel && this.codexUsageRequest === request;
     const publish = metadata => { if (current()) publishCodexAccount(this, metadata); };
     const context = codexBackend.chat(thread).context;
-    try {
-      const source = desktopCodexSource(this.codexAccountWindowId);
-      if (source) await source.connect();
-      const data = source ? await adapter.readCodexUsage(source.cdp, publish) : await codexUsageData(
-        () => codexBackend.account(), () => codexBackend.client.request('account/rateLimits/read', {}), publish);
-      if (current()) this.emit({ t: 'usage', sel, automatic: m.automatic, context, ...data });
-    } catch (error) {
-      if (current()) this.emit({ t: 'usage', sel, automatic: m.automatic, context, error: '额度接口请求失败', detail: error.message });
-    }
+    request.promise = (async () => {
+      let data, observed;
+      const sameConnection = () => observed && codexBackend.client.ready && codexBackend.client.generation === observed.generation
+        && codexBackend.accountRevision === observed.revision;
+      try {
+        data = await backendCodexUsage(publish, null, value => {
+          observed = { value, generation: codexBackend.client.generation, revision: codexBackend.accountRevision };
+        });
+        if (data.missing && chatGptAccountIdentified(observed?.value)) throw new Error(data.detail);
+      } catch (error) {
+        cdpRead.getStore()?.throwIfAborted();
+        if (!current() || !sameConnection() || !chatGptAccountIdentified(observed.value)) throw error;
+        const source = desktopCodexSource(this.codexAccountWindowId);
+        if (!source) throw error;
+        const desktopUsage = async () => {
+          if (!current() || !sameConnection()) throw new Error('Codex 后台账号或会话已切换，请重新读取额度');
+          await awaitCdpRead(source.connect());
+          return adapter.readCodexUsage(source.cdp, undefined, observed.value);
+        };
+        request.promoteDesktop = () => source.startBackgroundRead(request);
+        try { data = await (request.automatic ? source.deferBackgroundRead(request, desktopUsage) : desktopUsage()); }
+        finally { delete request.promoteDesktop; }
+        if (!data) throw error;
+        if (!sameConnection()) throw new Error('Codex 后台账号已切换，请重新读取额度');
+        publish(codexAccountMetadata(observed.value));
+      }
+      if (current()) this.emit({ t: 'usage', sel, automatic: request.automatic, context, ...data });
+    })().catch(error => {
+      if (current() && !cdpRead.getStore()?.aborted)
+        this.emit({ t: 'usage', sel, automatic: request.automatic, context, error: '额度接口请求失败', detail: error.message });
+    }).finally(() => {
+      if (this.codexUsageRequest === request) this.codexUsageRequest = null;
+    });
+    return request.promise;
   },
   async codexPlan() {
     return codexBackend.withWriter(this.threadId, async thread => {
@@ -867,7 +647,7 @@ function serializedCodexPrompt(cdp, thread) {
 export const capabilities = {
   model: true, effort: true, fast: true,
   queue: true, steer: true, queueEdit: true,
-  questions: true, approvals: true, attachments: true, fileReferences: true,
+  questions: true, approvals: true, permissionReceipt: true, attachments: true, fileReferences: true,
   editor: true, terminal: true, settings: true, usage: true,
   fork: true, extraActions: true,
 };
@@ -884,33 +664,121 @@ async function readCodexMenu(context, button, select = items => items.length ? i
   return value;
 }
 
+export const navigation = {
+  backendAttach(req) {
+    if (!this.fusionBinding && !req.nativeOwner && (req.windowId === CODEX_BACKEND || codexBackend.owns(req.threadId)
+        || !req.projectSwitch && (req.threadId && adapter.backendThread(req.threadId, req.project?.host)
+          || !req.windowId && !req.threadId))) return req;
+  },
+
+  backendProject(root, newSession, threadId) {
+    if (this.fusionBinding) return;
+    if (newSession || !threadId) return { project: { root }, newSession };
+    if (this.adapter.backendThread(threadId, '')) return { project: { root }, threadId };
+  },
+
+  backendAgent(id, beforeFocus = false) {
+    if (beforeFocus) {
+      if (this.cdp || this.fusionBinding || !id.startsWith('thread:')) return;
+      const threadId = parseSessionRef('codex', id);
+      if (threadId && this.adapter.backendThread(threadId)) return { threadId };
+      return;
+    }
+    if (!this.fusionBinding && id.startsWith('thread:')) {
+      const threadId = sessionId('codex', id);
+      if (this.adapter.backendThread(threadId)) return { threadId };
+    }
+    if (/^(?:thread|new):backend:/.test(id)) {
+      const { kind, id: value } = parseAgentRef(id);
+      return kind === 'new' ? { project: { root: value }, newSession: true } : { threadId: value };
+    }
+  },
+
+  projectAttach(req) {
+    const matches = nativeTargets().filter(win => win.app === 'codex'
+      && this.projectMatches(nativeWindowAt(win.ws)?.roots || [], req.project.root, req.project.host));
+    const picked = matches.find(win => (win.pageId || win.id) === req.windowId) || orderedProjectWindows('codex', matches)[0];
+    if (picked) return { ...req, id: 'codex', windowId: picked.pageId || picked.id, project: null };
+    return req;
+  },
+};
+
 export const adapter = {
   backendQuestionState,
   backendRoutes,
   readModelMenu: readCodexModelMenu,
-  readCodexUsage(cdp, publish) {
-    return codexUsageData(() => cdp.evaluate(helpersCall('refreshCodexUsage(false)'), { timeout: 5000 }),
-      () => cdp.evaluate(helpersCall('refreshCodexUsage()'), { timeout: 30000 }), publish);
+  async readPermissionMenu(requestId) {
+    const binding = await this.codexPermissionBinding(), id = binding.threadId;
+    if (!id) return false;
+    const current = await binding.cdp.evaluate(helpersCall(`nativeSessionInfo('codex', ${JSON.stringify(id)}, 'permissionSettings')`));
+    binding.assertCurrent(this);
+    if (!current) return false;
+    this.emit({ t: 'menu', kind: 'permission', requestId, sel: binding.key, items: permissionItems(current) });
+    return true;
   },
-  async accountForDesktop(cdp) {
-    return codexAccountMetadata(await cdp.evaluate(helpersCall('refreshCodexUsage(false, true)'), { timeout: 8500 }));
+  async pickPermissionSetting(label, confirmedByUser = false) {
+    if (!permissionModes.includes(label)) throw new Error('无效的 Codex 权限模式');
+    const binding = await this.codexPermissionBinding(), id = binding.threadId;
+    if (!id) return false;
+    const confirmed = await binding.cdp.evaluate(helpersCall(
+      `nativeSessionAction('codex', ${JSON.stringify(id)}, 'permissionSettings', ${JSON.stringify({ label, confirmedByUser: confirmedByUser === true })})`,
+    ));
+    binding.assertCurrent(this);
+    if (confirmed?.confirmation) return { pending: true };
+    if (confirmed == null) return false;
+    this.refreshModelChat().catch(() => {});
+    return true;
   },
+  readCodexUsage,
   pickModelSetting: pickCodexModelMenu,
   routes: { toolDetails: backendRoutes.toolDetails },
-  async backendOwner(id, waitForRelease = true, preferred = '') {
+  async backendOwner(id, waitForRelease = true, preferred = '', { cached = false, hintPreferred = true } = {}) {
     if (codexBackend.phoneControl(id)) return null;
     if (waitForRelease) await codexBackend.releasing.get(id)?.promise;
     if (codexBackend.hasWriter(id)) return null;
     const pages = await codexWindows(CODEX_CDP_URL);
-    const results = await Promise.allSettled(pages.filter(page => page.chatWs).map(async page => {
-      const cdp = new Cdp(page.chatWs);
+    if (cached) {
+      const owners = pages.flatMap(page => {
+        const seen = nativeWindowAt(page.chatWs)?.cachedCodexOwner(id, page.pageId);
+        return seen ? [{ ...page, ...seen }] : [];
+      });
+      if (owners.length) return owners.find(owner => owner.pageId === preferred) || owners[0];
+    }
+    const available = pages.filter(page => page.chatWs);
+    const probe = async (page, hint = false) => {
+      const source = nativeWindowAt(page.chatWs);
+      const cdp = source?.cdp || new Cdp(page.chatWs);
       try {
-        await cdp.connect();
-        const owner = await cdp.evaluate(helpersCall(`nativeSessionInfo('codex', ${JSON.stringify(id)}, 'connection')`));
+        if (source) await source.connect();
+        else await cdp.connect();
+        const revision = source?.revision;
+        const owner = await cdp.evaluate(helpersCall(`nativeSessionInfo('codex', ${JSON.stringify(id)}, ${JSON.stringify(hint ? 'connectionHint' : 'connection')})`));
+        if (!hint) source?.rememberCodexOwner(id, owner, page.pageId, revision);
         return owner ? { ...page, ...owner } : null;
-      } finally { cdp.close(); }
-    }));
-    const matches = results.flatMap(row => row.status === 'fulfilled' && row.value ? [row.value] : []);
+      } finally { if (!source) cdp.close(); }
+    };
+    const wanted = cached && hintPreferred && available.find(page => page.pageId === preferred);
+    let matches;
+    if (wanted) {
+      const others = available.filter(page => page !== wanted);
+      // A fresh positive preferred connection wins exactly the existing ranking
+      // if no other window can outrank it. Hints cannot establish ownership,
+      // and are never used as negative loaded-list evidence or to select RPC.
+      const [positive, ...hints] = await Promise.allSettled([
+        probe(wanted), ...others.map(page => probe(page, true)),
+      ]);
+      const first = positive.status === 'fulfilled' ? positive.value : null;
+      const stillDesktop = !codexBackend.phoneControl(id) && !codexBackend.hasWriter(id);
+      if (stillDesktop && first && (first.role === 'owner' || hints.every(result =>
+        result.status === 'fulfilled' && result.value && result.value.role !== 'owner'
+        && (first.visible || !result.value.visible)))) return first;
+      const rest = await Promise.allSettled(others.map(page => probe(page)));
+      matches = [first, ...rest.flatMap(row => row.status === 'fulfilled' && row.value ? [row.value] : [])].filter(Boolean);
+    } else {
+      const results = await Promise.allSettled(available.map(page => probe(page)));
+      matches = results.flatMap(row => row.status === 'fulfilled' && row.value ? [row.value] : []);
+    }
+    if (codexBackend.phoneControl(id) || codexBackend.hasWriter(id)) return null;
     return matches.find(row => row.pageId === preferred && row.role === 'owner') || matches.find(row => row.role === 'owner')
       || matches.find(row => row.pageId === preferred && row.visible) || matches.find(row => row.visible)
       || matches.find(row => row.pageId === preferred) || matches[0] || null;
@@ -1078,6 +946,7 @@ export const adapter = {
   },
 
   async listAgents(silent, readOnly, emit) {
+    const binding = ConversationRef.capture(this), background = readOnly && !this.fusionBinding;
     const pages = await codexWindows(CODEX_CDP_URL);
     const list = [];
     const seen = new Set(), newRoots = new Set();
@@ -1086,18 +955,28 @@ export const adapter = {
       newRoots.add(pathKey(root));
       list.push({ id: `new:${p.pageId}:${encodeURIComponent(root)}`, title: '＋ 新建会话', window: label, workspace: root, group: '', ui: true });
     };
-    const states = await Promise.all(pages.map(p => this.probeCodex(p)));
+    const states = await Promise.all(pages.map(p => {
+      const source = background && nativeWindowAt(p.chatWs);
+      const read = () => this.probeCodex(p);
+      return source ? this.deferWindowRead('codex-catalog-state', read, source) : read();
+    }));
+    if (background && !binding.isCurrent(this)) return;
     for (const p of pages) {
       const group = p.title;
       if (p.chatWs) {
         for (const root of states[pages.indexOf(p)]?.roots || []) addNew(p, root, group);
-        const cdp = p.pageId === this.codexPageId ? this.cdp : this.fusionBinding ? new Cdp(p.chatWs) : new NativeCdp(p.chatWs);
-        let rows = [];
-        try {
-          if (cdp !== this.cdp) await cdp.connect();
-          rows = readOnly && cdp.nativeWindow?.catalog ? structuredClone(cdp.nativeWindow.catalog)
-            : readOnly ? await cdp.evaluate(helpersCall('codexChatRows(true)')) : await this.codexThreadRows(cdp);
-        } finally { if (cdp !== this.cdp) cdp.close(); }
+        const read = async () => {
+          const own = p.pageId === this.codexPageId;
+          const cdp = own ? this.cdp : this.fusionBinding ? new Cdp(p.chatWs) : new NativeCdp(p.chatWs);
+          try {
+            if (!own) await cdp.connect();
+            return readOnly && cdp.nativeWindow?.catalog ? structuredClone(cdp.nativeWindow.catalog)
+              : readOnly ? await cdp.evaluate(helpersCall('codexChatRows(true)')) : await this.codexThreadRows(cdp);
+          } finally { if (!own) cdp.close(); }
+        };
+        const source = background && nativeWindowAt(p.chatWs);
+        const rows = source ? await this.deferWindowRead('codex-catalog-rows', read, source) : await read();
+        if (background && (!rows || !binding.isCurrent(this))) return;
         this.rememberCodexRoots(rows);
         const folderOf = ws => {
           const parts = String(ws || '').split(/[/\\]/).filter(Boolean);
@@ -1195,12 +1074,12 @@ export const adapter = {
     return this.codexMentionQuery(q, trigger === '/' ? '/' : '@', seq, query);
   },
 
-  async usageContext() {
-    return codexContext(await this.cdp.evaluate(helpersCall('codexThread()')));
+  usageContext() {
+    return codexContext(this.threadId);
   },
 
-  async accountUsage(request, automatic) {
-    return this.readCodexAccount(request);
+  accountUsage() {
+    return this.readCodexAccount();
   },
 
   async typeDraft(text, mentions, { cdp, thread }) {
@@ -1225,18 +1104,23 @@ export const adapter = {
     const action = when === 'now' ? 'steer' : when === 'queue' ? 'queue' : '';
     if (source) {
       const operation = currentOperation();
-      const nativeRequestId = receipt ? randomUUID() : '';
+      const trackClientId = !!(receipt?.requestId && before.thread && this.mcpCodexSend);
+      const nativeRequestId = receipt ? trackClientId ? receipt.requestId : randomUUID() : '';
+      const onNativeReceipt = this.onCodexReceipt;
       if (token) token.pending = true;
       let unregister;
       if (receipt) {
+        const first = !before.thread ? (this.codexFirstSend = { binding }) : null;
         operation?.expectReceipt();
-        const request = { requestId: nativeRequestId, thread: before.thread, expected, queueExpected: before.payload.trim(),
+        const request = { requestId: nativeRequestId, trackClientId, thread: before.thread, expected, queueExpected: before.payload.trim(),
           action: queued ? 'queue' : busy ? 'steer' : 'send', afterTurn: before.lastTurn,
           beforeTurns: new Set(before.runs.map(row => row.id)),
           hasAttachments: !!hasAttachments,
           before: new Set(before.messages.map(row => row.id)), beforeQueues: new Set(before.queued.map(row => row.id)) };
         unregister = source.registerSend(request, (accepted, error, outcome) => {
           if (accepted) {
+            if (onNativeReceipt && !accepted.queued && accepted.thread === before.thread && accepted.messageId)
+              onNativeReceipt({ requestId: receipt.requestId, threadId: accepted.thread, messageId: accepted.messageId });
             if (token) {
               delete token.message;
               Object.assign(token, accepted, { pending: false });
@@ -1244,6 +1128,11 @@ export const adapter = {
             const consumedUploadIds = consumePendingUploads(files, sel);
             if (!accepted.queued) rememberSessionMessage('codex', accepted.thread, Date.now());
             this.emit({ t: 'sent', ...receipt, ...accepted, consumedUploadIds, sel, sentAt: Date.now() });
+            if (first && accepted.thread && !accepted.queued && stillSelected()) {
+              const adopted = this.adoptCodexThread(accepted.thread);
+              first.successor = ConversationRef.capture(this);
+              adopted.catch(error => this.emit({ t: 'status', ok: false, msg: error.message }));
+            }
           } else if (outcome) {
             if (token) token.message = error;
             this.emit({ t: 'sent', ...receipt, pending: true, message: error, sel });
@@ -1256,7 +1145,7 @@ export const adapter = {
       }
       try {
         const submitted = await cdpRead.run(null, () => cdp.evaluate(helpersCall(
-          `submitCodexMessage(${JSON.stringify(action)}, true, ${JSON.stringify(nativeRequestId)}, ${JSON.stringify(before.thread)})`,
+          `submitCodexMessage(${JSON.stringify(action)}, true, ${JSON.stringify(nativeRequestId)}, ${JSON.stringify(before.thread)}, ${trackClientId})`,
         )));
         if (!submitted) throw new Error('Codex 提交入口当前不可用');
       } catch (error) {
@@ -1265,6 +1154,7 @@ export const adapter = {
           return queued;
         }
         unregister?.();
+        if (this.codexFirstSend?.binding === binding) this.codexFirstSend = null;
         operation?.releaseReceipt();
         if (token) token.pending = false;
         throw error;
@@ -1314,6 +1204,16 @@ export const adapter = {
 
 export const methods = {
 withMentionLock,
+async codexPermissionBinding() {
+  const binding = ConversationRef.capture(this);
+  const first = this.codexFirstSend;
+  if (binding.threadId || !first?.binding.isCurrent(this)) return binding;
+  await awaitCdpRead(binding.cdp?.nativeWindow?.readReceipts());
+  const current = ConversationRef.capture(this);
+  if (first.successor?.isCurrent(this) && current.threadId) return current;
+  binding.assertCurrent(this);
+  throw new Error('Codex 尚未确认新会话的首条消息，请稍后重新打开权限菜单');
+},
 async codexGoal(message) {
   const { action, requestId, sel, objective } = message, id = this.threadId;
   if (sel !== this.selectionKey()) return;
@@ -1428,6 +1328,7 @@ mergeCodexItems(chat) {
 },
 
 async selectCodexThread(convId, cdp = this.cdp) {
+  this.prioritizeNavigationRead?.(cdp, cdp === this.cdp ? this.editorCdp : null);
   const deadline = cdpRead.getStore()?.deadline ?? Date.now() + 35000;
   const remaining = () => {
     const ms = deadline - Date.now();
@@ -1649,113 +1550,30 @@ async codexThreadRows(cdp = this.cdp) {
   return [...merged.values()];
 },
 
-async withCodexSettings(fn) {
-  const editor = this.editorCdp, sidebar = this.cdp;
-  const deadline = cdpRead.getStore()?.deadline || Date.now() + 30000;
-  const read = (cdp, source) => cdp.evaluate(source, { timeout: Math.max(1, deadline - Date.now()) });
-  const until = async (read, message) => {
-    while (Date.now() < deadline) {
-      const value = await read();
-      if (value) return value;
-      await awaitCdpRead(new Promise(resolve => setTimeout(resolve, Math.min(30, Math.max(0, deadline - Date.now())))));
-    }
-    throw new Error(message);
-  };
-  const settingsKey = () => read(editor, `(() => { if (![...document.querySelectorAll('.tab.active')].some(e => /^Codex Settings(?:,|$)/.test(e.getAttribute('aria-label') || ''))) return ''; const el = [...document.querySelectorAll('iframe[src*="extensionId=openai.chatgpt"]')].find(e => !e.src.includes('purpose=webviewView') && e.getBoundingClientRect().height > 0); return el ? new URL(el.src).searchParams.get('id') : ''; })()`);
-  try {
-    const before = await read(editor, `(() => { const t = [...document.querySelectorAll('.tab')].find(e => /^Codex Settings(?:,|$)/.test(e.getAttribute('aria-label') || '')); return !!t; })()`);
-    let key = await settingsKey();
-    let cdp = key && key === this.codexSettingsKey && this.codexSettingsEditor === editor && this.codexSettingsCdp?.ws?.readyState === 1 ? this.codexSettingsCdp : null;
-    if (!cdp) {
-      this.codexSettingsCdp?.close();
-      this.codexSettingsCdp = null;
-      this.codexSettingsEditor = editor;
-      if (!key) {
-        this.codexSettingsReturn = await read(editor, `(() => { const tab = document.querySelector('.editor-group-container.active .tab.active'); if (!tab || /^Codex Settings(?:,|$)/.test(tab.getAttribute('aria-label') || '')) return ''; tab.dataset.remoteSettingsReturn ||= crypto.randomUUID(); return tab.dataset.remoteSettingsReturn; })()`);
-        if (before) {
-          const pos = await read(editor, `(() => { const tab = [...document.querySelectorAll('.tab')].find(e => /^Codex Settings(?:,|$)/.test(e.getAttribute('aria-label') || '')); const r = tab.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
-          await this.tapCss(pos.x, pos.y, 'left', editor);
-        } else {
-          const account = await until(() => read(sidebar, helpersCall('codexAccountPoint()')), '没有找到 Codex 设置菜单');
-          await this.tapCss(account.x, account.y, 'left', sidebar);
-          const pos = await until(() => read(sidebar, helpersCall("codexMenuPoint('Codex settings')")), 'Codex 菜单没有设置入口');
-          await this.tapCss(pos.x, pos.y, 'left', sidebar);
-        }
-        key = await until(settingsKey, 'Codex 设置页面尚未打开');
-      }
-      const target = await until(async () => {
-        const targets = await awaitCdpRead(fetch(`${CODEX_CDP_URL}/json/list`, { signal: AbortSignal.timeout(Math.max(1, deadline - Date.now())) }).then(response => response.json()));
-        return targets.find(t => /extensionId=openai.chatgpt/.test(t.url || '') && new URL(t.url).searchParams.get('id') === key);
-      }, 'Codex 设置页面尚未连接');
-      this.codexSettingsViewWs = target.webSocketDebuggerUrl;
-      cdp = this.codexSettingsCdp = new Cdp(target.webSocketDebuggerUrl);
-      await cdp.connect(Math.max(1, deadline - Date.now()));
-      this.codexSettingsKey = key;
-    }
-    await until(() => read(cdp, `!!document.getElementById('active-frame')?.contentDocument?.querySelector('[data-appearance] button.sidebar-item')`), 'Codex 设置内容尚未加载');
-    return await fn(cdp);
-  } catch (error) {
-    try { await cdpRead.run(null, () => this.closeCodexSettings()); }
-    finally { throw error; }
-  }
-},
-
-async showCodexSettings(id = '', requestId = 0, value) {
-  const sel = this.sel;
-  const data = await this.withCodexSettings(async cdp => {
-    const previous = id ? await cdp.evaluate(helpersCall('codexSettingsData()')) : null;
-    const before = previous ? JSON.stringify(previous) : '';
-    const navigating = previous?.nav.find(n => n.id === id && !n.current);
-    if (id) {
-      if (value !== undefined) await cdp.evaluate(helpersCall(`codexSettingValue(${JSON.stringify(id)}, ${JSON.stringify(value)})`));
-      else {
-        const pos = await cdp.evaluate(helpersCall(`codexSettingPoint(${JSON.stringify(id)})`));
-        if (!pos) throw new Error('设置选项已改变，请重新打开设置');
-        await this.tapCss(pos.x, pos.y, 'left', cdp);
-      }
-    }
-    const data = await cdp.evaluate(helpersCall(`waitSettings('codex', ${JSON.stringify(before)}, ${navigating || !before ? 1200 : 200})`));
-    if (!data.nav.length) throw new Error('Codex 设置内容尚未加载');
-    if (navigating && (!data.nav.some(n => n.current && n.label === navigating.label) || (!data.dialog && data.title !== navigating.label)))
-      throw new Error('Codex 设置栏目尚未切换，请重试');
-    return data;
-  });
-  if (this.sel === sel && this.app === 'codex') this.emit({ t: 'settings', codex: true, requestId, ...data });
-},
-
-async saveCodexInstructions(text, requestId = 0) {
-  const sel = this.sel;
-  const data = await this.withCodexSettings(cdp => cdp.evaluate(helpersCall(`codexSaveInstructions(${JSON.stringify(text)})`)));
-  if (this.sel === sel && this.app === 'codex') {
-    this.emit({ t: 'settings', codex: true, requestId, ...data });
-    this.emit({ t: 'status', ok: true, msg: 'Codex instructions 已保存' });
-  }
-},
-
-async closeCodexSettings() {
-  const editor = this.codexSettingsEditor || this.editorCdp;
-  this.codexSettingsKey = '';
-  this.codexSettingsCdp?.close();
-  this.codexSettingsCdp = null;
-  this.codexSettingsEditor = null;
-  const view = this.codexSettingsViewWs;
-  this.codexSettingsViewWs = '';
-  if (view) {
-    const menu = new Cdp(view);
-    await menu.connect();
-    try { await this.key('Escape', { cdp: menu }); } finally { menu.close(); }
-  }
-  const previous = this.codexSettingsReturn;
-  this.codexSettingsReturn = '';
-  if (previous && editor) {
-    const pos = await editor.evaluate(`(() => { const tab = document.querySelector('[data-remote-settings-return="' + ${JSON.stringify(previous)} + '"]'); if (!tab) return null; const r = tab.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
-    if (pos) await this.tapCss(pos.x, pos.y, 'left', editor);
-  }
-},
+withCodexSettings,
+showCodexSettings,
+saveCodexInstructions,
+closeCodexSettings,
 
 async readCodexAccount() {
   const cdp = this.cdp, sel = this.sel;
-  return adapter.readCodexUsage(cdp, metadata => { if (this.liveRead(cdp, sel)) publishCodexAccount(this, metadata); });
+  const publish = metadata => { if (this.liveRead(cdp, sel)) publishCodexAccount(this, metadata); };
+  const readDesktop = () => cdp.evaluate(helpersCall('refreshCodexUsage(false)'), { timeout: 8500 });
+  let failure;
+  try {
+    const data = await adapter.readCodexUsage(cdp, publish);
+    if (!data.missing || !data.account) return data;
+    failure = new Error(data.detail);
+  } catch (error) { failure = error; }
+  cdpRead.getStore()?.throwIfAborted();
+  if (!this.liveRead(cdp, sel)) return;
+  const account = await readDesktop().catch(() => null);
+  cdpRead.getStore()?.throwIfAborted();
+  if (!chatGptAccountIdentified(account)) throw failure;
+  const data = await backendCodexUsage(() => {}, account);
+  if (!sameChatGptAccount(account, await readDesktop())) throw new Error('Codex 桌面账号已切换，请重新读取额度');
+  publish(codexAccountMetadata(account));
+  return data;
 },
 
 async codexPrompt() {

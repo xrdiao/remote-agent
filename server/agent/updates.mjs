@@ -104,6 +104,7 @@ export async function watchChat(cdp, changed, shared = false, context = null) {
     };
     const unbind = () => {
       doc?.defaultView?.removeEventListener('remote-agent-submit-error', changed);
+      doc?.defaultView?.removeEventListener('remote-agent-first-submission', changed);
       doc?.defaultView?.removeEventListener('remote-agent-fusion-tool', fusionChanged);
       observer?.disconnect(); native?.stop();
       observer = native = null;
@@ -114,6 +115,7 @@ export async function watchChat(cdp, changed, shared = false, context = null) {
       unbind();
       doc = next;
       doc.defaultView.addEventListener('remote-agent-submit-error', changed);
+      if (${shared} && !context) doc.defaultView.addEventListener('remote-agent-first-submission', changed);
       if (context) doc.defaultView.addEventListener('remote-agent-fusion-tool', fusionChanged);
       if (context?.app === 'codex' || context?.app === 'cursor' || context?.app === 'devin') {
         native = ${helpersCall('watchCodexData(changed)', context)};

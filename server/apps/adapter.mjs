@@ -9,7 +9,7 @@ function handlers(source = {}) {
   return immutable(source);
 }
 
-export function defineAgentAdapter({ adapter, methods, capabilities, nativeCapabilities, ...entry }) {
+export function defineAgentAdapter({ adapter, methods, capabilities, nativeCapabilities, navigation, ...entry }) {
   const native = Object.create(null);
   for (const [transport, { composer, actions, queue, routes }] of Object.entries(nativeCapabilities)) {
     if (composer && (typeof composer.typeDraft !== 'function' || typeof composer.submitPrompt !== 'function'))
@@ -24,7 +24,7 @@ export function defineAgentAdapter({ adapter, methods, capabilities, nativeCapab
   if (!native[entry.kind]) throw new TypeError(`Missing primary transport: ${entry.app}/${entry.kind}`);
   // Existing non-action callers use this facade. Its method names cannot grow
   // through inherited keys or app registration, and the receiver remains the context.
-  return Object.freeze({ ...entry, adapter: Object.seal(record(adapter)), methods: handlers(methods),
+  return Object.freeze({ ...entry, adapter: Object.seal(record(adapter)), methods: handlers(methods), navigation: handlers(navigation),
     capabilities: Object.freeze({ ...capabilities }), native: Object.freeze(native) });
 }
 

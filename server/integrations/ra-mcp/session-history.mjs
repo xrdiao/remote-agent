@@ -9,7 +9,7 @@ import { assertNativeProject, readNativeContext } from './native-task-adapter.mj
 const NATIVE_LIMIT = 120;
 
 // Output only the MCP transcript fields, before copying native desktop data over CDP.
-function projectHistory(chat, threadId) {
+function projectHistory(chat, threadId, readStatus = false) {
   if (chat?.thread !== threadId || !Array.isArray(chat.items)) return null;
   const roles = { human: 'user', assistant: 'assistant', notice: 'status' };
   const messages = [];
@@ -22,7 +22,10 @@ function projectHistory(chat, threadId) {
       ...(Number.isFinite(item.sentAt) ? { sent_at: item.sentAt } : {}),
       ...(text.length > 8000 ? { text_truncated: true } : {}) });
   }
-  return { messages, nativeEarlier: Boolean(chat.earlier || chat._historyEarlier) };
+  const state = readStatus && chat._nativeState?.thread === threadId ? chat._nativeState : null;
+  const known = !!state?.waiting || !!state?.run?.id && state.run.status !== 'unknown';
+  return { messages, nativeEarlier: Boolean(chat.earlier || chat._historyEarlier),
+    ...(known ? { nativeStatus: { busy: !!state.busy, waiting: state.waiting || '', status_known: true } } : {}) };
 }
 
 async function readBackend(row) {
@@ -45,7 +48,7 @@ async function readDesktop(row) {
   const id = JSON.stringify(threadId);
   const read = app === 'codex' ? helpersCall(`extract(false, [], ${NATIVE_LIMIT})`, context)
     : helpersCall(`nativeSessionInfo(${JSON.stringify(app)}, ${id}, 'history')`);
-  const result = await cdp.evaluate(`(async () => (${projectHistory.toString()})(await ${read}, ${id}))()`);
+  const result = await cdp.evaluate(`(async () => (${projectHistory.toString()})(await ${read}, ${id}, ${app === 'codex'}))()`);
   assertNativeProject(await readNativeContext(cdp, app, threadId), workspace, threadId);
   return result;
 }
@@ -75,6 +78,7 @@ export async function readSessionHistory(row, { limit = 30, before }) {
   const page = messages.slice(start, end);
   const turnStart = Math.max(0, messages.findLastIndex(message => message.role === 'user'));
   return {
+    ...transcript.nativeStatus,
     history_status: 'available', preview_only: false,
     messages: page, next_before: start > 0
       ? Buffer.from(JSON.stringify({ binding, anchor: page[0].id })).toString('base64url') : null,

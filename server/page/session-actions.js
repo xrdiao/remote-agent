@@ -225,7 +225,8 @@
       });
     }
     const scopes = codexHistoryScopes();
-    const host = codexChatRows(true).find(row => row.id === id)?.host || 'local';
+    const catalogRow = codexChatRows(true).find(row => row.id === id);
+    const host = catalogRow?.host || 'local';
     const manager = codexConversationManager(id, scopes, host);
     const conversation = manager?.getConversation(id), history = conversation?.turnHistory?.history;
     const sourceOfTurn = turn => ({ metadata: turn, rawItems: turn.items || [], nativeComplete: true, ids: (turn.items || []).map(i => i.id), positions: new Map((turn.items || []).map((item, n) => [item.id, n])) });
@@ -237,8 +238,21 @@
     let historical = false;
     if (!items.some(item => ['agentMessage', 'userMessage'].includes(item.type))) {
       if (previous?.historical) return { ...previous, status: status(scopes, manager, host === 'local' ? '' : host) };
-      if (!manager || manager.hostId !== 'local') return { available: false };
-      const { thread } = await manager.requestClient.sendRequest('thread/read', { threadId: id, includeTurns: true }, { priority: 'background', source: 'thread_list' });
+      if (host !== 'local') return { available: false };
+      let thread;
+      if (manager) {
+        if (manager.hostId !== 'local') return { available: false };
+        ({ thread } = await manager.requestClient.sendRequest('thread/read', { threadId: id, includeTurns: true }, { priority: 'background', source: 'thread_list' }));
+      } else {
+        // Modern desktop projections may expose only the connected RPC client.
+        // Read the exact catalogued local thread, never acquire a writer or
+        // switch the visible conversation just to populate a preview.
+        const client = codexConnectedRpc(host, scopes);
+        if (!client || !catalogRow?.workspace) return { available: false };
+        ({ thread } = await codexRpcCall(client, 'readThread', id, { includeTurns: true }));
+        if (thread?.id !== id || !thread.cwd || !samePath(localFilePath(thread.cwd), localFilePath(catalogRow.workspace)))
+          throw new Error('Codex 摘要会话或项目归属不一致');
+      }
       items = (thread.turns || []).flatMap(turn => turn.items || []);
       sources = (thread.turns || []).slice(-1).map(sourceOfTurn);
       historical = true;
@@ -328,6 +342,17 @@
     return { model, effort, family: model, usage: null };
   };
   const nativeSessionInfo = (app, id, catalog = false, previous = null) => {
+    if (app === 'codex' && catalog === 'dispatchClientId') return codexDispatchClientId(id, previous);
+    if (app === 'codex' && catalog === 'firstSubmission') {
+      const created = window.__remoteAgentCodexFirstSubmissions?.get(id);
+      return created && codexVisibleThread() === created ? created : null;
+    }
+    if (app === 'codex' && catalog === 'permissionConfirmation') {
+      return codexVisibleThread() === id && [...doc.querySelectorAll('[role=dialog]')].some(el =>
+        vis(el) && codexFiberProps(el, 60).some(p => (p.conversationId || '') === id
+          && typeof p.onConfirm === 'function' && typeof p.onClose === 'function')
+        && !!el.querySelector('button[type=submit]'));
+    }
     if (app === 'codex' && catalog === 'requestReceipt') return (async () => {
       if (!remoteContext || remoteContext.app !== app || remoteContext.threadId !== id) throw new Error('请求不属于这个任务 Binding');
       const scopes = codexHistoryScopes(), host = codexRequestHost();
@@ -482,6 +507,12 @@
       });
       return true;
     })();
+    // Ranking evidence only: no assertion about loaded threads or write authority.
+    if (app === 'codex' && catalog === 'connectionHint') {
+      const scopes = codexHistoryScopes(), manager = codexConversationManager(id, scopes, 'local');
+      const client = manager || codexConnectedRpc('local', scopes);
+      return client ? { role: manager?.getStreamRole(id)?.role || '', visible: codexVisibleThread() === id } : null;
+    }
     if (app === 'codex' && catalog === 'connection') return (async () => {
       const scopes = codexHistoryScopes(), manager = codexConversationManager(id, scopes, 'local');
       const client = manager || codexConnectedRpc('local', scopes);
@@ -497,6 +528,10 @@
       const manager = codexConversationManager(id, codexHistoryScopes(), 'local');
       return manager?.getStreamRole(id)?.role === 'owner' ? { cwd: localFilePath(manager.getConversation(id).cwd) } : null;
     }
+    if (app === 'codex' && catalog === 'permissionSettings') return (async () => {
+      const owner = await codexModelOwner(id);
+      return codexPermissionLabel(codexConversationPermissions(owner.conversation));
+    })();
     if (app === 'codex' && ['modelSettings', 'modelPage', 'speedRequirements'].includes(catalog)) return (async () => {
       const owner = await codexModelOwner(id), client = owner.client;
       if (catalog === 'modelPage') return codexRpcCall(owner.requestClient, 'sendRequest', 'model/list', previous);
@@ -765,6 +800,58 @@
       if (accepted === false) throw new Error('Codex 原生设置未接受');
       await owner.read();
       return nativeSessionInfo(app, id, 'modelSettings');
+    }
+    if (app === 'codex' && action === 'permissionSettings') {
+      const owner = await codexModelOwner(id);
+      const before = codexConversationPermissions(owner.conversation);
+      const label = typeof name === 'string' ? name : name?.label;
+      if (!['Ask for approval', 'Approve for me', 'Full access'].includes(label)) throw new Error('无效的 Codex 权限模式');
+      // A remote client must explicitly confirm the powerful permission mode.
+      // Native desktop selection continues to use the extension's own dialog.
+      if (label === 'Full access' && name?.confirmedByUser !== true)
+        return codexPermissionLabel(before) === label ? label : { confirmation: true };
+      if (typeof owner.requestClient.sendRequest !== 'function') return null;
+      if (!before) throw new Error('Codex 原生权限设置尚未就绪');
+      const sandboxPolicy = label === 'Full access' ? { type: 'dangerFullAccess' }
+        : before.sandboxPolicy?.type === 'workspaceWrite' ? before.sandboxPolicy : {
+          type: 'workspaceWrite', writableRoots: owner.context.roots.map(row => row.root), networkAccess: false,
+          excludeTmpdirEnvVar: false, excludeSlashTmp: false,
+        };
+      const approvalPolicy = label === 'Full access' ? 'never' : 'on-request';
+      const approvalsReviewer = label === 'Approve for me' ? (IS_WIN ? 'guardian_subagent' : 'auto_review') : 'user';
+      owner.check();
+      try {
+        await codexRpcCall(owner.requestClient, 'sendRequest', 'thread/settings/update',
+          { threadId: id, approvalPolicy, approvalsReviewer, sandboxPolicy });
+      } catch (error) {
+        if (error.code === -32601) return null;
+        throw error;
+      }
+      const deadline = performance.now() + 1500;
+      do {
+        const conversation = await owner.read(), settings = conversation.latestThreadSettings;
+        if (settings?.approvalPolicy === approvalPolicy && settings.approvalsReviewer === approvalsReviewer
+            && settings.sandboxPolicy?.type === sandboxPolicy.type) {
+          const scopes = codexHistoryScopes();
+          const manager = codexConversationManager(id, scopes, owner.context.host || 'local');
+          const run = agentRun('codex', id, scopes, manager);
+          if (run?.status === 'running') {
+            owner.check();
+            const result = await codexRpcCall(owner.requestClient, 'sendRequest', 'turn/settings/update',
+              { threadId: id, turnId: run.id, approvalsReviewer });
+            owner.check();
+            if (result?.status !== 'applied') {
+              const current = agentRun('codex', id, scopes, manager);
+              if (result?.status !== 'targetUnavailable' || current?.id !== run.id
+                  || !['completed', 'stopped', 'error'].includes(current.status))
+                throw new Error('下轮权限已保存，当前轮次的审批方式未获确认');
+            }
+          }
+          return label;
+        }
+        await new Promise(resolve => setTimeout(resolve, 50));
+      } while (performance.now() < deadline);
+      throw new Error('Codex 尚未确认权限设置，请重新读取');
     }
     if (action === 'project' && app === 'cursor') {
       const services = cursorSessionServices();

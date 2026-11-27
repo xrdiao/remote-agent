@@ -9,12 +9,18 @@ import { editorRoots } from '../../lib/files.mjs';
 import { agentMarks } from '../../lib/marks.mjs';
 import { IS_WIN, mod, localFilePath, samePath } from '../../lib/platform.mjs';
 import { listWindows } from '../windows.mjs';
-import { Cdp, cdpRead, awaitCdpRead } from '../cdp.mjs';
+import { cdpRead, awaitCdpRead, pollUntil } from '../cdp.mjs';
 import { PAGE_SRC, helpersCall } from '../page/build.mjs';
 import { FOCUS_COMPOSER } from '../agent/primitives.mjs';
+import { devinSource, nativeTargets, nativeSessionCatalog, nativeWindowAt, withNativeWindowRead } from '../native-windows.mjs';
 
 // Shared across phone sessions: thread|start → end ms (null while the turn is still running).
 const devinTurnEnds = new Map();
+const devinThreadReady = `async id => {
+  const thread = h.activeThread(), ready = thread === id && h.hasComposer();
+  const context = ready && id ? await h.nativeSessionInfo('devin', id, 'bind') : null;
+  return { thread, ready: ready && h.activeThread() === id, context };
+}`;
 
 // Support belongs to Devin's adapter; selected-model and surface availability stay native.
 export const capabilities = {
@@ -23,6 +29,33 @@ export const capabilities = {
   questions: true, approvals: true, attachments: true, fileReferences: true,
   editor: true, terminal: true, settings: true, usage: true,
   fork: false, extraActions: true,
+};
+
+export const navigation = {
+  canReuseWindow(req) {
+    return req.project?.root && !req.project.host;
+  },
+
+  async sameWindowOptions(req, origin) {
+    const id = req.threadId.replace(/^tab:/, '');
+    const [trust, roots, row] = await Promise.all([
+      this.editorCdp.evaluate(helpersCall('workspaceTrustState()')),
+      this.devinWindowRoots(),
+      this.devinProjectRow(id),
+    ]);
+    origin.assertCurrent(this);
+    const { project } = req;
+    if (!trust.required && this.projectMatches(roots, project.root, project.host || '')
+        && this.projectMatches([project], row?.workspace || '')) return { projectRoot: project.root };
+  },
+
+  projectThreadCarrier(req) {
+    return devinSource(req.threadId, req.windowId, req.project);
+  },
+
+  projectWindowCarrier(req) {
+    return nativeTargets().find(win => win.app === 'devin' && win.id === req.windowId);
+  },
 };
 
 export const adapter = {
@@ -44,7 +77,7 @@ export const adapter = {
     return st;
   },
 
-  async openAgent(id, title = '', { reuseWindow = false } = {}) {
+  async openAgent(id, title = '', { reuseWindow = false, projectRoot = '' } = {}) {
     if (IS_WIN && id.startsWith('window:devin:')) {
       await this.attach(id.slice('window:'.length));
       await this.listAgents();
@@ -55,48 +88,51 @@ export const adapter = {
     let focusedCdp;
     this.switchingThread = true;
     try {
-      if (reuseWindow) {
-        if (await this.cdp.evaluate(helpersCall('devinSurface()')) !== 'editor')
-          throw new Error('请先把已绑定的 Devin 窗口切到 Editor，再打开 Fusion 主会话');
-      } else await this.ensureDevinIde(id.replace(/^tab:/, ''));
-      if (id.startsWith('tab:')) {
-        const key = id.slice(4);
-        const tabs = await this.cdp.evaluate(helpersCall('devinSession()'));
-        if (tabs?.tabs.some(tab => tab.id === key)) {
-          await this.switchTab(key);
-          confirmed = true;
-          return;
+      const tab = id.startsWith('tab:');
+      if (tab) id = id.slice(4);
+      const open = async () => {
+        const origin = ConversationRef.capture(this);
+        if (origin.cdp.nativeWindow && !origin.cdp.nativeWindow.focus.has(origin.cdp)) {
+          focusedCdp = origin.cdp;
+          await origin.cdp.send('Emulation.setFocusEmulationEnabled', { enabled: true });
         }
-        id = key;
-      }
-      const { surface, thread, title: windowTitle } = await this.cdp.evaluate(`(() => {
-        const h = ${PAGE_SRC};
-        const surface = h.devinSurface();
-        return { surface, thread: h.activeThread(), title: document.title };
-      })()`);
-      this.winTitle = windowTitle;
-      if (thread === id) {
-        confirmed = await this.confirmDevinThread(id);
-        if (!confirmed) throw new Error('会话切换没有生效');
-        return;
-      }
-      if (surface === 'editor') {
-        if (this.cdp.nativeWindow && !this.cdp.nativeWindow.focus.has(this.cdp)) {
-          focusedCdp = this.cdp;
-          await focusedCdp.send('Emulation.setFocusEmulationEnabled', { enabled: true });
+        const state = await origin.cdp.evaluate(`(async () => {
+          const h = ${PAGE_SRC}, id = ${JSON.stringify(id)};
+          const surface = h.devinSurface(), title = document.title;
+          if (surface !== 'editor') return { surface, session: h.devinSession(), title };
+          if (!h.hasComposer()) return { surface, title };
+          if (h.activeThread() !== id) {
+            if (${tab} && h.devinSession()?.tabs.some(tab => tab.id === id)) {
+              if (!h.clickDevinTab(id)) throw new Error('这个会话标签已经关闭了');
+            } else await h.nativeSessionAction('devin', id, 'open');
+          }
+          return { surface, title, opened: true, first: await (${devinThreadReady})(id) };
+        })()`);
+        origin.assertCurrent(this);
+        return state;
+      };
+      return await this.withFocus(async () => {
+        let state = await open();
+        if (state.surface !== 'editor') {
+          if (reuseWindow) throw new Error('请先把已绑定的 Devin 窗口切到 Editor，再打开 Fusion 主会话');
+          await this.ensureDevinIde(id, projectRoot, state);
+          state = await open();
         }
-        if (!await this.cdp.evaluate(helpersCall('hasComposer()'))) await this.openEditorChat();
-        await this.cdp.evaluate(helpersCall(`nativeSessionAction('devin', ${JSON.stringify(id)}, 'open')`));
-        confirmed = await this.confirmDevinThread(id);
+        if (state.surface === 'editor' && !state.opened) {
+          await this.openEditorChat();
+          state = await open();
+        }
+        this.winTitle = state.title;
+        if (state.surface !== 'editor') {
+          if (!id || id.length > 200) throw new Error('这条 Agent 已经不在列表里');
+          const pos = await this.cdp.evaluate(helpersCall(`agentTarget(${JSON.stringify(id)}, true)`));
+          if (!pos) throw new Error('这条 Agent 已经不在列表里');
+          if (pos !== true) await this.tapCss(pos.x, pos.y);
+        }
+        confirmed = await this.confirmDevinThread(id, tab ? '已切换会话' : '已切换 Agent',
+          tab ? 15 : 12, tab ? 100 : 150, state.first, projectRoot);
         if (!confirmed) throw new Error('会话切换没有生效');
-        return;
-      }
-      if (!id || id.length > 200) throw new Error('这条 Agent 已经不在列表里');
-      const pos = await this.cdp.evaluate(helpersCall(`agentTarget(${JSON.stringify(id)}, true)`));
-      if (!pos) throw new Error('这条 Agent 已经不在列表里');
-      if (pos !== true) await this.tapCss(pos.x, pos.y);
-      confirmed = await this.confirmDevinThread(id);
-      if (!confirmed) throw new Error('会话切换没有生效');
+      });
     } finally {
       this.switchingThread = switching;
       this.lastChatAt = 0;
@@ -253,8 +289,8 @@ async resolveDevinProjectSession(root, threadId = '') {
   return native;
 },
 
-async openDevinProjectSession(threadId, createdRoot = '') {
-  await this.adapter.openAgent.call(this, threadId);
+async openDevinProjectSession(threadId, createdRoot = '', projectRoot = createdRoot) {
+  await this.adapter.openAgent.call(this, threadId, '', { projectRoot });
   const source = this.cdp.nativeWindow;
   if (createdRoot && source) {
     source.devinCatalog ||= new Map();
@@ -420,10 +456,12 @@ async backToMain() {
 // or expanded in the transcript once (and folded back) when it was never captured.
 async thought(id) {
   if (!/^acp\d+:think$/.test(id)) return this.emit({ t: 'thought', i: id, text: null });
+  const binding = ConversationRef.capture(this);
   const it = this.devinHist.get(id);
   let body = it ? this.thinkingBody(it) : '';
   if (!body && this.cdp) {
     body = await this.readThought(id);
+    if (!binding.isCurrent(this)) return;
     if (body && it) this.devinHist.set(id, { ...it, t: `${this.thinkingTitle(it)}\n${body}` });
   }
   this.emit({ t: 'thought', i: id, text: body || null });
@@ -433,17 +471,23 @@ async thought(id) {
 // Devin: a collapsed thought has no body in the DOM. Expand it (only if the user has not), wait up to
 // ~1.5 s for the body to render, read it, and fold it back to the state it was in. Returns '' if not read.
 async readThought(id) {
-  const st = await this.cdp.evaluate(helpersCall(`thoughtState(${JSON.stringify(id)})`));
+  const binding = ConversationRef.capture(this);
+  const action = (call, restore) => this.chatDetailAction(binding, binding.threadId, call, restore);
+  const st = await action(`thoughtState(${JSON.stringify(id)})`);
   if (!st) return '';
-  if (st.expanded) return this.cdp.evaluate(helpersCall(`thoughtBodyText(${JSON.stringify(id)})`)).then(t => t || '');
-  await this.cdp.evaluate(helpersCall(`setThoughtOpen(${JSON.stringify(id)}, true)`));
-  let body = '';
-  for (let k = 0; k < 15 && !body; k++) {
-    await new Promise(r => setTimeout(r, 100));
-    body = (await this.cdp.evaluate(helpersCall(`thoughtBodyText(${JSON.stringify(id)})`))) || '';
+  const bodyText = `thoughtBodyText(${JSON.stringify(id)})`;
+  if (st.expanded) return (await action(bodyText)) || '';
+  if (!await action(`setThoughtOpen(${JSON.stringify(id)}, true)`)) return '';
+  try {
+    for (let k = 0; k < 15 && binding.isCurrent(this); k++) {
+      await awaitCdpRead(new Promise(r => setTimeout(r, 100)));
+      const body = await action(bodyText);
+      if (body || body === null) return body || '';
+    }
+    return '';
+  } finally {
+    await action(`setThoughtOpen(${JSON.stringify(id)}, false)`, true);
   }
-  await this.cdp.evaluate(helpersCall(`setThoughtOpen(${JSON.stringify(id)}, false)`));
-  return body;
 },
 
 
@@ -456,6 +500,7 @@ async readThought(id) {
 // read, or after 3 failed reads on different polls.
 async captureThoughts(chat) {
   if (this.app !== 'devin') return;
+  const binding = ConversationRef.capture(this);
   this.thoughtPoll = (this.thoughtPoll || 0) + 1;
   this.thoughtFails = this.thoughtFails || new Map();
   this.thinkLiveSeen = this.thinkLiveSeen || new Set();
@@ -472,6 +517,7 @@ async captureThoughts(chat) {
   const todo = [...fin.reverse(), ...fresh.reverse()].slice(0, 2);
   for (const it of todo) {
     const body = await this.readThought(it.i);
+    if (!this.liveRead(binding.cdp, binding.sel)) return;
     if (body) {
       it.t = `${this.thinkingTitle(it)}\n${body}`;
       this.thinkingTried.set(it.i, 1);
@@ -597,15 +643,32 @@ afterRevert(num) {
   this.refreshSoon(300);
 },
 
-async ensureDevinIde(threadId = '', project = '') {
-  const session = await this.cdp.evaluate(helpersCall('devinSession()'));
-  if (session?.surface === 'editor') {
-    if (!await this.cdp.evaluate(helpersCall('hasComposer()'))) await this.openEditorChat();
+async devinProjectRow(id, windowId = this.windowId) {
+  const catalog = nativeSessionCatalog('devin');
+  const row = catalog?.rows.find(row => row.id === id);
+  const recent = Date.now() - catalog?.observedAt < 15000;
+  if (recent && (row?.archived || catalog.removed?.includes(id))) throw new Error('这个 Devin 会话已归档或移除');
+  const window = windowId === this.windowId ? this.cdp?.nativeWindow
+    : nativeWindowAt(this.projectAgentWindows?.get('devin')?.find(row => row.id === windowId)?.ws);
+  const local = window?.cdp.ws?.readyState === 1 && window.devinCatalog?.get(id);
+  if (local?.workspace && !local.archived && Date.now() - local.observedAt < 15000
+      && (!row?.workspace || samePath(local.workspace, row.workspace))) return local;
+  if (row?.workspace && recent) return row;
+  const rows = await this.cdp.evaluate(helpersCall('sessionPickerRows(true)'));
+  return rows.find(row => row.id === id);
+},
+
+async ensureDevinIde(threadId = '', project = '', observed) {
+  const { surface, session, composer } = observed || await this.cdp.evaluate(`(() => {
+    const h = ${PAGE_SRC}, session = h.devinSession();
+    return { surface: session?.surface, session, composer: h.hasComposer() };
+  })()`);
+  if (surface === 'editor') {
+    if (!composer) await this.openEditorChat();
     return false;
   }
   const id = threadId || (!project && session?.key) || '';
-  const rows = await this.cdp.evaluate(helpersCall('sessionPickerRows(true)'));
-  const row = rows.find(row => row.id === id);
+  const row = !project && id ? await this.devinProjectRow(id) : null;
   const cwd = project || row?.workspace || (id === session?.key ? session.cwd : '')
     || (!id && (await editorRoots(this.editorCdp, 'devin'))[0]?.root);
   if (!cwd) throw new Error('尚未确定 Devin 目标项目，请选择项目后进入 IDE');
@@ -613,14 +676,14 @@ async ensureDevinIde(threadId = '', project = '') {
   return true;
 },
 
-async devinProjectWindows(windows) {
-  const result = await Promise.all(windows.map(async window => {
-    const cdp = new Cdp(window.ws);
-    try {
-      await cdp.connect();
+async devinProjectWindows(windows, background = false) {
+  const result = await Promise.all(windows.map(window => {
+    const read = () => withNativeWindowRead(window.ws, 'devin', window.id, async cdp => {
       if (await cdp.evaluate(helpersCall('devinSurface()')) !== 'editor') return null;
       return { ...window, project: (await (IS_WIN ? this.devinWindowRoots(cdp) : editorRoots(cdp, 'devin')))[0] };
-    } finally { cdp.close(); }
+    });
+    const source = background && nativeWindowAt(window.ws);
+    return source ? awaitCdpRead(source.deferBackgroundRead('devin-project-window', read, null)) : read();
   }));
   return result.filter(Boolean);
 },
@@ -635,29 +698,29 @@ async setSurface(to, target) {
   do {
     for (const window of (await listWindows(null, 'devin')).filter(w => w.app === 'devin')
       .sort((a, b) => Number(b.id === this.windowId) - Number(a.id === this.windowId))) {
-      const cdp = new Cdp(window.ws);
-      try {
-        await cdp.connect();
-        if (await cdp.evaluate(helpersCall('devinSurface()')) !== want) continue;
+      const matches = await withNativeWindowRead(window.ws, 'devin', window.id, async cdp => {
+        if (await cdp.evaluate(helpersCall('devinSurface()')) !== want) return false;
         if (want === 'editor' && session?.cwd) {
           const roots = IS_WIN ? await this.devinWindowRoots(cdp) : await editorRoots(cdp, 'devin');
-          if (!this.projectMatches(roots, session.cwd)) continue;
+          return this.projectMatches(roots, session.cwd);
         }
-        this.cdp.nativeWindow?.invalidate();
-        const previousCdp = this.cdp, switching = this.switchingThread;
-        this.switchingThread = true;
-        try {
-          const binding = await this.openBound(window, window.ws, null, { windowId: window.id, threadId: session?.key || '', deferred: true });
-          if (await this.checkProjectTrust({ threadId: session?.key || '' }, binding?.trust)) return;
-          if (session?.key) await this.adapter.openAgent.call(this, session.key);
-          this.bindingReady = true;
-          this.emit({ t: 'status', ok: true, msg: want === 'editor' ? '已切到 Editor 界面' : '已切到 Agent 界面' });
-        } finally {
-          if (switching) this.switchingThread = switching;
-          else await this.resumeProjectSwitch(previousCdp);
-        }
-        return;
-      } finally { cdp.close(); }
+        return true;
+      });
+      if (!matches) continue;
+      this.cdp.nativeWindow?.invalidate();
+      const previousCdp = this.cdp, switching = this.switchingThread;
+      this.switchingThread = true;
+      try {
+        const binding = await this.openBound(window, window.ws, null, { windowId: window.id, threadId: session?.key || '', deferred: true });
+        if (await this.checkProjectTrust({ threadId: session?.key || '' }, binding?.trust)) return;
+        if (session?.key) await this.adapter.openAgent.call(this, session.key);
+        this.bindingReady = true;
+        this.emit({ t: 'status', ok: true, msg: want === 'editor' ? '已切到 Editor 界面' : '已切到 Agent 界面' });
+      } finally {
+        if (switching) this.switchingThread = switching;
+        else await this.resumeProjectSwitch(previousCdp);
+      }
+      return;
     }
     if (!control) break;
     await awaitCdpRead(new Promise(resolve => setTimeout(resolve, 120)));
@@ -742,23 +805,27 @@ async switchTab(title) {
   }
 },
 
-async confirmDevinThread(id, statusMsg = '已切换 Agent', tries = 12, interval = 150) {
+async confirmDevinThread(id, statusMsg = '已切换 Agent', tries = 12, interval = 150, first, projectRoot = '') {
   const origin = ConversationRef.capture(this);
-  for (let i = 0; i <= tries; i++) {
-    const thread = await this.cdp.evaluate(helpersCall('activeThread()'));
-    if (thread === id) {
-      if (!await this.cdp.evaluate(helpersCall('hasComposer()'))) continue;
-      if (id) await this.cdp.evaluate(helpersCall(`nativeSessionInfo('devin', ${JSON.stringify(id)}, 'bind')`));
-      origin.assertCurrent(this);
-      cdpRead.getStore()?.throwIfAborted();
-      if (this.threadId !== thread) this.clearViewState();
-      SessionBinding.commit(this, { threadId: thread, selectedThread: thread });
-      this.publishThread(statusMsg);
-      return true;
-    }
-    if (i < tries) await new Promise(r => setTimeout(r, interval));
-  }
-  return false;
+  const check = `(() => {
+      const h = ${PAGE_SRC};
+      return (${devinThreadReady})(${JSON.stringify(id)});
+    })()`;
+  const result = await pollUntil(async i => {
+    const state = i === 0 && first ? first : await origin.cdp.evaluate(check);
+    return state.thread === id && state.ready ? state : null;
+  }, { timeout: tries * interval, delays: [25, 40, 60, 100, 150].map(delay => Math.min(delay, interval)) });
+  if (!result) return false;
+  origin.assertCurrent(this);
+  cdpRead.getStore()?.throwIfAborted();
+  const { thread, context } = result;
+  if (projectRoot && !this.projectMatches(context?.roots || [], projectRoot))
+    throw new Error('Devin 返回的会话项目与所选目录不一致');
+  if (this.threadId !== thread) this.clearViewState();
+  SessionBinding.commit(this, { threadId: thread, selectedThread: thread });
+  if (context) await this.currentRoots(context.roots);
+  this.publishThread(statusMsg);
+  return true;
 },
 
 

@@ -39,6 +39,21 @@ const pasteImage = (b64, name, type) => `(async () => {
 
 
 export const methods = {
+  async chatDetailAction(binding, thread, call, restore = false) {
+    const { cdp, sel } = binding;
+    if (!thread || !binding.isCurrent(this) || (!restore && !this.liveRead(cdp, sel))) return null;
+    const read = () => cdp.evaluate(`(() => {
+      const h = ${PAGE_SRC};
+      return h.activeThread() === ${JSON.stringify(thread)} ? h.${call} : null;
+    })()`);
+    if (!restore) return read();
+    // An aborted read can still own an acknowledged expansion in this thread.
+    try { return await cdpRead.run(null, read); }
+    catch (error) {
+      if (binding.isCurrent(this) && !cdpRead.getStore()?.aborted) throw error;
+      return null;
+    }
+  },
   refreshSoon(ms) {
     const binding = ConversationRef.capture(this);
     return setTimeout(() => {
@@ -208,10 +223,12 @@ export const methods = {
   },
   async pollChatRead(immediate, state) {
     const { cdp, sel } = state;
+    const detailBinding = ConversationRef.capture(this);
     const sendGen = this.sendGen || 0;
     const draftGeneration = this.draftGeneration, draftRevision = this.draftRevision;
     const readDraft = !this.mentionBusy && !this.draftWriting && !this.queueEditing;
-    let toolDetailsRead;
+    const source = nativeWindow(cdp);
+    let freshSnapshot = null, toolDetailsRead;
     const enrichTools = async chat => {
       if (this.app !== 'codex') return;
       for (const item of chat.items) if (item.src === 'codex' && item.lazy) {
@@ -225,14 +242,27 @@ export const methods = {
     };
     const publish = chat => {
       cdpRead.getStore()?.throwIfAborted();
+      if (state.requested && !state.sent && this.connectionView && cdpRead.getStore()?.navigation
+          && freshSnapshot && source?.snapshot === freshSnapshot.snapshot
+          && source.readRevision === freshSnapshot.revision && source.revision === freshSnapshot.revision
+          && chat.thread === (this.threadId || '')) {
+        this.navigationFirstScreen = { binding: ConversationRef.capture(this),
+          connection: this.connectionView.generation, source,
+          snapshot: freshSnapshot.snapshot, revision: freshSnapshot.revision };
+      }
       this.emit({ t: 'chat', sel: this.selectionKey(), chat });
       if (state.requested) { state.sent = true; state.resolve(); }
     };
     const read = async () => {
       const child = this.mainTab?.cdp === cdp ? this.mainTab.child || '' : '';
       const known = (this.itemCache?.get(this.threadId || '')?.completeTurns || []).map(([id]) => id);
-      const source = nativeWindow(cdp);
-      const chat = source?.win ? structuredClone((await source.read(state.requested && !state.sent)).chat)
+      let snapshot;
+      if (source?.win) {
+        const fresh = state.requested && !state.sent;
+        snapshot = await source.read(fresh);
+        if (fresh) freshSnapshot = { snapshot, revision: source.readRevision };
+      }
+      const chat = source?.win ? structuredClone(snapshot.chat)
         : await cdp.evaluate(`(() => { const h = ${PAGE_SRC}, chat = h.extract(false, ${JSON.stringify(known)}, ${this.app === 'codex' && !this.fusionBinding ? 120 : 0}); if (chat) chat.subagent = !!(${JSON.stringify(child)} && h.activeChatTab() === ${JSON.stringify(child)} && chat.readonly); return chat; })()`);
       if (chat && source?.win) chat.subagent = !!(child && source.snapshot.activeTab === child && chat.readonly);
       if (chat) delete chat._revision;
@@ -279,21 +309,22 @@ export const methods = {
         if (!this.liveRead(cdp, sel) || !this.acceptsChat(chat)) return;
       }
       const emptyCodex = this.app === 'codex' && !this.threadId && !this.selectedThread && !chat?.thread && chat?.items?.length === 0 && (!chat.readonly || chat.empty === true);
-      const thinkingAction = async action => {
-        const result = await cdp.evaluate(helpersCall(action));
-        nativeWindow(cdp)?.invalidate();
+      const thinkingAction = async (thread, action, restore = false) => {
+        const result = await this.chatDetailAction(detailBinding, thread, action, restore);
+        if (result != null) source?.invalidate();
         return result;
       };
       const details = fn => state.requested && state.sent
         ? this.withChatUiDetails(() => this.liveRead(cdp, sel) ? fn() : undefined) : fn();
       const readThinking = async () => {
+        const thread = chat?.thread;
         const liveClosed = this.app !== 'devin' && (chat?.items || []).some(it => it.k === 'thinking' && it.live && !(it.t || '').includes('\n'));
         if (liveClosed) {
-          const idxs = await cdp.evaluate(helpersCall(`closedThinkingIndexes('live')`));
+          const idxs = await this.chatDetailAction(detailBinding, thread, "closedThinkingIndexes('live')");
           if (!this.liveRead(cdp, sel)) return;
           if (idxs?.length) {
-            if (!await thinkingAction(`clickThinking(${JSON.stringify(idxs)})`)) return;
-            await new Promise(r => setTimeout(r, 250));
+            if (!await thinkingAction(thread, `clickThinking(${JSON.stringify(idxs)})`)) return;
+            await awaitCdpRead(new Promise(r => setTimeout(r, 250)));
             if (!this.liveRead(cdp, sel)) return;
             chat = await read();
           }
@@ -301,15 +332,16 @@ export const methods = {
         if (!this.liveRead(cdp, sel)) return;
         const needFinal = this.app !== 'devin' && (chat?.items || []).some(it => it.k === 'thinking' && !it.live && !(it.t || '').includes('\n') && !this.thinkingTried.has(it.i));
         if (needFinal) {
-          const idxs = await cdp.evaluate(helpersCall(`closedThinkingIndexes('done')`));
+          const idxs = await this.chatDetailAction(detailBinding, thread, "closedThinkingIndexes('done')");
           if (!this.liveRead(cdp, sel)) return;
           if (idxs?.length) {
-            if (!await thinkingAction(`clickThinking(${JSON.stringify(idxs)})`)) return;
-            await new Promise(r => setTimeout(r, 250));
-            if (!this.liveRead(cdp, sel)) return;
-            chat = await read();
-            if (!this.liveRead(cdp, sel)) return;
-            await thinkingAction(`closeThinkingIfOpen(${JSON.stringify(idxs)})`);
+            if (!await thinkingAction(thread, `clickThinking(${JSON.stringify(idxs)})`)) return;
+            try {
+              await awaitCdpRead(new Promise(r => setTimeout(r, 250)));
+              if (this.liveRead(cdp, sel)) chat = await read();
+            } finally {
+              await thinkingAction(thread, `closeThinkingIfOpen(${JSON.stringify(idxs)})`, true);
+            }
           }
         }
       };
@@ -324,6 +356,7 @@ export const methods = {
       const prevThread = this.threadId || '';
       if (this.app === 'codex' && !chat.thread && !emptyCodex) { this.pendingThread = ''; return; }
       if (chat.thread !== prevThread) {
+        if (this.app === 'codex' && !prevThread && this.codexFirstSend?.binding.isCurrent(this)) return;
         if (this.app === 'codex' && this.pendingThread !== chat.thread) {
           this.pendingThread = chat.thread;
           this.lastChatAt = 0;
@@ -366,20 +399,22 @@ export const methods = {
       }
       // Devin task lists: read details for the current count and restore the original expansion state.
       await details(async () => {
+      const thread = chat?.thread;
       const taskRow = (chat?.items || []).find(it => it.k === 'tasks' && !it.items && this.tasksTried.get(it.i) !== `${it.done}/${it.total}`);
       if (taskRow) {
-        const wasOpen = await cdp.evaluate(helpersCall(`setTasksOpen(${JSON.stringify(taskRow.i)}, true)`));
+        const wasOpen = await this.chatDetailAction(detailBinding, thread, `setTasksOpen(${JSON.stringify(taskRow.i)}, true)`);
         if (wasOpen != null) {
           try {
-            await new Promise(r => setTimeout(r, 250));
+            await awaitCdpRead(new Promise(r => setTimeout(r, 250)));
             const opened = await read();
-            const tasks = opened?.items?.find(it => it.k === 'tasks' && it.i === taskRow.i && it.items);
+            if (!this.liveRead(cdp, sel)) return;
+            const tasks = opened?.thread === thread && opened.items?.find(it => it.k === 'tasks' && it.i === taskRow.i && it.items);
             if (tasks) {
               this.tasksTried.set(taskRow.i, `${tasks.done}/${tasks.total}`);
               chat = opened;
             }
           } finally {
-            if (!wasOpen) await cdp.evaluate(helpersCall(`setTasksOpen(${JSON.stringify(taskRow.i)}, false)`));
+            if (!wasOpen) await this.chatDetailAction(detailBinding, thread, `setTasksOpen(${JSON.stringify(taskRow.i)}, false)`, true);
           }
         }
       }
@@ -391,15 +426,16 @@ export const methods = {
         // A card whose text could not be read is retried at most every 30 s, not on every poll.
         if (Date.now() - (this.devinCmdTried.get(item.i) || 0) < 30000) continue;
         this.devinCmdTried.set(item.i, Date.now());
-        const wasOpen = await cdp.evaluate(helpersCall(`setCommandOpen(${JSON.stringify(item.i)}, true)`));
+        const wasOpen = await this.chatDetailAction(detailBinding, thread, `setCommandOpen(${JSON.stringify(item.i)}, true)`);
         if (wasOpen == null) continue;
         try {
-          await new Promise(r => setTimeout(r, 150));
+          await awaitCdpRead(new Promise(r => setTimeout(r, 150)));
           const full = await read();
-          const command = full?.items?.find(it => it.i === item.i && it.cmd);
+          if (!this.liveRead(cdp, sel)) return;
+          const command = full?.thread === thread && full.items?.find(it => it.i === item.i && it.cmd);
           if (command) { Object.assign(item, command); this.devinCmds.set(item.i, command.cmd); }
         } finally {
-          if (!wasOpen) await cdp.evaluate(helpersCall(`setCommandOpen(${JSON.stringify(item.i)}, false)`));
+          if (!wasOpen) await this.chatDetailAction(detailBinding, thread, `setCommandOpen(${JSON.stringify(item.i)}, false)`, true);
         }
       }
       if (this.app === 'devin') await this.captureThoughts(chat);
@@ -432,7 +468,14 @@ export const methods = {
         this.lastChat = json;
         publish(chat);
       }
-      this.syncAttachments().catch(() => {});
+      const sync = () => this.deferWindowRead('attachments', () => this.syncAttachments()).catch(() => {});
+      if (state.requested && state.sent) {
+        const binding = ConversationRef.capture(this), signal = cdpRead.getStore();
+        setImmediate(() => {
+          if (!signal?.aborted && binding.isCurrent(this) && this.liveRead(cdp, sel))
+            sync();
+        });
+      } else sync();
     } finally {
       if (this.chatRead === state) {
         this.chatRead = null;

@@ -1,4 +1,99 @@
+# 最新交接：Cursor 多窗口归属与 Codex preview 实际验收通过（2026-11-27T01:58:36.539554+00:00）
+- 3939 正式 v530 PID 30180。用户授权的两个 Benchmark 空闲终端正常关闭，没有杀活跃任务。两次守卫重启 4083845→20980→30180，OAuth 与配对保留，page exports/Git HEAD 不变。
+- 原五文件归属补丁后，真实空窗口复验发现 adapter-local samePath 拒绝空路径（旧提取夹具误用平台 comparator）。额外最小空路径 guard 修复已部署，实际导出 4 原生正例、11 反例、1 非空路径通过。
+- 最终真实多窗口目录 253 个唯一线程，4 真正空工作区 + 3 项目非 dormant/sendable，MCP 三读取 21/21 PASS，错误归属 9/9 拒绝。临时空窗已安全关闭，原两个窗口保留，目录仍 253 唯一，3 可用 / 250 dormant，无已关闭窗口绑定。新增两条空白原生草稿未删除。
+- 最终 PID 30180 真实配对 overview.card 3/3 PASS，原 Codex preview 正常，现场恢复 overview。
+- 证据 _shots/prod-full-fix-perf-arch-20261126/phase4/cursor-ownership/FINAL_LIVE_RECEIPT.json、REPORT.md、PROGRESS.json、phase4/MAIN_ACCEPTANCE_RECEIPT.json。用户指定收尾范围完成；其他旧 MCP 写/审批/新建任务、未测平台及后续全量性能门禁仍不宣称通过。无 commit/push。
+
+---
+
+# 最新交接：Cursor 多窗口 MCP 归属修复（2026-11-27T00:32:12.241126+00:00）
+- 已独立复现 261/251、10 重复、错误窗口三读取均拒绝；真实 2 个 projectless + 8 个未知路径，不能一律判空项目。
+- 5 文件候选已应用，10 离线 PASS、251 唯一真实目录重放、3 条当前可控原生 context 全 PASS、248 dormant；static/export/HEAD 通过，未部署 Cursor 补丁。原 Codex overview preview 已上线并 3/3 通过，保持。
+- 正式 PID 4083845 active。当前 Benchmark cgroup 仍有实际任务 4103531 bash, 4106120 python3, 4106121 codex, 4106195 node, 4106429 codex-code-mode, 4116511 python, 4116512 python，**禁止关终端、强杀或重启**。后续安全时正式重启并补跑实际多窗口 MCP 三接口及跨项目负例、overview.card，保留未完成 MCP 写验收。
+- 证据：_shots/prod-full-fix-perf-arch-20261126/phase4/cursor-ownership/MAIN_RECEIPT.json、candidate.diff、offline-receipt.json、restart-guard.json、REPORT.md、PROGRESS.json。未 commit/push，不能写 FINAL COMPLETE。
+
+---
+
+
+## 2026-11-27 CST — Phase4 主会话追加真实验收与重启阻塞
+
+- 正式 v530 PID 4002894；29 个原候选路径已核验，重构自身 PAGE_FACTORY 548893 字节完全等价。当前同环境 Phase3/4 各84有效热样本，14组P50全部通过；stress 9/9，初轮 smoke 13/15。原环境已变化，不声称普适旧慢窗解决。
+- Codex 摘要真实根因：已连接 RPC 但 manager 缺失时原 preview 不可用。只读精确 thread/root fallback 候选实测可读，缺失仍拒绝，静态通过。此单独功能修正使 PAGE_FACTORY SHA 从 4c2c96f6f58f5cfa00e86731ac9f545f5c2880bbd5012cdf9bd460405ac4c4cf 变成 03f7457fbeb65dc128c63722533586f85759bcdf2bb8b322ced1b4c14d1b68f4；导出快照不变。Devin 展开摘要保留完整文本是既有设计；测试应限制 last≤600、tools≤3并核对展开真实内容。补丁/原始失败证据均存 phase4。
+- workflow 16/16 实际通过，6会话+6终端已清理、概览恢复；真实 Codex quota 自动/手动 desktop 2113/1130 ms，backend 2422/1068 ms，非缓存非缺失、无手动自动重叠。
+- 初次 Full access 验收因旧测试未操作真实二次确认失败，保留原报告。仅修正测试（精确拥有的空闲隔离会话，点击原UI确认），三种权限切换回读真实通过并恢复 Ask for approval，清理成功。未修改产品安全策略。
+- 仍有独立 benchmark 终端/子任务在 relay cgroup 内，守卫拒绝重启；未停止或干扰。源码摘要修正未进入正式 PID，待安全重启后复验 overview.card；仍未新验收真实生成中的权限、流、队列、审批、取消、附件和剩余 MCP 写操作。**不得标 FINAL COMPLETE。** 以 phase4/MAIN_ACCEPTANCE_RECEIPT.json、PROGRESS.json 为准。
+
+# 最新交接：Phase 4 独立验收（2026-11-26T23:30:20.913013+00:00）
+
+- 正式 PID 4002894 / PWA v530；29 路径候选独立审查、静态、真实 PWA/SW/原探针、OAuth 与导出 SHA 均通过。Phase3 v527 同环境控制与 Phase4 各84个有效热切换，当前14组绝对P50门槛全过；压力9/9。原 smoke 13/15，两个失败保留。
+- Codex 原生 preview 真实缺陷已定位并最小修复：manager 不存在时安全使用已连接本地 RPC，验证 catalog root/thread/cwd；实际候选 native 正/负通过，静态通过。Devin 完整展开文本来自旧 commit cae9908，修正旧测试断言并增 DOM 检查，保留原 UI。
+- **当前源码含预览纠正，运行服务尚未加载。** 重启 guard 发现两个独立终端（含 benchmark），后续又有配对浏览器锁。禁止擅关或重复重启；仅在实际终端与锁释放后，核对 cgroup、PID、备份/哈希，执行 phase4/preview-correction-deploy.tmp.mjs，并重测 overview.card。
+- 当前 workflow 实际宿主 PID4016617 / browser PID4016650，覆盖项目/重连/草稿/终端/模型速度；本观察 {'passed': 6, 'failed': 0, 'blocked': 0}，未完成。不要并发测试，查 phase4/workflow-console.log 和 workflow-serial-receipt.json；保留原生任务和用户终端。后续还需真实生成/权限/审批/队列/取消/附件/历史/额度回归，不冒称未测通过。
+- 证据：_shots/prod-full-fix-perf-arch-20261126/PROGRESS.json、REPORT.md、phase4/MAIN_ACCEPTANCE_RECEIPT.json。当前不得写 FINAL_RECEIPT COMPLETE，不提交不推送。原 plan、导出 SHA、Phase1–3 修正保留。
+
+---
+
+# 最新交接：Phase 3（2026-11-26T14:41:33.847524+00:00）
+
+- Phase1 已验收；Phase2 第二轮速度由用户明确接受，非原绝对阈值全部通过。
+- Phase3 12 文件已实现、主会话独立修正回收并发安全及 backend owner 查询调度；正式部署已恢复，PID 3890362，Git HEAD 86792e3caa432f55efebaca7be8ea0cab8e94e4f，导出 SHA256 857e88072636fdcd8c5bc926cc9c89992ce906748e6d91c43bf9d4d5139e43a1，OAuth 保持。
+- 完整矩阵 84/84、stress 9/9、模型/额度 smoke 6/6；同环境 A/B 两版各36次，3组中位改善、1组持平、2组约慢11%，旧绝对阈值仍有未达项。
+- MCP 四目标历史/模型读取与 Codex 双路径队列读取通过；已测范围 PASS，整体验收尚未全通过。桌面手动额度独立归因、真实生成中权限/队列/审批/取消/草稿/附件/流式回归等剩余项明确列入回执。其他设备/平台及冷启动未测。
+- 证据目录：_shots/prod-full-fix-perf-arch-20261126；PROGRESS.json、REPORT.md、phase3/MAIN_ACCEPTANCE_RECEIPT.json。Phase4 未开始，先核对审查和未完成验收，不重复启动旧任务或干扰 benchmark/CWM。
+
+---
+
+# 主会话接手最新 · 2026-11-26T13:06:28.955274+00:00
+
+- Phase 1 PASS（含真实直发迟到 ACK）。Phase 2 合格基线 14/14 组，84 热试次，PID 3691920。第一轮实际部署复验 PID 3725036，身份/正文全部通过，但 Devin 与 Codex 多组绝对延迟未过。当前正式 PID 3740486，第二轮增量已部署，静态和页面导出 SHA、OAuth SHA、现有 PWA/MCP 实际配对通过；devices.json 重连后字节不同，未修改或恢复认证。
+- 第二轮 14 组实测进程 3741204 正在运行，phase2/round2-final/console.log、summary.json、samples.jsonl 为真实证据。已完成热组 6/14，已知慢组 devin-short, devin-long；不要重复派发或启动并行 PWA 测试。测试结束须验证原现场恢复和锁释放。
+- 证据: _shots/prod-full-fix-perf-arch-20261126/REPORT.md、PROGRESS.json、phase2/qualified-baseline、round1-traced、relay-stages.jsonl、owner-stage-probe.json、round2.candidate.diff、deploy-round2.json。临时插桩已移除产品源码。保留现有生产改动及备份，继续同一真实门槛，Phase3/4 未开始，禁止提前宣称完成或跳过门禁；不干扰其他 Agent/训练，不 commit/push。
+
+# 主会话接手最新 · 2026-11-26T12:47:36.953152+00:00
+
+- Phase 1 全部门禁（含迟到直发 ACK）已正式实测通过，3939 PID 3691920；OAuth、配对、页面导出 SHA 保留。证据 phase1/takeover-late-direct-ack-acceptance.json。旧无证据 UNKNOWN 禁止重发或猜测关联。
+- Phase 2：旧 PID provisional 10/14，补齐后才允许应用 phase2/takeover-navigation.candidate.diff；最终 PID 专用基线子任务已取得真实原生 ACK，唯一主 Codex 会话，禁止产品改动或重启，主会话管理产品、门禁、报告。原生 Cursor 长样本已完成。
+- 阈值不降；Phase3/4 未开始；不得中断其他任务、改变用户草稿、commit/push 或修改 page-exports。
+- 证据：_shots/prod-full-fix-perf-arch-20261126/PROGRESS.json、REPORT.md、phase2/final-baseline-dispatch.json。
+
+# 主会话接手 · 2026-11-26T20:11:25+08:00
+
+- 四阶段执行：**Phase 1 门禁已由主会话实证通过**。正式 3939 PID 3467610、原 OAuth 配对和 page-exports SHA256 保持，最新 npm run check 通过；真实 Cursor B empty-state-draft 同根正例三项通过。原历史 UNKNOWN 缺稳定 ID 保留；新机制真实原生证据 + 隔离账本恢复通过。
+- 主会话负责根因、修改决策与验收；原 Codex 会话仅接受有界子任务。下一步先完成新发现的直接 send_message UNKNOWN 迟到 ACK 对账修复并正式验收。候选已由主会话准备并通过隔离逻辑检查，尚未部署；原 Codex 仅执行 Phase 2 只读分层基线采集，基线暂为 provisional，禁止 Phase 2 产品改动。严格按修订方案、PROGRESS.json 及 REPORT.md 继续。
+- 证据目录：_shots/prod-full-fix-perf-arch-20261126/，旧 BLOCKED 回执在 history/phase1-before-takeover-final/。不得干扰 Benchmark/CWM，不 commit/push，不修改 page-exports。
+
 # HANDOFF · Remote Agent（RA）隔离重构
+
+## 最新（2026-11-26）｜Phase 1 仅剩 Cursor 原生空草稿正例
+
+- 正式 3939 PID **3467610**，配对和页面导出 SHA 校验通过。Codex 桌面取消后 read_session 读回 idle。提交和直接发送取得真实精确请求绑定。隔离任务记录连接真实原生 QA 线程复验缺失消息 ID 的只读对账。旧无精确证据 UNKNOWN 保留。
+- Cursor 跨项目拒绝及项目绑定空会话实际通过。冷工作台生成普通 UUID 并补齐项目，Agents Window 无 editor root，仍缺同一专用窗口的真实无项目空草稿。Phase 2–4 未开始。
+- [报告](_shots/prod-full-fix-perf-arch-20261126/REPORT.md) · [进度](_shots/prod-full-fix-perf-arch-20261126/PROGRESS.json) · [回执](_shots/prod-full-fix-perf-arch-20261126/FINAL_RECEIPT.json)
+
+## 最新（2026-11-26）｜正式版 Phase 1 等待独立验收
+
+- 预检旧 cgroup 阻塞已解除。Phase 1 修复已载入正式 3939，最新 PID **3250148**。既有原生进程、隧道和认证重启后可用。宿主静态和 6 项定向测试通过，输出快照 SHA 未变。正式旧目标稳定非空正文冒烟 36/36。MCP 新旧设备字段和 Codex 后台专用会话读取已实测。
+- Phase 1 尚待真实 Cursor 空草稿/跨项目、Codex 桌面队列/活跃轮次取消和既有 UNKNOWN 精确对账。只使用专用 QA 窗口和原授权回执，禁止重发。当前进度为 `AWAITING_EXTERNAL_QA`。
+- 已读取并采用新方案 SHA256 `0308bb4fc4283a65730d4feefae775449d0c6c48a72a3c2fe90e29e110bff9c9`，旧版 `e771b6bc6b7fe901f6eb5c6557cae300b5e7675650476c469e619df81ecb01cf` 已归档。Phase 1 全部验收后按新分层矩阵测 Phase 2 基线。Phase 2–4 未开始。
+- [报告](_shots/prod-full-fix-perf-arch-20261126/REPORT.md) · [独立验收参数](_shots/prod-full-fix-perf-arch-20261126/PHASE1_EXTERNAL_QA.json) · [终态回执](_shots/prod-full-fix-perf-arch-20261126/FINAL_RECEIPT.json)
+
+## 最新（2026-11-26）｜正式版四阶段预检阻塞
+
+- 截至本轮预检，3939 Relay PID 为 **2856098**。另一个 `codex exec`（PID **2980670**）仍在 `remote-agent.service` 内，单元为 `KillMode=control-group`，重启会中断它。待其所属任务正常结束后，复查 cgroup 和配对 QA 锁，再采集新基线并开始 Phase 1。
+- 本执行链独立于 3939。宿主静态检查通过；Chrome 9336 既有配对已认证（v527）；页面导出 SHA256 与方案一致。阶段变更及重启均未执行，性能基线未采样。
+- [预检报告](_shots/prod-full-fix-perf-arch-20261126/REPORT.md) · [终态回执](_shots/prod-full-fix-perf-arch-20261126/FINAL_RECEIPT.json)
+
+## 最新（2026-11-26）：3939 宿主机验收
+
+- 正式版 3939 经 RA-MCP-A 宿主机直接重启并配对浏览器实测，最新 Relay PID 2584362；独立原生 Cursor/Devin 与 Chrome 9336 进程不再随 Relay 重启退出。证据见 _shots/prod-perf-codex-fix-round2-20261126/HOST-ACCEPTANCE.md 和 results.json。
+- 首轮生成中 Codex 桌面/后台三种权限均切换且读回；Full access 要求 PWA 显式二次确认。当前轮仅可更新 approvalsReviewer，完整 sandboxPolicy 为后续轮次。额度自动/手动各 5/5 成功，最长约 12.3 秒。
+- 最终 stress.open 每应用 12/12 导航成功：Codex P50 达 <=700ms；Cursor、Devin 仍未达到 800/300ms 性能目标，未宣称完成全部性能优化。进一步定位原生 Composer 与渲染器等待。
+- 已修复 shared 注入 ReferenceError 与错误的桌面 Full access 回退；追加 Cursor 目录尾部补刷、Devin 额度导航调度。已进行 Ubuntu 正式 PWA 测试，未进行 Windows、Android/iOS 真机测试。
+- scripts/page-exports.json 哈希不变，npm run check/qa:browser -- --list 通过；未 commit/push，既有 MCP/OAuth 修改保留。
+- 回退顺序必须先 host-delta.diff，再 candidate.diff，已在 19 个独立副本文件中模拟验证；不要在当前工作树先单独逆向 candidate.diff。
+- 当前原生 Cursor/Devin/Chrome 9336 的独立 systemd 用户单元是 transient，跨 Relay 重启已验；未修改持久化开机启动规则，整机重启后的服务依赖仍需单独核对。
+
 
 > 更新：2026-11-23。跨会话恢复入口。**以 Git 工作区、源码、原始 QA 结果为准**；本文件是交接索引，不代表已提交、发布或实际跨机验收。
 
@@ -758,3 +853,125 @@ ChatGPT QA 连接刷新后复查：本会话的 Remote Agent QA 调用 list_devi
 - 修复：按现有 `syncApp` 公共资源清单筛选 72 个变动静态文件（含 9 个新增模块），仅以 GitHub API 创建 blob/tree/commit，并通过 `force:false` 将 `gh-pages` 快进至 `ac371badec3c78a0876356b3b7611ecf49b76e3b`；未触及正式分支、服务、MCP、Android/iOS 安装包或设备授权。单次串行脚本超时后改用有界并发上传和有限网络重试；发布后旧流程不必重复调用。
 - 真实验收：GitHub Pages Workflow `45642447870` 状态为 `completed/success`。外部公网逐字节读取 `index.html`、`sw.js`、`js/core.js`、`js/overview.js`、`js/ra-core-ui.js`、`js/computer-connection.js`、`js/command-transport.js`，均与 A 机本地源码完全一致；Service Worker 缓存已提升到 `v527`。远端 `url.json` 的 Git blob SHA 与发布前完全一致，三台设备的加密地址记录未受影响；正式 RA 服务仍 active。
 - 记录：`_shots/ra-phone-ui-sync-20261125/parallel-result.json` 和 `verified-result.json`。手机实际 PWA/Android/iOS 安装界面的加载与缓存激活**未进行真机验证**；若仍见旧 UI，先关闭并重新打开手机 PWA，再进行页面刷新，不清除配对存储。
+
+## 2026-11-25 — A 机正式版 v527 独立定向验收
+
+- 正式分支 `feature/ra-peer-tasks`，本轮 HEAD `86792e3caa432f55efebaca7be8ea0cab8e94e4f`，产品源码 `5af7a375ec6378807bf24be112773871ab410d1b`。切换后的两个提交只更新交接。F4 的 51 个必需文件已全部跟踪。本轮仓库改动只有本段，保留原有 `?? opencode-web.js`。
+- 正式 3939 本机、GitHub Pages 和 3949 QA 各 8 个静态文件逐字节一致。正式公网入口另核对 3 个文件、OAuth 元数据、MCP SDK 握手及 31 个 schema。首次 DNS `ENOTFOUND`，后续 Node、系统 DNS 和 curl 直连均通过。原因未定位，原失败证据保留。软件包依赖、静态/协议/导出和 214 项浏览器目录检查通过。
+- 9335 仅有现成 3949 QA 配对。实际浏览器通过主导航、配对、重连草稿、设备及跨设备授权面板、原生长历史（109→126）、文件/PTY、Codex `gpt-6.2-sol / high / priority`、权限回读、发送、队列编辑移除、steer、停止及自有会话归档。首轮发送 8.5 秒断言超时，经原生记录确认唯一消息与回复，另建 QA 会话通过较长窗口复测。首轮 steer 的脚本漏过产品确认框，修正脚本后通过。日志和失败截图保留。
+- 生产 RA-MCP-A 回读当前 A 机任务 `6d7fce7a-f473-47f3-aadb-052fec32137a` 的 `submit_task`、任务及原生请求关联，并验证历史、会话设置、队列及操作列表。本轮任务报告生成时为 `RUNNING`，监督端在最终回复后查询 `get_task/read_task_output`。独立短任务被环境隔离阻塞，正式连接既看不到 3949 新建的 backend 会话，专用目录也没有可复用的原生桌面窗口，未提交。旧桌面完成回执保留为历史证据。
+- 生产 RA-MCP-A 的隔离测试目录中真实创建、读取文件及开关 PTY。重复写入与命令的副作用各一次，回执一致。换参重复请求实际被拒绝，插件的 `INVALID_ARGUMENT` 丢失了本机 SDK 的 `operation_id_conflict`。转换组件尚未定位。临时本机官方 SDK 实际执行 13 项，通过鉴权、跨 scope、权限撤销、幂等、`UNKNOWN`、超时、任务、文件及 PTY。
+- **已定位的产品问题待确认再改。** 正式 `list_sessions` 实际达到 150 条且 0 条 Codex，已知当前线程却能从 `list_app_capabilities.apps.codex.sessions` 找到并按 ID 读到历史。MCP 对原概览序列直接截取前 150 条，结果取决于来源的排列顺序。最小修复范围为 `server/integrations/ra-mcp/tools.mjs` 的会话列表选择，保留 schema、原权限过滤和上限，优先纳入每个有授权会话的 Agent，再按原顺序补齐。先用隔离 SDK 构造超过 150 条目录验证可见性和上限、复查越权拒绝，再走既有 connector 复测。精确错误码另需定位接入层映射，暂不改产品响应。
+- 原生任务清单仍缺匹配样本。正式配对 GUI、桌面 writer、真实原生提问审批、完整 Fusion、真实双机新任务和手机平台未完成独立验收。历史 199 个通过和 10 个增量按旧证据保留。已部署基线可确认，整体验收仍未达到发布标准。
+- 证据在 `_shots/final-acceptance-20261125/`，主报告 `REPORT.md`、逐项状态及统计 `summary.json`、所用脚本、脱敏截图和原始回执均可复核。本轮自建会话归档，测试 PTY 关闭，隔离文件清除，Chrome 原标签及配对保留。未调用 OpenCode，未修改产品代码、服务、权限或配对，未提交、推送或发布。
+- 本轮共 97 项，81 PASS、2 FAIL、2 BLOCKED、12 NOT_VERIFIED。以全部条目为分母的通过率为 83.51%，以已得出通过或失败结论的条目为分母为 97.59%。 历史证据与本轮计数分列。
+
+
+## 2026-11-26 CST — v527 关键路径延迟补测
+
+- 前一轮任务已通过同一 RA-MCP-A 回读 `COMPLETED` 后才开始。Git HEAD 与正式产品源码保持 `86792e3` / `5af7a37`，3939、3949、3961 与 Chrome 原进程保留。
+- 3949/9335 浏览器从 real click 到 fresh 正文稳定，冷打开有效 10 次，P50/P95 1047/2103 ms。热打开 20 次 560/884 ms，同应用切换 20 次 817/966 ms，无串会话。冷打开另外 12 个已核实为空会话的超时均保留。热打开收到正文后稳定 P50 23 ms，主要等待在 PWA 拿到正文之前。
+- 模型／强度／速度候选各 20 次。Model 缓存候选可见 P50 16 ms，原生候选刷新 869 ms，Fast 原生候选可见 607 ms。Codex 在独立 QA 会话双向写设置各 12 次，Model、Effort、Fast 的原生写入 ACK P50 分别 914、878、974 ms。实际离开会话再返回读到原生 checked，各 12 次一致。首轮回执探针漏采已修正，原超时保留。
+- 两条标记原生记录均证明唯一发送和完成，其中完整链路点击到 ACK 600 ms，原生用户行/助手标记 2.23/3.40 秒。发送前回读 GPT-6.2-Sol / High / Fast，归档证明模型与强度。RA-MCP-A 100 次真实只读均成功，时间与本地 UI 分列。正式 RA-MCP-A 对该独立 QA 目标未满足可证明的后台归属和空闲前置条件，正式插件写设置未执行。浏览器隔离环境的数据分列。 当前没有可复用的同源独立 SDK 凭据，跨 App 无可达隔离会话。
+- 证据目录 `_shots/final-acceptance-20261125/latency/`，完整报告 `PERFORMANCE.md`、`STATS.md`、`stats.json` 和逐次单调时钟样本。三个 QA 会话归档，原设置和原浏览器页面恢复，临时目录清理。未使用 OpenCode，未改产品代码、生产用户数据、配对或服务，无后台验收任务。上一轮发布门槛继续有效。
+
+## 2026-11-26 CST — MCP 分页与结构化冲突修复、v514/v527 延迟诊断
+
+- 先完成 MCP 修复和针对性验收，再测延迟。工作树 HEAD 仍为 `86792e3`，正式运行源码仍为 `5af7a37`，旧正式回滚锚点为 `backup/prod-before-v514-20261125`（`2db4744`）。保留原有 `opencode-web.js` 和此前交接追加。
+- `tools.mjs` 增加 `list_sessions` 的可选 `app/limit/cursor`，权限过滤在分页前、默认公平、旧无参兼容、单页 150。实际 SDK 用 231 Cursor、41 Codex、33 Devin 通过 150/150/5 无重复覆盖并排除 4 条越权或不可用记录。`errors.mjs` 增加游标错误码。`server.mjs` 为 `operation_id_conflict` 增加标准 `structuredContent.error`，保留 `isError:true` 与原 JSON 文本。单条隔离冲突验证原文件和回执不变。未知结果和授权语义沿用原实现。
+- 本机 SDK 7 项、`npm run check`、`git diff --check`、浏览器目录 214 项及现有 3949 定向配对/正文检查均通过。SDK fixture 和原生临时副本清除。正式 RA-MCP-A 仍观察到旧首屏 150 Cursor，能力分布 231/41/33，旧错误反馈为 `INVALID_ARGUMENT`。新版 host 错误透传尚未验证。3939 上有 RUNNING 原生 Codex 任务和已建立连接，本轮未部署重启。待安全窗口后确认工具 schema 重载，再定向复测两项。
+- 24 条现有配对 CDP 观测均关联真实签名出站和回包。v527 热打开点击至正文 P50 578 ms，出站到回包 545 ms，回包到稳定 DOM 38 ms。Model 缓存候选约 16 ms，约 152 ms 后才发刷新。Fast 出站到回包 555 ms。冷打开 P95 2103 ms 是上一轮 10 个有效样本。在当前签名链路没有同请求服务端细分耗时。
+- 旧新版用同一运行中的 Codex 渲染器实测 owner P50 308/329 ms、账号读 317/309 ms。两代源码已包含对应串行读与菜单缓存规则。相同原生二进制无凭据隔离对照只能确认短元数据读取，离线 RPC 未返回真实正文。旧 v490 的 48 ms 样本是空正文，与当前口径不同。v514 没有当前 MCP 路由。当前公网匿名 SDK tools/list P50 233 ms，回环 1.5 ms，公网初始化单样本 1.51 秒。真实 ChatGPT 历史/设置的 3–5 秒尾延迟无法用匿名对照直接分摊。没有同口径完整旧 UI A/B，不能断言整体性能回归。
+- 给下一轮的最小顺序是以签名请求 ID 在独立 QA 为 owner、正文 RPC、账号和发布打点，然后看 MCP 历史与原生设置的实际热点。保留安全归属与回执断言。性能阶段未改产品代码、未生成消息、未调用 OpenCode 或 Desktop Commander。
+- 证据在 `_shots/mcp-fix-perf-20261126/`。先产出的 `MCP-FIX.md`、`PERFORMANCE-ROOT-CAUSE.md`、`results.json`、精确 `mcp-fix.patch` 及原始 SDK/CDP 日志均可复核。3939/3949/3961 和 9335 保留，未更换域名、配对或用户数据，未提交、推送、打标签或发布。
+
+## 2026-11-26 CST — MCP 两项修复已部署，原生连接恢复（本轮最终现场）
+
+- 在三个 RA-MCP-A Codex 任务全部 COMPLETED、Codex/Cursor/Devin 当前无 busy/waiting 后，使用 **RA 插件的终端**安排唯一一次 3939 正式 Relay 重启，独立 systemd job 带 HTTP 健康探针和失败回滚；结果 `DEPLOY_HEALTH_PASS`，PID 从 1465413 更新为 1934237，正式服务 active/running。日志 `_shots/mcp-fix-perf-20261126/deploy.log`，可复核状态 `deployment-validation.json`。3949/3961 QA 及原 Cloudflare/OAuth 入口未改，Git 未提交或推送。
+- 新版 `list_sessions({})` 在**当前 ChatGPT RA-MCP-A** 实际返回 150 条混合首屏（Codex 42、Cursor 75、Devin 33）与非空 `next_cursor`；原 150 条全 Cursor 的问题已消失。独立 SDK 的 305 条完整分页、按 app 筛选、授权拒绝测试仍为 7/7 PASS。但当前 ChatGPT 客户端缓存旧的 `list_sessions` 工具 Schema，仅允许空对象，因此客户端尚不能传 `app/limit/cursor`；需在支持 Schema 刷新的连接上复测，不能重新配对冒充已验证。
+- 一条已持久化 QA `create_file` 用**相同 operation_id + 不同 content**重送，实际拒绝且原文件 SHA 完全不变。MCP 原始错误文本中明确有 `operation_id_conflict`，但 ChatGPT 工具调用外层仍包装成 `INVALID_ARGUMENT`。SDK 已验证结构化字段；外层错误码映射未解决，不能写成全修复。
+- **必须保留的恢复事实**：第一次旧进程停止时，systemd 在 RA cgroup 内终止了 Cursor 主进程，导致其 CDP 9222 和部分 Codex 后台会话暂时不可用。已在 RA 插件中恢复 Codex 原生后台读取，并由独立用户级 `ra-cursor-restore-20261126.service`（PID 1935616）恢复 Cursor，避免继续依附 RA 服务 cgroup。最终 9222/9223/9224、3939/3949/3961 全部监听；RA-MCP-A 的 Codex/Cursor/Devin 能力各显示 41/231/33 条会话，均 Ready，三种原生只读历史回归通过。**后续再次重启 RA 前应解决原生软件进程归属问题**，避免依赖临时恢复单位。没有调用 OpenCode。
+- 性能分析结论与此前一致，详见 `_shots/mcp-fix-perf-20261126/PERFORMANCE-ROOT-CAUSE.md`。本轮没有改非 MCP 性能代码。最终现场 `deployment-validation.json` 优先于同目录旧报告中“生产未部署”的阶段性文字。
+
+## 2026-11-26 CST — v517 溯源与 v527 性能实施前基线
+
+- 真实 v517 是 2026-11-23 在隔离 QA 实测的未提交构建，Git 基点 2db47440045345835c6b87a435a6ef0c024df207 的源码版本为 v514。v517 最终配对原始记录的工作区 diff 指纹为 ff5ea9683b298f0b8d4927421e467a8c5217add734a277fb0e0a66ab9f31efb4。未取得 v517 精确提交、完整源码快照或同口径延迟。v527 来源 5af7a37，HEAD 86792e3。历史保留和差异见 _shots/v517-perf-20261126/VERSION.md。
+- 现有配对 3949/9335 本轮共 202 个试次成功，零失败、零超时。重复打开有正文 P50/P95 为 254/499 ms，切会话至正文为 522/603 ms，均 20 次且无串会话。冷打开只找到 2 个无浏览器缓存且含正文的 QA 会话，P50/P95 为 750/1051 ms，1/2 超过 1 秒。慢样本在 1002 ms 收到正文，约 49 ms 后稳定。
+- 独立 Codex 会话以真实两值切换 Model/Effort/Fast，原生 ACK P95 为 626/573/627 ms，各 20 次全部回读通过。Fast 重进后的独立读回流程 P95 为 1413 ms，16/20 大于 1 秒，含重新打开 Model 与进入 Fast 的两次请求和 UI 步骤。独立 Fast 子菜单 P95 为 283 ms。三项原值恢复并经原生回读，QA 会话归档、目录删除、浏览器原标签和概览恢复。
+- 20 次缓存 Model 候选约 15 ms 可见，签名刷新发出 P50 为 151 ms，真实刷新完成 P50 为 397 ms。拟仅修改 app/js/sheets.js 的 Codex 缓存根 Model 路径，去掉可测的 150 ms 等待。AGENTS.md 第 7 行要求先确认文件级方案，当前产品代码及改后 A/B 尚待确认。计划、真实基线、可执行的隔离 ABBA 驱动与原始样本在 _shots/v517-perf-20261126/。候选脚本完成语法检查，尚未在浏览器加载候选。认证 MCP 对照缺匹配的隔离授权入口。
+- 正式 3939 PID 1934237、QA 3949/3961、Chrome 9335 仍为原进程。既有 MCP 修复与 opencode-web.js 保留。未提交、推送、部署或改配对。当前变更只有此附录和忽略目录内的试验材料。浏览器锁已释放，测试进程均退出。
+
+## 2026-11-26 CST — v527 Codex Model 菜单优化通过隔离验收
+
+- 文件级方案已获用户明确批准。唯一产品补丁 app/js/sheets.js 只在 Codex 有缓存的根 Model 打开时，先展示缓存，再立即走原有签名 openMenu。回退 Fast 子菜单仍在原路径等待 150 ms，Effort 本地往返、原生 checked、菜单绑定和写入流程沿用现有实现。独立检出 Git diff 为 5 行新增、1 行删除，Node、npm run check、git diff --check 通过。
+- 同一 3949/9335 配对、同一真实 QA 会话 ABBA 每版各 20 次。Model 真原生刷新至 DOM 稳定 P50/P95 从 409.60/649.30 降到 290.25/350.50 ms，均 0/20 超过 1 秒，失败和超时均为 0。首轮 Fast 重进原生读回 1117.43/1371.56→1119.91/1497.17 ms，>1 秒从 12/20 到 19/20。反向试验发现全页动画等待抵消了 Model 的提前量。用两帧按钮命中检查与实际 CDP 点击，两轮 BAAB 各补每版 10 次。合并 Fast 重进至原生读回每版 20 次，nearest-rank P50/P95 为 754.92/864.21→631.83/768.82 ms，两版均 0/20 超过 1 秒，0 失败、0 超时。各批次原始结果分列，稳定收益位于 Model 刷新阶段。正式性能批次共 140/140，0 失败、0 超时。
+- 25/25 定向回归通过。快速关闭约 50 ms，A 为 0/10 签名读取，B 为 10/10，每次多一条原生只读请求，10 个迟到回复均未重开菜单。快速重开、切会话、实际重连均实测旧菜单回包不能更新当前缓存、请求或视图。Effort/Fast 候选和原生 checked 相符。未写任何用户设置、开启原生推理或更改 Gemini/OAuth。
+- **保留隔离验收通过的本地补丁。** B 资产 SHA-256 284159013deb94f18e0c151a020d5b5cd8c376a1c35e3bd989609ff7b45bec16，补丁 SHA-256 a86ee0ed8f80ec4ae6cf7b50122dcae1e9a54c1ae00c5b58d654ba68fd7e3d72。3939 从主工作区按请求读静态文件，因此只留补丁在 _shots，不改正在服务的主工作区产品文件。3939/3949 线上 HTTP 均仍返回原始资产，正式 PID 1934237 未变。既有 MCP diff SHA-256 a125760888366990b02a025e786d7643d5f9b193827a55f43583efcc908fbf3c 前后一致，page-exports 未动。
+- 报告、逐次原生事务、前后资产和服务校验在 _shots/v517-perf-20261126/menu-implementation/，入口 REPORT.md、results.json、sheets.patch 与 REPRODUCE.md。原浏览器脚本、配对标签和概览已恢复，临时源码与检出已清理，锁释放，任务进程均退出。未提交、推送、重启或部署。此轮测量范围是 v527。
+
+## 2026-11-26 CST — v527 Model 补丁适用性独立审查
+
+- 结论为保留隔离补丁和 Model 收益证据，暂缓原样上线。补丁修掉缓存根 Model 的真实固定等待，未改变 Relay/原生读取链路。007fdb7 引入 150 ms 并加入关闭时取消未发请求，8bdfdd2 保留该等待以及 Model/Effort 本地复用。原长短选择的动机无记录。
+- 同一 3949/9335、同一真实 QA 会话 ABBA，快速开关后跟进各 20 次/版，无快关对照各 8 次/版，共 56/56。每版快速关闭 60 次，A 签名读取 0 条，B 60 条并收到全部匹配回复。B 有两条前序回复晚于跟进 Model 请求签发，未观察到持续积压或跨请求选中值污染。跟进 Model P50 326.45→159.15 ms。
+- 直接从缓存进入 Fast 的 10 次/版，A 只签发 Fast，B 每次先发 Model。B 的 10 个 Model 回复均在 Fast 签发之后才到，晚到中位 67.74 ms。Fast 点击至正确原生回包并界面稳定 P50/P95 191.80/275.50→275.00/414.90 ms。无前置快关小组同方向。浏览器时间含 Relay、原生及传输，尚无逐请求内部排队时长。既有先等 Model 新鲜再进入 Fast 的收益与本轮直接进入的代价分列。
+- 旧 25 项回归、首个预热未捕获点击的日志、56 次正式原始记录和分段见 _shots/v517-perf-20261126/menu-suitability-20261126/{REVIEW.md,results.json}。后续若要推进发布，另轮授权后评估带绑定及设置版本校验的在途读取复用与取消，保留新鲜 checked 语义。此次仅新增审查报告及交接，没有应用产品补丁、改 MCP 或配对、重启或部署。原浏览器配对、页面、资产及锁全部恢复。
+
+
+## 2026-11-26 — Google/Gemini OAuth 兼容补丁正式 3939 部署回执
+
+- 用户明确授权将合理的 OAuth 补丁部署至正式版并确保 ChatGPT RA-MCP-A 继续可用；通过用户级 `remote-agent.service` 重启 3939，未更换公网 Tunnel、配对/OAuth 数据、3949/3961 QA。
+- 修改 `server/integrations/ra-mcp/authorization.mjs`：opaque `state` 4096 字节上限；缺省 scope 仅只读；拒绝未知 scope、重复参数、不匹配的受众和未经注册的 token 客户端认证方式；保留精确回调、S256、RA 六位码审批、设备即时撤销。修改 `server/integrations/ra-mcp/server.mjs`：匿名 GET `/mcp` 401 Bearer challenge，匿名 POST 发现和既有未提交 MCP 逻辑保留。
+- 正式服务 active，PID 2087776。`npm run check` PASS；公网 HTTPS 元数据 200、匿名 GET `/mcp` 401、TLS 验证通过。ChatGPT RA-MCP-A 重启后已执行 list_devices、list_agents、list_app_capabilities、get_task、read_session、read_file、create_file，以及终端开启和执行命令；签名写入回执确认，部署状态 `DEPLOY_CONFIRMED_AUTHENTICATED_MCP`。
+- 备份、原/新 SHA、原始测试、回滚操作和完整验收说明：`_shots/prod-oauth-rollout-20261126/REPORT.md`。独立 OAuth 集成 7/7 PASS；原有 RA MCP 测试 245 项中 49 项为修改前后相同的历史失败，不等于全套通过。真实 Gemini 新连接/token/工具调用仍待用户重新连接验证，400 真实根因未被确认。
+- 无 Git commit/push；若 Gemini 仍失败，需在脱敏日志证据下诊断，不放宽回调精确匹配、PKCE、资源与 scope 的安全边界。
+
+## 2026-11-26 — Gemini 实时连接脱敏诊断已启用（正式 3939）
+
+- 经用户授权，部署临时连接诊断；仅增加 allowlist 日志与连接阶段观测，未放宽 OAuth/配对/授权边界。启用 marker 位于 `~/.agent-remote/ra-mcp-connection-diagnostic.json`，截至 2026-11-26 10:28:59 CST（UTC+8），单次服务实例最多 180 条；排除已识别 ChatGPT 请求，禁止原始 token、code、state、URL、请求头值、客户端名称、参数及错误文本写入日志。
+- 隔离 OAuth/MCP 测试 7/7 PASS，确认捕获 token 200、已认证 initialize/tools/list 与脱敏字段。首次部署因 systemd 临时单元 PATH 缺 node 自动回滚；第二次使用 node 绝对路径成功，正式服务 active、PID 2239395，RA-MCP-A 已认证 list_devices/read_file/create_file/终端实测通过，部署确认已写入；正式本地无认证探针 421（Host 校验）及脱敏日志实测通过。未修改公网 Tunnel、配对/OAuth 数据、QA 端口，无 commit/push。
+- 证据、QA 测试和旧源文件备份在 `_shots/gemini-connection-trace-20261126/`；通过 `journalctl --user -u remote-agent.service --since '2026-11-26 10:13:59' --no-pager -o cat | grep -F '[ra-mcp-connection-trace]'` 查阅诊断。真实 Gemini 需用户立即重新连接，再按实际 route/status/auth/transport 分析；目前尚未确认 Gemini 原始错误根因。到期自动停止新增诊断日志（代码与过期 marker 留存），若需再次启用或清理代码，另行确认。
+
+## 2026-11-26 CST — v527 全关键交互只读性能归因
+
+- 按原 3949/9335 配对串行补测。真实新鲜稳定正文短/长各 20/20，P50/P95 为 584/822 与 1499/1940 ms，>1 秒为 0/20 与 20/20；两组签名发出均约 3 ms，出站至首包 P50 为 541 与 1469 ms。随后核对短会话进原生后台、长会话进桌面 owner，线程规模与绑定实现共同变化。三页旧历史真实增行，3/3，P50/P95 1000/1499 ms，最小页最慢。不能据此把差额归给字节、后台 thread/read 或长度本身。两个组的相同命令分层均支持回包前为主。
+- 概览热快照签名 HTTP 13/13，至应用及两帧 P50/P95 28.5/55.5 ms。首轮自然资源探针缺关联记录保留，CDP 补测实收 200。现成快照与新发现原生目录分列。当前真实空闲隔离目录仅 Codex 合格，Cursor、Devin、跨 App 及双机的新时延受阻。原发送/控制/文件/终端复用既有真实证据，场景计时不冒充原生 ACK，未新增生成、PTY 或写入。
+- v450 真实非空旧测可证旧短热有约 50 ms，但预绑定、线程和环境口径不同。v490 的 48 ms 来自空正文，v517 无精确可重建源码。精确 v514 和 v527 组件对照表明 owner/账号查询两版均存在。不能把整个变化归给新队列或声称 v517 的回归原因已认定。
+- 先在合法隔离副本用同 ID 分长桌面会话的 Relay 队列、owner、CDP/历史抓取、投影和回包，随后区分后台 writer 和真实非空 thread/read；本轮没有可安全启动的带计时独立 Relay。认证 MCP 保留旧真实 history/setting/task 长尾证据，本轮无同 scope 的 SDK 对照且不触碰当前生产 OAuth。继续暂缓设置单文件补丁原样上线，保留 normal Model 提前与直接 Fast 变慢的不同口径，以及按生命周期合并/撤销和保持原生 checked 的建议。
+- 报告、矩阵、时序、SHA 和原始样本在 _shots/v517-perf-20261126/all-key-paths-audit-20261126/ 的 AUDIT.md、results.json、TRACE-MAP.md 及 METRICS.md。本轮起始即为正式 PID 2239395 和 MCP diff 指纹 04501df9f184d9542ee5952182a876d7c5369805b2daee4915d4e21e48c71eff，前后核验一致，3949/9335、已有配对和原页面均已核对，浏览器锁释放。未改产品、未重启或部署，未操作 Gemini、benchmark 或其 QA 进程。
+
+## 2026-11-26 CST — 正式 3939 只读测速
+
+- 后续 Remote Agent 测速统一以正式 3939 和 `/home/lihe/adxr_ws/src/remote-agent` 为基准。当前可调试的 Chrome 配对页和登记均指向 3949。正式配对入口缺失，PWA 导航、分页、菜单、概览、文件、终端以及同请求服务端拆账均保留 BLOCKED。
+- RA-MCP-A 完成 26 次历史读取调用。非空分页 P50 为 Codex 544 ms（3 次有效）、Devin 1169 ms（2 次有效）。该口径为连接器总耗时。MCP 读设置会先 attach，可能保存设备选中项或改变桌面活动会话，本轮未执行。
+- 正式 PID 2239395、五项线上资产指纹及已观察浏览器标签一致。报告、分段证据、阻塞矩阵和脱敏逐次样本见 [REPORT.md](_shots/prod-perf-20261126/REPORT.md)、[results.json](_shots/prod-perf-20261126/results.json)、[samples.jsonl](_shots/prod-perf-20261126/samples.jsonl)。
+- 后续按授权重新打开 Cursor 9222 和 Devin 9223，正式 PID 2239395 已连接两者，Devin 实际进程带 `--no-proxy-server`。Chrome 9335 的正式本地来源无已存配对，PWA 测速仍待可观测的既有正式配对页。[恢复核验](_shots/prod-perf-20261126/reopened-verification.json)
+- 用户随后授权为专用 Chrome 配对一次。正式 3939 完成 140 次独立尝试、134 次有效。导航耗时主要集中在签名出站至新鲜回包，Cursor 同窗口交替切换 P50 为 1,711–1,993 ms，Codex 当前桌面线程为 1,789 ms，Devin 为 479–529 ms。六个跨 App 方向、Devin/Codex 分页、菜单、概览、文件及终端均有有效样本。Cursor 远端分页和 Codex 同 owner 短长对照仍缺合格样本，内部队列及轮询实际耗时仍缺同请求 span。隔离完整 thread/read 返回 0 turns，已排除。正式 PID/资产、原浏览器窗口与各桌面会话核验一致，自有 PTY 已关闭，私有 profile 中保留单次配对。[正式报告](_shots/prod-perf-20261126/REPORT.md) · [逐次样本](_shots/prod-perf-20261126/pwa-samples.jsonl) · [收尾核验](_shots/prod-perf-20261126/native-final-check.json)
+- 本机拆账续测复用专用配对。正式概览 42 个本地 Codex 会话，38 个空闲或完成，2 个同窗口已加载且非空。隔离同请求 P50 为队列 0.09 ms、owner 639 ms、桌面 openBound 1,143 ms，其中 roots 278 ms、账号 259 ms、正文抓取 218 ms。12/30 turns 交替打开时，正文抓取 125/165 ms，owner 790/87 ms。前置菜单重叠有一次实际排队 289 ms。Cursor/Devin 同请求 CDP 已拆账，指定 150 ms 等待在所测批次为 0。已验证本机未加载会话真实完整读取 P50 为 2.1/26.6 ms，口径独立于正式 Relay 自有 stdio。正式 PID、资产和浏览器标签复核一致，隔离数据及临时目录已清理。[续测报告](_shots/prod-perf-20261126/REPORT.md) · [内部统计](_shots/prod-perf-20261126/internal-breakdown.json) · [同请求样本](_shots/prod-perf-20261126/same-request-local.jsonl)
+
+## 2026-11-26 CST — 3939 热菜单已验证，Relay 修复候选待上线
+
+- 正式 PWA 热菜单出站 P50 从 150.6–151.3 ms 降到 15.5–16.0 ms，Cursor Model 端到端 P50/P95 为 98.9/165.1 ms，Devin Model 为 165.4/182.0 ms。冷、热共 23/24 有效，Fast 随 Model 回包。三项 PWA 脚本已在正式配对浏览器通过普通刷新和 Service Worker 预缓存。
+- 正式工作区候选实现按内容哈希缓存页面 helper、合并附着读、首屏后自动额度、原生线程权限写和活跃轮 reviewer 回执。独立真实桌面同请求中，Cursor 逻辑求值由 25/26 次降至 22/23 次，导航 P50 未改善，长目标仍有一次失败。Devin 由 14 次降至 9 次，隔离 P50 为 484/510 ms。Chromium 单次热 helper 求值由 541,436 字节降至 407 字节。
+- 当前本地 Codex app-server PID 2242408 是正式 Relay PID 2239395 的子进程。Relay 退出时会主动关闭它。本轮保留原 PID 和 MCP/OAuth，正式 Relay 候选未部署。桌面和后台首轮生成中权限持久化、正式导航提速、自动和手动额度成功率均未验收。旧后台写权限路径保留，单次桌面原生额度匹配账号并返回有效周期，耗时 10.5 秒。
+- 已恢复三种桌面活动会话、浏览器概览和锁，未重启、提交或推送。页面导出快照 SHA 和既有 MCP/OAuth diff 一致，静态检查通过。正式回环健康 200，MCP 元数据 200、匿名 401。下一次正式验收使用不依赖 3939 的本地执行链。[报告](_shots/prod-perf-codex-fix-20261126/REPORT.md) · [量化结果](_shots/prod-perf-codex-fix-20261126/results.json) · [候选回退差异](_shots/prod-perf-codex-fix-20261126/candidate.diff)
+
+## 2026-11-26 CST — 3939 第二轮候选与宿主权限阻塞
+
+- 第二轮候选在正式工作树。Cursor 和 Devin 复用已验证的同窗绑定及本次原生 context/roots。Codex 采用原生 owner 证据缓存，后台绑定移出同步桌面账号读取。后台活跃轮更新 reviewer，桌面 Full access 沿用扩展原生确认。额度读取按身份和 binding 世代校验，桌面手动与自动刷新排在当前导航后。
+- 本轮进程位于独立的 `ra-codex-round2-20261126-retry.service`。沙箱对用户 systemd 总线和 3939、9335、9222–9224 的本机 socket 返回 EPERM，正式进程预检、重启和配对浏览器验收均受阻。正式导航三项阈值、桌面和后台首轮权限、真实额度与认证 MCP 没有本轮生产验收样本。
+- 改动模块、协议、页面导出及 12 项定向夹具通过。安装版离线 stdio 实际确认三种 thread 设置 ACK/通知和无活跃轮的 `targetUnavailable`。活跃轮 schema 仅支持 reviewer 等指定字段，完整策略只用于后续轮次。额度 10.5 秒来自上轮一个正式样本。
+- 未改 page 导出快照、MCP/OAuth 差异或上轮 PWA 资产；未提交、推送、重启或改动生产账号和会话。本轮回退基线、精确增量、原始结果及分阶段记录见 [REPORT.md](_shots/prod-perf-codex-fix-round2-20261126/REPORT.md)。恢复时先确认宿主 service cgroup 内的原生进程归属，再做已授权重启与正式验收。
+
+## 2026-11-27T00:04:47.105506+00:00 — Phase4 生成复验与真实 Devin 分页
+
+- 首轮 18 项 15 PASS / 3 FAIL 原始报告保留。Codex 队列实际轮次提前完成并自动投递，后编辑拒绝属真实时间竞争。真实隔离 45 秒活跃轮次下编辑/删除同一队列 ID、原生 ACK、草稿保持、已删除消息未发送均 PASS。
+- Codex 三权限生成中实际切换并回读、Full access 原确认、原 Ask for approval 终态恢复均 PASS；不声称完整沙箱策略在当前轮即时改变。Cursor 计时命令未启动的两项 BLOCKED 保留；独立新鲜真实原生 generating/managerActive 条件复验队列及 A→B→A 导航均 PASS，保留原生用户消息 ID，生成自然结束。原失败的旧中止会话所有可能原因未穷尽；不是通过假数据覆盖。18 项实际覆盖经定向复验全部通过，新增活跃权限通过。所有 23 个自有 QA 会话清理，无错误，概览恢复。
+- Devin 旧分页失败保留。MCP 精确原生分页可读；PWA 真实请求诊断发现程序化 scrollIntoView 被 followBottom 拉回，pointerdown/点击落在 DIV。真实鼠标向上 wheel 退出跟随后点击命中 #older，historyPage 77 条、before=0，页面 120→197，原 120 ID 保留无重复，概览恢复。无需产品修补。
+- 当前正式 PID 4002894、page exports 与 HEAD 不变，预览候选仍未部署。实际 cgroup benchmark=[{"pid": 4015483, "parent": 4002894, "comm": "bash", "cwd": "/home/lihe/adxr_ws/src/humanoid_contact_benchmark"}]，浏览器锁=0。不得擅关无关 PTY 或重启中断任务。复验原始报告、探针、精确指纹及剩余项见 phase4/MAIN_ACCEPTANCE_RECEIPT.json / PROGRESS.json；禁止标 FINAL COMPLETE。
+
+## 2026-11-27T02:10:44.914925+00:00 — v530 网页发布与源码推送授权
+
+- 用户批准提交及推送当前正式分支。正式中继 3939 PID 30180，候选源码与验收指纹匹配，启动后运行源码无修改，因此不重复重启。此前 Cursor 多窗口与 Codex preview 真实验收 21/21 正例、9/9 负例、3/3 overview 已通过，未测 MCP 写/审批/新建任务及平台仍明确保留。
+- GitHub Pages gh-pages 从 65581488d89fbd0d66fea3f2ff755c441d501497 更新至 f839a0fccefc2250e467e38af3ed08646ac6b4d9，同步 9 个 v530 静态文件，全部 289 个发布资源的 Git blob 与本机一致；公网 12 个关键文件逐字节核验通过。url.json blob 保持 ed31c29fc68abfd622d0dc95307715d581192c26；既有设备配对不改。实际凭据扫描仅基本模式，不代表全面安全审计。
+- 本轮只提交已验收的产品源码、相关既有测试及交接文档；保留本地未跟踪 opencode-web.js、内部性能实施方案与忽略目录，不进入提交。不合并 master、不发布 Android/iOS 包、不 force push。
+- 发布证据：_shots/prod-full-fix-perf-arch-20261126/release-20261127/pages-receipt.json、static.log、browser-catalog.log、release-scope.json。

@@ -558,6 +558,10 @@ $('sheet').addEventListener('click', async e => {
       closeSheet();
       return send({ t: 'pickMenu', kind: 'codex-chat', label: 'Rename', name });
     }
+    // Full access requires a deliberate second confirmation before the native RPC.
+    const confirmFullAccess = currentApp === 'codex' && b.dataset.kind === 'permission'
+      && b.dataset.label === 'Full access' && !b.classList.contains('cur');
+    if (confirmFullAccess && !await ask('确定把所选 Codex 会话切换为「完全访问」？\n这允许访问网络与本机文件，并取消常规工具审批。正在生成的轮次只有审批审核方式可能立即更新，完整沙箱策略从下一轮生效。', '确认完全访问')) return;
     // Bypass Permissions lets the Agent run every tool call (commands, edits, deletes) without asking.
     if (b.dataset.kind === 'mode' && b.dataset.label === 'Bypass Permissions' && !b.classList.contains('cur')
       && !await ask('切到「Bypass Permissions」？\nAgent 之后的所有操作（运行命令、改文件、删文件）都会自动批准，不再询问你。', '切换')) return;
@@ -568,6 +572,7 @@ $('sheet').addEventListener('click', async e => {
     }
     if (!['codex-run', 'codex-chat', 'model', 'effort'].includes(b.dataset.kind)) beginSwitch(b.dataset.kind);
     return send({ t: 'pickMenu', kind: b.dataset.kind, label: b.dataset.label,
+      ...(confirmFullAccess ? { confirmFullAccess: true } : {}),
       ...(currentApp === 'codex' && b.dataset.kind === 'model' ? { name: b.dataset.modelId } : {}) });
   }
   if (b.dataset.chopen) { const diff = changeFiles.find(f => f.name === b.dataset.chopen)?.diff || ''; closeSheet(); return openFile(b.dataset.chopen, diff, true); }
@@ -774,7 +779,7 @@ async function useComputer(i) {
   authed = false;
   invalidateChatRender();
   setWindowReady(false);
-  viewSel = '';
+  setViewSelection('');
   resetSelectionProjection();
   beginChatSelection();
   currentProject = '';

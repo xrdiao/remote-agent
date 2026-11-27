@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { answerComposerQuestion, stopWindowThread, windowQueue } from './capabilities/window-actions.mjs';
-import { cdpRead } from '../cdp.mjs';
+import { cdpRead, pollUntil } from '../cdp.mjs';
 import { changeDesktopFiles, desktopUsageContext, showDesktopSettings, terminalProjectFromRoots, withDesktopFiles } from './capabilities/desktop-editor.mjs';
 import { fusionModelMenu } from './capabilities/fusion-model-menu.mjs';
 import { ConversationRef, SessionBinding } from '../session/binding.mjs';
@@ -14,6 +14,11 @@ import { rememberCursorSessionProject, storedProjectSession } from '../project-w
 
 // Phone viewers of the same window share its native menu/thought UI.
 const cursorUiReads = new Map();
+const projectPanelHidden = `(() => {
+  const workbench = document.querySelector('.monaco-workbench');
+  const panel = workbench?.querySelector('.part.auxiliarybar');
+  return !!panel && (workbench.classList.contains('noauxiliarybar') || panel.getBoundingClientRect().width === 0);
+})()`;
 
 // Implementation support; runtime availability comes from the selected view and native menus.
 export const capabilities = {
@@ -24,16 +29,52 @@ export const capabilities = {
   fork: false, extraActions: true,
 };
 
+export const navigation = {
+  threadCarrier(req) {
+    return cursorSource(req.threadId, req.project);
+  },
+
+  canReuseWindow(_req, source) {
+    return !source || source.cdp.wsUrl === this.cdp.wsUrl;
+  },
+
+  async sameWindowOptions(req, origin) {
+    const id = req.threadId.replace(/^tab:/, '');
+    const [{ trust, context }, roots] = await Promise.all([
+      this.editorCdp.evaluate(`(async () => {
+        const h = ${PAGE_SRC}, trust = h.workspaceTrustState();
+        return { trust, context: !trust.required
+          ? await h.nativeSessionInfo('cursor', ${JSON.stringify(id)}, 'context') : null };
+      })()`),
+      editorRoots(this.editorCdp, 'cursor'),
+    ]);
+    origin.assertCurrent(this);
+    const project = req.project || context?.roots[0];
+    const belongs = project?.root ? this.projectMatches(roots, project.root, project.host || '')
+      && (!context || this.projectMatches(context.roots, project.root, project.host || ''))
+      : context?.projectless && !roots.length;
+    if (!trust.required && belongs) return { context, reuseWindow: true };
+  },
+
+  async bindThreadCarrier(req, source) {
+    const context = await source.cdp.evaluate(helpersCall(`nativeSessionInfo('cursor', ${JSON.stringify(req.threadId)}, 'context')`));
+    const roots = await editorRoots(source.cdp, 'cursor'), expected = req.project || context.roots[0];
+    if (context.projectless ? !roots.length : expected && this.projectMatches(roots, expected.root, expected.host))
+      return { ...req, id: source.win.id, windowId: source.win.id, project: null };
+    return req;
+  },
+};
+
 export const adapter = {
-  async ensureProjectPanel() {
-    const hidden = await this.cdp.evaluate(`(() => {
-      const workbench = document.querySelector('.monaco-workbench');
-      const panel = workbench?.querySelector('.part.auxiliarybar');
-      return !!panel && (workbench.classList.contains('noauxiliarybar') || panel.getBoundingClientRect().width === 0);
+  async ensureProjectPanel(checkStartup = false) {
+    const { hidden, ready } = await this.cdp.evaluate(`(() => {
+      const hidden = ${projectPanelHidden};
+      return { hidden, ready: !hidden && ${checkStartup ? `!!${helpersCall('agentStartupState("cursor")')}` : 'false'} };
     })()`);
-    if (!hidden) return;
+    if (!hidden) return ready;
     await this.withFocus(() => this.key(mod('i')));
     if (!await this.waitFor('agentStartupState("cursor")', 250)) throw new Error('Cursor 会话面板尚未就绪');
+    return true;
   },
   async newChat(project = '') {
     const origin = ConversationRef.capture(this);
@@ -71,7 +112,7 @@ export const adapter = {
     if (!st) throw new Error('Cursor 项目与会话尚未就绪，请重试');
   },
 
-  async openAgent(id, title = '', { reuseWindow = false } = {}) {
+  async openAgent(id, title = '', { reuseWindow = false, context } = {}) {
     if (!id || id.length > 200) throw new Error('这条 Agent 已经不在列表里');
     const origin = ConversationRef.capture(this);
     const source = !reuseWindow && !this.fusionBinding && cursorSource(id);
@@ -87,11 +128,12 @@ export const adapter = {
     let confirmed = false;
     this.switchingThread = true;
     try {
-      await this.adapter.ensureProjectPanel.call(this);
-      if (!await this.waitFor('agentStartupState("cursor")', 250)) throw new Error('Cursor 会话面板尚未就绪');
-      await this.cdp.evaluate(`(async () => {
+      const open = () => origin.cdp.evaluate(`(async () => {
         const h = ${PAGE_SRC}, id = ${JSON.stringify(id)};
-        const info = await h.nativeSessionInfo('cursor', id, 'context');
+        if (${projectPanelHidden}) return { hidden: true };
+        h.nativeSessionInfo('cursor', id);
+        if (!window.__remoteAgentCursorServices) return { starting: true };
+        const info = ${JSON.stringify(context?.threadId === id ? context : null)} ?? await h.nativeSessionInfo('cursor', id, 'context');
         if (!window.__remoteAgentCursorServices) throw new Error('Cursor 原生会话目录尚未就绪');
         if (!info) throw new Error('Cursor 原生目录中没有这个会话');
         const peek = await window.__remoteAgentCursorServices.data.composerDataHandleManager.peekComposerData(id);
@@ -99,21 +141,27 @@ export const adapter = {
         if (!data) throw new Error('Cursor 原生目录中没有这个会话');
         if (data.isArchived) throw new Error('这个 Cursor 会话已归档');
         if (h.activeThread() !== id) await window.__remoteAgentCursorServices.composer.openComposer(id);
+        return { info, ready: h.cursorChatReady(id) };
       })()`);
-      for (let i = 0; i <= 12; i++) {
-        if (await this.cdp.evaluate(helpersCall(`cursorChatReady(${JSON.stringify(id)})`))) {
-          origin.assertCurrent(this);
-          cdpRead.getStore()?.throwIfAborted();
-          if (this.threadId !== id) this.clearViewState();
-          SessionBinding.commit(this, { threadId: id, selectedThread: id });
-          await this.currentRoots();
-          this.publishThread('已切换会话');
-          confirmed = true;
-          return;
-        }
-        if (i < 12) await new Promise(r => setTimeout(r, 150));
+      let opened = await open();
+      if (opened.hidden || opened.starting) {
+        if (opened.hidden) await this.withFocus(() => this.key(mod('i')));
+        if (!await this.waitFor('agentStartupState("cursor")', 250)) throw new Error('Cursor 会话面板尚未就绪');
+        origin.assertCurrent(this);
+        opened = await open();
+        if (!opened.info) throw new Error('Cursor 会话面板尚未就绪');
       }
-      throw new Error('会话切换没有生效');
+      const ready = await pollUntil(i => i === 0 && opened.ready
+        || origin.cdp.evaluate(helpersCall(`cursorChatReady(${JSON.stringify(id)})`)),
+      { timeout: 1800, delays: [25, 35, 50, 75, 100, 150] });
+      if (!ready) throw new Error('会话切换没有生效');
+      origin.assertCurrent(this);
+      cdpRead.getStore()?.throwIfAborted();
+      if (this.threadId !== id) this.clearViewState();
+      SessionBinding.commit(this, { threadId: id, selectedThread: id });
+      await this.currentRoots(cursorContextRoots(id, opened.info));
+      this.publishThread('已切换会话');
+      confirmed = true;
     } finally {
       this.switchingThread = switching;
       this.lastChatAt = 0;
@@ -130,14 +178,12 @@ export const adapter = {
     emit({ list: list || [], loading: list === null });
   },
 
-  async currentRoots() {
+  async currentRoots(confirmedRoots = null) {
+    // The exact native context was verified before this binding was committed.
+    if (this.threadId && Array.isArray(confirmedRoots)) return confirmedRoots;
     if (this.threadId) {
       const context = await cursorThreadContext(this.cdp, this.threadId);
-      if (!context.roots.length && !context.projectless) {
-        const saved = storedProjectSession('cursor', this.threadId);
-        if (saved?.workspaceConfirmed) return [{ root: saved.workspace, host: '' }];
-      }
-      return context.roots.filter(root => !root.host).map(root => ({ ...root, root: localFilePath(root.root) }));
+      return cursorContextRoots(this.threadId, context);
     }
     if (this.winTitle === 'Cursor Agents') {
       const workspace = await this.cdp.evaluate(helpersCall('cursorWorkspace()'));
@@ -211,6 +257,14 @@ export const adapter = {
 
 function cursorThreadContext(cdp, id) {
   return cdp.evaluate(helpersCall(`nativeSessionInfo('cursor', ${JSON.stringify(id)}, 'context')`));
+}
+
+function cursorContextRoots(id, context) {
+  if (!context.roots.length && !context.projectless) {
+    const saved = storedProjectSession('cursor', id);
+    if (saved?.workspaceConfirmed) return [{ root: saved.workspace, host: '' }];
+  }
+  return context.roots.filter(root => !root.host).map(root => ({ ...root, root: localFilePath(root.root) }));
 }
 
 export const methods = {

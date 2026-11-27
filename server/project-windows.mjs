@@ -13,6 +13,7 @@ import { helpersCall } from './page/build.mjs';
 import { fusionWindowInUse, allFusionRuns } from './fusion/state.mjs';
 import { fusionViewers } from './fusion/presenter.mjs';
 import { windowLeased, leaseWindow } from './window-use.mjs';
+import { nativeTargets, nativeWindowAt, withNativeWindowRead } from './native-windows.mjs';
 
 const file = path.join(DATA_DIR, 'project-windows.json');
 const saved = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : { idleMinutes: 30, enabled: true, windows: {}, sessions: {} };
@@ -195,12 +196,9 @@ function held(row) {
 export async function probeProjectWindow(row, page, scan = null) {
   const reason = held(row);
   if (reason) return { reason };
-  const editor = new Cdp(page.webSocketDebuggerUrl);
-  let chat;
   try {
-    await editor.connect();
     const probe = helpersCall('projectWindowProbe()');
-    const state = await editor.evaluate(probe);
+    const state = await withNativeWindowRead(page.webSocketDebuggerUrl, row.app, page.id, cdp => cdp.evaluate(probe));
     if (!state?.ready) return { reason: '窗口尚未就绪或状态无法确认' };
     let focused = state.focused;
     if (process.platform === 'linux' && process.env.DISPLAY) {
@@ -211,8 +209,7 @@ export async function probeProjectWindow(row, page, scan = null) {
     if (row.app === 'codex') {
       const native = (await (scan ? scan.codex ||= codexWindows(CODEX_CDP_URL) : codexWindows(CODEX_CDP_URL))).find(p => p.pageId === page.id);
       if (!native?.chatWs) return { reason: 'Agent 尚未就绪' };
-      chat = new Cdp(native.chatWs); await chat.connect();
-      agent = await chat.evaluate(probe);
+      agent = await withNativeWindowRead(native.chatWs, row.app, page.id, cdp => cdp.evaluate(probe));
     }
     if (!agent?.agentKnown || agent.agentBusy) return { reason: 'Agent 正在运行或状态无法确认' };
     const processKey = pathKey(row.root);
@@ -221,7 +218,6 @@ export async function probeProjectWindow(row, page, scan = null) {
     if (!processes || processes.length) return { reason: processes ? '项目进程或后台命令仍在运行' : '无法确认后台进程状态' };
     return { idle: true, activity: Math.max(state.lastInput || 0, agent.lastInput || 0) };
   } catch { return { reason: '状态读取失败，保留窗口' }; }
-  finally { chat?.close(); editor.close(); }
 }
 export async function nativeCloseProjectWindow(page) {
   const cdp = new Cdp(page.webSocketDebuggerUrl);
@@ -234,69 +230,127 @@ export async function nativeCloseProjectWindow(page) {
     throw new Error('无法确认系统关闭窗口入口，已保留');
   } finally { cdp.close(); }
 }
-export async function scanProjectWindows(closeIdle = true) {
+function readProjectWindowList(ed) {
+  return fetch(ed.url + '/json/list', { signal: AbortSignal.timeout(2000) })
+    .then(res => res.json()).then(pages => pages.filter(page => page.type === 'page' && /workbench/.test(page.url)));
+}
+
+function foregroundProjectWindow(ed, page) {
+  const editor = nativeWindowAt(page.webSocketDebuggerUrl);
+  if (editor?.foregroundReads) return editor;
+  const ws = nativeTargets().find(target => target.app === ed.app && target.pageId === page.id
+    && target.editorWs === page.webSocketDebuggerUrl)?.ws;
+  const chat = ws && nativeWindowAt(ws);
+  if (chat?.foregroundReads) return chat;
+}
+
+const scanningWindows = new Set();
+// A delayed automatic scan can run concurrently with another window scan.
+// Serialize the actual close decision per app, including a fresh survivor
+// check, so two delayed scans cannot both close each other's last survivor.
+const appCloseScans = new Map();
+const unconfirmedCloses = new Map();
+async function serializeProjectWindowClose(app, action) {
+  const previous = appCloseScans.get(app) || Promise.resolve();
+  const current = previous.catch(() => {}).then(action);
+  appCloseScans.set(app, current);
+  try { return await current; }
+  finally { if (appCloseScans.get(app) === current) appCloseScans.delete(app); }
+}
+async function scanProjectWindow(ed, page, pages, closeIdle, scan, background) {
+  const defer = () => {
+    const source = background && foregroundProjectWindow(ed, page);
+    if (!source) return false;
+    source.deferBackgroundRead('project-window-scan', async () => {
+      const current = await readProjectWindowList(ed);
+      const exact = current.find(item => item.id === page.id && item.webSocketDebuggerUrl === page.webSocketDebuggerUrl);
+      if (exact) {
+        await scanProjectWindow(ed, exact, current, closeIdle, { processes: new Map(), codex: null }, true);
+        persist();
+      }
+    }, null).catch(error => console.log('[window cleanup]', error.message));
+    return true;
+  };
+  if (defer()) return;
+  const k = key(ed.app, page.id);
+  if (scanningWindows.has(k)) return;
+  scanningWindows.add(k);
+  try {
+    const readRoots = () => withNativeWindowRead(page.webSocketDebuggerUrl, ed.app, page.id, cdp => editorRoots(cdp, ed.app));
+    if (!saved.windows[k]) {
+      try {
+        const roots = await readRoots();
+        if (roots.length !== 1 || roots[0].host) return;
+        saved.windows[k] = { app: ed.app, id: page.id, root: roots[0].root, title: page.title, lastUsed: Date.now(), owned: false };
+      } catch { return; }
+    }
+    const row = saved.windows[k];
+    row.closed = false;
+    if (IS_WIN) { row.reason = unsupportedReason; return; }
+    if (!row.owned || !closeIdle || !saved.enabled) return;
+    const matchesRoot = roots => roots.length === 1 && !roots[0].host && samePath(roots[0].root, row.root);
+    if (!matchesRoot(await readRoots())) {
+      row.owned = false; row.reason = '项目已在电脑端变化，请重新纳入管理'; return;
+    }
+    const state = await probeProjectWindow(row, page, scan);
+    row.reason = state.reason || '空闲';
+    if (!state.idle) { row.lastUsed = Date.now(); return; }
+    row.lastUsed = Math.max(row.lastUsed, state.activity);
+    if (Date.now() - row.lastUsed < saved.idleMinutes * 60000) return;
+    return await serializeProjectWindowClose(ed.app, async () => {
+      if (defer() || !saved.enabled || !row.owned || held(row)
+          || Date.now() - row.lastUsed < saved.idleMinutes * 60000) return;
+      // The previous scan may already have removed another window. Do not
+      // count any survivor from the earlier scan's page list.
+      const livePages = await readProjectWindowList(ed);
+      if (!livePages.some(p => p.id === page.id && p.webSocketDebuggerUrl === page.webSocketDebuggerUrl)) return;
+      let pending = unconfirmedCloses.get(ed.app);
+      if (!pending) unconfirmedCloses.set(ed.app, pending = new Map());
+      for (const [id, url] of pending)
+        if (!livePages.some(p => p.id === id && p.webSocketDebuggerUrl === url)) pending.delete(id);
+      if (pending.has(page.id)) return;
+      let survivors = 0;
+      const codex = ed.app === 'codex' ? await codexWindows(CODEX_CDP_URL) : null;
+      for (const other of livePages.filter(p => p.id !== page.id && !pending.has(p.id) && !saved.windows[key(ed.app, p.id)]?.closed)) {
+        const chatWs = codex?.find(p => p.pageId === other.id)?.chatWs;
+        if (codex && !chatWs || background && foregroundProjectWindow(ed, other)) continue;
+        const state = await withNativeWindowRead(chatWs || other.webSocketDebuggerUrl, ed.app, other.id,
+          cdp => cdp.evaluate(helpersCall('projectWindowProbe()')));
+        if (state?.ready && state.agentKnown) survivors++;
+      }
+      if (!survivors) { row.reason = '保留最后一个可用窗口'; return; }
+      if (defer() || !matchesRoot(await readRoots())) return;
+      const check = await probeProjectWindow(row, page);
+      if (!check.idle || held(row) || check.activity > row.lastUsed || defer()
+          || !saved.enabled || !row.owned || Date.now() - row.lastUsed < saved.idleMinutes * 60000) return;
+      const release = leaseWindow(row.app, row.id, row, true);
+      // If closure is unconfirmed, don't count this target as a survivor of
+      // the next close, and don't submit another close to the same target.
+      pending.set(page.id, page.webSocketDebuggerUrl);
+      try { await nativeCloseProjectWindow(page); }
+      catch (error) { row.reason = error.message; return; }
+      finally { release(); }
+      await new Promise(resolve => setTimeout(resolve, 200));
+      const current = await readProjectWindowList(ed);
+      row.closed = !current.some(p => p.id === page.id && p.webSocketDebuggerUrl === page.webSocketDebuggerUrl);
+      if (row.closed) pending.delete(page.id);
+      else row.reason = '原生关闭未完成';
+    });
+  } finally { scanningWindows.delete(k); }
+}
+
+export async function scanProjectWindows(closeIdle = true, background = false) {
   if (scanning) return;
   scanning = true;
   const scan = { processes: new Map(), codex: null };
   try {
     for (const ed of EDITORS) {
       let pages;
-      try { pages = (await (await fetch(ed.url + '/json/list', { signal: AbortSignal.timeout(2000) })).json()).filter(p => p.type === 'page' && /workbench/.test(p.url)); }
+      try { pages = await readProjectWindowList(ed); }
       catch { continue; }
       const ids = new Set(pages.map(p => key(ed.app, p.id)));
       for (const [k, row] of Object.entries(saved.windows)) if (row.app === ed.app && !ids.has(k)) row.closed = true;
-      for (const page of pages) {
-        const k = key(ed.app, page.id);
-        if (!saved.windows[k]) {
-          const cdp = new Cdp(page.webSocketDebuggerUrl);
-          try {
-            await cdp.connect();
-            const roots = await editorRoots(cdp, ed.app);
-            if (roots.length !== 1 || roots[0].host) continue;
-            saved.windows[k] = { app: ed.app, id: page.id, root: roots[0].root, title: page.title, lastUsed: Date.now(), owned: false };
-          } catch { continue; } finally { cdp.close(); }
-        }
-        const row = saved.windows[k];
-        row.closed = false;
-        if (IS_WIN) { row.reason = unsupportedReason; continue; }
-        if (!row.owned || !closeIdle || !saved.enabled) continue;
-        const editor = new Cdp(page.webSocketDebuggerUrl);
-        try {
-          await editor.connect();
-          const roots = await editorRoots(editor, row.app);
-          if (roots.length !== 1 || roots[0].host || !samePath(roots[0].root, row.root)) {
-            row.owned = false; row.reason = '项目已在电脑端变化，请重新纳入管理'; continue;
-          }
-        } finally { editor.close(); }
-        const state = await probeProjectWindow(row, page, scan);
-        row.reason = state.reason || '空闲';
-        if (!state.idle) { row.lastUsed = Date.now(); continue; }
-        row.lastUsed = Math.max(row.lastUsed, state.activity);
-        if (Date.now() - row.lastUsed < saved.idleMinutes * 60000) continue;
-        // Count usable survivors and inspect this window again immediately before closing it.
-        let survivors = 0;
-        const codex = ed.app === 'codex' ? await codexWindows(CODEX_CDP_URL) : null;
-        for (const other of pages.filter(p => p.id !== page.id && !saved.windows[key(ed.app, p.id)]?.closed)) {
-          const chatWs = codex?.find(p => p.pageId === other.id)?.chatWs;
-          if (codex && !chatWs) continue;
-          const cdp = new Cdp(chatWs || other.webSocketDebuggerUrl);
-          try { await cdp.connect(); const state = await cdp.evaluate(helpersCall('projectWindowProbe()')); if (state?.ready && state.agentKnown) survivors++; }
-          finally { cdp.close(); }
-        }
-        if (!survivors) { row.reason = '保留最后一个可用窗口'; continue; }
-        const check = await probeProjectWindow(row, page);
-        if (!check.idle || held(row) || check.activity > row.lastUsed) {
-          continue;
-        }
-        const release = leaseWindow(row.app, row.id, row, true);
-        try { await nativeCloseProjectWindow(page); }
-        catch (error) { row.reason = error.message; continue; }
-        finally { release(); }
-        await new Promise(resolve => setTimeout(resolve, 200));
-        const current = await (await fetch(ed.url + '/json/list', { signal: AbortSignal.timeout(5000) })).json();
-        row.closed = !current.some(p => p.id === page.id);
-        if (!row.closed) row.reason = '原生关闭未完成';
-      }
+      for (const page of pages) await scanProjectWindow(ed, page, pages, closeIdle, scan, background);
     }
     persist();
   } finally { scanning = false; }
@@ -319,7 +373,7 @@ export function projectWindowSettings(change) {
   return { supported: !IS_WIN, reason: IS_WIN ? unsupportedReason : '', enabled: !IS_WIN && saved.enabled, idleMinutes: saved.idleMinutes, windows: Object.entries(saved.windows).filter(([, row]) => !row.closed).map(([id, row]) => ({ ...row, key: id })) };
 }
 export function startProjectWindowCleanup() {
-  const timer = setInterval(() => scanProjectWindows().catch(error => console.log('[window cleanup]', error.message)), 60000);
+  const timer = setInterval(() => scanProjectWindows(true, true).catch(error => console.log('[window cleanup]', error.message)), 60000);
   timer.unref();
-  scanProjectWindows(false).catch(() => {});
+  scanProjectWindows(false, true).catch(() => {});
 }

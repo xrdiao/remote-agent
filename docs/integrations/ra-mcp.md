@@ -35,18 +35,26 @@ Quick Tunnel 地址可能随隧道重建改变。长期使用需要稳定的 HTT
 1. 在目标电脑启动对应环境的 RA 配对流程。A 的本次 QA 可使用 `_shots/ra-mcp-20261124/pair-chatgpt.sh`，应先核对脚本指向 QA 环境。
 2. 在 RA OAuth 页面输入该电脑生成的完整手动配对码，不将配对码发送到聊天或写入验收报告。
 3. 核对 OAuth 页面与电脑授权窗口的六位确认码、客户端名称及目标环境，再批准本次配对。过期后重新生成配对请求。
-4. 客户端连接完成后，实际调用 `list_devices` 和 `list_app_capabilities`，核对电脑身份、可用应用和项目范围。
+4. 客户端连接完成后，通过 `ra_read` 调用 `list_devices` 和 `list_app_capabilities`，核对电脑身份、可用应用和项目范围。
 5. 在已授权的测试项目中验证需要的读取与控制操作。工具发现成功、OAuth 成功、原生应用完成任务是不同的验收项。
 
 匿名 MCP 初始化与工具发现只披露协议和工具定义，不能读取设备、会话或文件数据。执行工具必须经过配对授权与对应 scope 检查。读权限不能调用写入、发送、审批或取消操作；有副作用的工具不得伪装为只读工具以绕过客户端限制。
 
-已有连接需要更新工具定义时，保留其配对身份，按客户端当前支持的方式刷新或更新连接，并实际检查新增工具是否已加载。服务器新增 schema 不等于客户端已经可调用。
+该接口版本要求重新完成 OAuth 授权。旧 access、refresh token 和待换取的授权码失效。客户端仍使用同一 `/mcp` 资源，原设备配对可由现有设备管理入口管理和撤销。
+
+## 双工具接口
+
+`ra_read` 包含 16 个只读动作和 `describe`。具有控制 scope 的客户端也可调用 `ra_control` 的 15 个控制动作。匿名发现显示两项 schema。只读 scope 仅列 `ra_read`。请求示例为 `ra_read({action:"describe",params:{action:"submit_task"}})`。省略 `params.action` 列出动作签名，指定时返回该动作完整的参数 schema。
+
+`computer_id` 标识运行 Relay 的电脑，`device_id` 标识当前 OAuth 绑定的配对设备。`list_devices` 原有的 `id` 仍是电脑 ID，能力和操作回执原有的 `device` 仍是配对设备 ID。
+
+经现有配对授权的 Codex 后台会话可在首个 MCP 请求时连接本机 app-server。若桌面正在持有该线程，后台入口返回 `codex_backend_native_owner`，应通过授权目录中的桌面绑定访问。手机专属会话仍由原设备授权名单约束。
 
 ## 任务级工作流
 
-当前接口提供 31 个工具，保留原有会话、文件和终端操作，并提供任务级接口：
+下表中的名称用作 `action`，原参数放在 `params`：
 
-| 用途 | 工具 |
+| 用途 | 动作 |
 | --- | --- |
 | 发现真实能力 | `list_app_capabilities` |
 | 创建并立即执行任务 | `submit_task` |
@@ -62,11 +70,13 @@ Quick Tunnel 地址可能随隧道重建改变。长期使用需要稳定的 HTT
 推荐流程：
 
 1. 调用 `list_app_capabilities`，根据实际原生服务、会话和动作能力选择应用。安装了应用、发现窗口、可执行动作与已经验收通过不能互相替代。
-2. 对已授权的完整开发任务，优先调用 `submit_task(app, project_path, prompt, operation_id, ...)`。在 prompt 中明确目标、项目边界、限制和验收标准。
-3. 需要复用会话时，提供发现结果中的精确 `window_id` 与 `thread_id`；需要创建会话时，先确认该应用当前 `create_session` 可用。不能概括为“只有 OpenCode 可以创建”，也不能假定所有运行中的原生窗口都支持创建。
-4. 调用 `get_task` 查询原生进展，以 `read_task_output` 读取结果。返回 `ACKNOWLEDGED` 或 `RUNNING` 只表示已提交；完成后仍需核对真实文件、diff、任务输出及必要测试。
+2. 对已授权的完整开发任务，优先调用 `ra_control({action:"submit_task",params:{app,project_path,prompt,client_request_id}})`。在 prompt 中明确目标、项目边界、限制和验收标准。
+3. 也可提供发现结果中的精确 `window_id` 与 `thread_id`。省略两者时，默认只自动复用同项目中唯一安全的空闲会话。多个候选返回可选绑定，零候选返回 `no_reusable_session`。可传同设备的 `continue_task_id` 精确指定继续的会话。明确要求新建时传 `session_policy: "new"`，并确认对应原生应用支持创建。
+4. 用 `ra_read` 的 `get_task` 查询进展，`wait_ms` 可选，范围 0–25000。原生等待用户决策和终态会提前返回。以 `read_task_output` 读取结果。返回 `ACKNOWLEDGED` 或 `RUNNING` 只表示已提交；完成后仍需核对真实文件、diff、任务输出及必要测试。
 5. 原生等待权限或问题时，读取当前结构化 pending request，仅对已授权的确切任务与 request ID 使用 `approve_task`。动作结果和原生状态需要一致。
 6. 仅在需要诊断、验证或直接操作文件时使用低层文件与终端接口，避免把原生 Agent 已能完成的完整任务拆回大量上层命令。
+
+`list_sessions` 保留无参调用和 `sessions` 数组。默认按 Agent 轮流取经过授权的本机会话，每个 Agent 内按窗口和会话身份稳定排序。可用 `app` 仅看一个 Agent，`limit` 为 1–150，省略时为 150。使用相同配对、`app` 和 `limit`，将上一页的 `next_cursor` 原样传作 `cursor`。`next_cursor: null` 表示读完。授权范围内的目录身份变化时会返回 `session_cursor_stale`，请从第一页重新遍历。
 
 Codex、Cursor、Devin 的 `read_session` 返回所选会话的结构化 `messages`，按原生顺序从旧到新排列，每条含 `id`、`role`（`user`、`assistant` 或 `status`）和 `text`。单页最多 30 条，可传 `limit` 缩小页面。将 `next_before` 原样传给同一会话的 `before` 读取更早一页。游标所指消息离开近期窗口时，重新读取第一页。
 
@@ -76,13 +86,17 @@ Codex、Cursor、Devin 的 `read_session` 返回所选会话的结构化 `messag
 
 Cursor/Devin 的原生队列没有提供可持久关联晋升后消息的回执，因此任务接口只接受 `idle`；生成中通过 `send_message` 调用同一手机原生队列能力，返回实际队列回执，不冒充任务完成。Codex 任务支持原生消息 ID 绑定的 Queue/Steer。
 
+Codex 桌面提交回执未确认时，`get_task` 可以用同一任务已取得的原生消息 ID 对账。只在原生记录明确确认同一线程与轮次后更新任务状态。原任务仍在运行时保留占用，原生终态得到确认后释放占用。缺少原生消息 ID 时保持 `UNKNOWN`；原操作回执保留，查询不会再次发送。
+
 Model/Effort/Fast 从手机同一菜单读取真实候选，选择后再次读取确认。设置回执只保证后续提交采用该会话设置，不能改变已经执行中的轮次，也不修改全局默认配置。会话管理仅提供手机原生概览返回的动作。
 
 排队项操作以原生队列回读的最新 ID 为准；部分 Codex 桌面版本编辑时会生成新 ID，并由原生保留顺序和草稿。任务 prompt 保持不可变，编辑原生队列不等于修改原任务。`cancel_task` 只中断可证明归属的当前已接纳轮次；尚未晋升的原生排队项用 `queue_action` 的 `remove` 删除，不能通过 Stop 队头代替。
 
 ### 幂等、超时与结果未知
 
-每个不同操作使用唯一 `operation_id`；同一操作的网络重传沿用原 ID。使用 `operation_status` 查询持久回执。
+控制动作可显式提供 `operation_id`。省略时由服务端生成并返回原操作 ID。网络重传沿用同一显式 ID，或在首次调用时提供稳定的 `client_request_id`。服务端按客户端、设备和动作持久保存请求 ID 与操作 ID 的对应关系。使用 `operation_status` 查询持久回执。
+
+同一 ID 携带不同参数时返回 MCP 工具错误 `isError: true`，业务码 `operation_id_conflict` 同时包含在 `structuredContent.error` 和兼容的 JSON 文本中。原操作与回执仍可用。上层客户端若只显示通用错误，可查询原操作 ID 核对回执。
 
 `UNKNOWN` 表示副作用尚不能确认，不表示没有执行。不能换新 ID 重发或另建同等任务。先对照任务和原生状态；只有匹配原任务、会话、消息及原生 turn 的证据才能收敛状态。没有足够证据时保留未知，不伪造成功或失败。
 

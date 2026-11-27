@@ -3,6 +3,7 @@ import { runAdapterMethod } from '../apps/index.mjs';
 import { PAGE_SRC, helpersCall } from '../page/build.mjs';
 import { appPlans } from './primitives.mjs';
 import { nativeWindow } from '../native-windows.mjs';
+import { ConversationRef } from '../session/binding.mjs';
 
 export const methods = {
   refreshModelChat() {
@@ -95,11 +96,11 @@ export const methods = {
   },
   async pressControl(name) {
     if (this.app === 'codex' && name === 'permission') {
-      const thread = this.threadId || '';
-      if (thread && await this.cdp.evaluate(helpersCall('codexThread()')) !== thread && !await this.selectCodexThread(thread))
-        throw new Error('当前窗口尚未打开所选 Codex 会话');
+      const binding = await this.codexPermissionBinding();
+      const thread = binding.threadId || '';
       const target = `codexButtonPoint('permission', ${JSON.stringify(thread)})`;
       const pos = await this.cdp.evaluate(helpersCall(target)) || await this.waitFor(target, 50);
+      binding.assertCurrent(this);
       if (!pos) throw new Error('Codex 原生权限菜单尚未就绪，请重试');
       if (!pos.open) await this.tapCss(pos.x, pos.y);
       return;
@@ -131,6 +132,7 @@ export const methods = {
       return this.readCursorMenu(kind, requestId);
     if (this.app === 'codex' && (kind === 'model' || kind === 'effort' || kind === 'fast'))
       return runAdapterMethod(this, 'readModelMenu', kind, requestId);
+    if (this.app === 'codex' && kind === 'permission' && await runAdapterMethod(this, 'readPermissionMenu', requestId)) return;
     const sel = this.sel;
     if (kind === 'effort') {
       let items = await this.cdp.evaluate(helpersCall('effortItems(true)'));
@@ -262,12 +264,16 @@ export const methods = {
     this.emit({ t: 'fastState', sel: this.selectionKey(), ...state });
     if (effort) this.emit({ t: 'menu', kind: 'effort', ...effort, sel: this.selectionKey() });
   },
-  async pickMenu(kind, label, name) {
+  async pickMenu(kind, label, name, confirmedFullAccess = false) {
     if (this.app === 'devin' && kind === 'mode') return this.pickWindowsDevinMode(label);
     if (this.app === 'cursor' && (kind === 'model' || kind === 'effort' || kind === 'mode' || kind === 'fast'))
       return this.withCursorUiRead(() => this.pickCursorMenu(kind, label));
     if (this.app === 'codex' && (kind === 'model' || kind === 'effort' || kind === 'fast'))
       return runAdapterMethod(this, 'pickModelSetting', kind, label, name);
+    if (this.app === 'codex' && kind === 'permission') {
+      const result = await runAdapterMethod(this, 'pickPermissionSetting', label, confirmedFullAccess);
+      if (result) return result?.pending ? result : undefined;
+    }
     if (kind === 'fast') {
       const on = label === 'on';
       if (!await this.cdp.evaluate(helpersCall(`pickFast(${on})`))) {
@@ -301,6 +307,7 @@ export const methods = {
     if (kind === 'codex-chat') return this.codexChatPick(String(label || ''), name ? String(name).slice(0, 80) : '');
     if (kind === 'model' && await runAdapterMethod(this, 'pickModelMenu', label)) return;
     await this.pressControl(kind);
+    const permission = this.app === 'codex' && kind === 'permission' ? ConversationRef.capture(this) : null;
     if (kind === 'model') {
       for (let i = 0; i < 8; i++) {
         if (await this.cdp.evaluate(helpersCall('menuItems("model").length'))) break;
@@ -318,6 +325,7 @@ export const methods = {
       await this.closeMenus();
       throw new Error(`没找到选项：${label}`);
     }
+    permission?.assertCurrent(this);
     await this.tapCss(pos.x, pos.y);
     if (kind === 'model') {
       await this.waitModel(label);
@@ -326,12 +334,21 @@ export const methods = {
       this.refreshModelChat().catch(() => {});
       return;
     }
-    let pending = false;
     if (this.app === 'codex' && kind === 'permission') {
-      await new Promise(r => setTimeout(r, 150));
-      pending = (await this.cdp.evaluate(helpersCall('codexRequestData()'))).length > 0;
+      const check = `codexThread() === ${JSON.stringify(permission.threadId || '')} && (
+        ${label === 'Full access' ? `nativeSessionInfo('codex', ${JSON.stringify(permission.threadId || '')}, 'permissionConfirmation') ? "confirm" :` : ''}
+        extract()?.permission === ${JSON.stringify(label)} ? "saved" : null)`;
+      const result = await this.cdp.evaluate(helpersCall(check)) || await this.waitFor(check);
+      permission.assertCurrent(this);
+      if (result === 'confirm') {
+        this.emit({ t: 'status', ok: true, msg: '请确认 Codex 原生 Full access 提示' });
+        this.refreshSoon(500);
+        return { pending: true };
+      }
+      if (result !== 'saved')
+        throw new Error('Codex 尚未确认权限设置，请重新读取');
     }
-    this.emit({ t: 'status', ok: true, msg: pending ? '请在下方确认权限变更' : `已切换到 ${label}` });
+    this.emit({ t: 'status', ok: true, msg: `已切换到 ${label}` });
     this.refreshSoon(500);
   }
 };

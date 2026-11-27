@@ -1,6 +1,6 @@
 /* ---------- bottom sheet ---------- */
 let sheetKind = null;
-let menuRefreshTimer = 0;
+let menuRefreshFrame = 0;
 let menuPending = null, menuPickRequest = 0, modelSwitchRequest = null;
 let projectEntry = null;
 function finishModelPick(m) {
@@ -11,8 +11,10 @@ function finishModelPick(m) {
     $('sheet').querySelectorAll('[data-fast], [data-speed-id]').forEach(button => { button.disabled = false; button.removeAttribute('aria-busy'); button.querySelector('[data-fast-pending]')?.remove(); });
     return;
   }
-  if (m.kind === 'permission' && currentApp === 'opencode') {
+  if (m.kind === 'permission' && ['codex', 'opencode'].includes(currentApp)) {
     menuCache.delete(menuCacheKey('permission'));
+    if (m.ok && currentApp === 'codex' && lastChat?.thread === viewSel.split('|').at(-1))
+      queueChatRender({ ...lastChat, permission: m.label }, false, viewSel);
     if (m.ok) status(`已切换到 ${m.label}`);
     return;
   }
@@ -182,7 +184,7 @@ function openSheet(kind, content) {
   if (kind !== 'agents') pendingProjectReveal = null;
   if (sheetKind === 'devices' && kind !== 'devices') deviceInviteGeneration++;
   cancelDocs();
-  if (kind !== 'menu') { clearTimeout(menuRefreshTimer); menuPending = null; }
+  if (kind !== 'menu') { cancelAnimationFrame(menuRefreshFrame); menuPending = null; }
   if (kind !== 'devices') clearTimeout(deviceListTimer);
   const leavingVoice = sheetKind === 'local-voice' && kind !== 'local-voice';
   const sheet = $('sheet');
@@ -225,7 +227,7 @@ function closeSheet() {
   agentActionTarget = null;
   pendingProjectReveal = null;
   cancelDocs();
-  clearTimeout(menuRefreshTimer);
+  cancelAnimationFrame(menuRefreshFrame);
   clearTimeout(deviceListTimer);
   const leavingVoice = sheetKind === 'local-voice';
   if (sheetKind === 'settings') send({ t: 'closeDesktopSettings' });
@@ -457,7 +459,7 @@ function paintSurface() {
 function startEditor() {
   const state = capabilityState('editor');
   if (!state.available) return status(state.reason, false);
-  clearTimeout(menuRefreshTimer);
+  cancelAnimationFrame(menuRefreshFrame);
   return openComputerFiles(currentComputer().id, { current: true });
 }
 $('pickEditor').onclick = startEditor;
@@ -760,7 +762,7 @@ const modeDesc = it => (I18N.lang === 'zh' && MODE_ZH[it.label]) || it.desc;
 const menuCachePrefix = () => `${currentApp === 'codex' ? `${currentComputer()?.key || ''}|${connGen}|` : ''}${currentApp}|${viewSel}|`;
 const menuCacheKey = kind => `${menuCachePrefix()}${kind}`;
 function requestMenu(kind, loadingMsg) {
-  clearTimeout(menuRefreshTimer);
+  cancelAnimationFrame(menuRefreshFrame);
   if (kind === 'model' || kind === 'effort') {
     const state = capabilityState(kind);
     if (!state.available) return showMenuError(kind, state.reason);
@@ -772,7 +774,7 @@ function requestMenu(kind, loadingMsg) {
     menuRequest++;
     if (currentApp === 'codex') menuPending = null;
     showMenu(kind, cached.items, cached.max, cached.fusion, cached.fast, cached.model, !localNavigation, cached.pricing);
-    if (!localNavigation) menuRefreshTimer = setTimeout(() => send({ t: 'openMenu', kind }), 150);
+    if (!localNavigation) menuRefreshFrame = requestAnimationFrame(() => send({ t: 'openMenu', kind }));
   } else {
     status(loadingMsg);
     menuSheetKind = kind;
@@ -1218,7 +1220,7 @@ function renderQuota(m) {
   $('quotaMeters').classList.toggle('devinLimits', currentApp === 'devin' && bars.length > 1);
   const when = m.updated ? new Date(m.updated).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
   if (m.missing || !bars.length) {
-    $('quotaMeters').title = (m.missing ? '没有额度数据' : '没有额度指标') + (when ? ` · 更新于 ${when}` : '');
+    $('quotaMeters').title = (m.detail || (m.missing ? '没有额度数据' : '没有额度指标')) + (when ? ` · 更新于 ${when}` : '');
     $('quotaMeters').innerHTML = `<button class="meter" type="button"><span class="track"></span><span class="meterText"><span class="meterLabel">额度</span><b>未获取</b></span></button>`;
     $('quotaMeters').querySelector('button').onclick = () => showUsageDetails('quota');
     return;

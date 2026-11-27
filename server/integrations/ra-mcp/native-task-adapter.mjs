@@ -7,6 +7,7 @@ import { SessionBinding } from '../../session/binding.mjs';
 import { nativeWindow, nativeWindowAt } from '../../native-windows.mjs';
 import { correlateDevinCurrentReply, matchesDevinNativePrompt } from './devin-receipt.mjs';
 import { codexInputKey } from '../../../lib/codex-input.mjs';
+import { editorRoots } from '../../../lib/files.mjs';
 
 const str = value => value == null ? '' : String(value);
 const fail = code => { throw Object.assign(new Error(code), { code, outcomeUnknown: false }); };
@@ -220,23 +221,62 @@ export async function captureCodexNativeSubmission(source, row, receipt, prompt)
   check(await readNativeContext(source.cdp, 'codex', row.threadId));
   // Native send ACK can precede persisted user items. Wait only for this
   // exact receipt's read projection; never submit or reinterpret the prompt.
-  const deadline = performance.now() + 3000;
-  let turn, inputKey;
-  do {
-    turn = await readNativeTurn(source.cdp, row, receipt, true);
-    inputKey = codexInputKey(turn?.nativeInput);
-    if (turn?.id && inputKey || turn?.threadId && turn.threadId !== row.threadId) break;
-    if (performance.now() < deadline) await new Promise(resolve => setTimeout(resolve, 75));
-  } while (performance.now() < deadline);
+  const turn = await readCodexReceiptTurn(source.cdp, row, receipt);
+  const inputKey = codexInputKey(turn?.nativeInput);
   check(await readNativeContext(source.cdp, 'codex', row.threadId));
   if (typeof prompt !== 'string' || !prompt.trim() || turn?.threadId !== row.threadId
       || !turn.id || !turn.turnId || turn.lastUserId !== turn.id || !inputKey
-      || !Array.isArray(turn.nativeIds) || !turn.nativeIds.length
-      || ![turn.id, `${row.threadId}:user-message:${turn.id}`, ...turn.nativeIds].includes(receipt))
+      || !matchesCodexReceipt(row, receipt, turn))
     fail('native_submission_receipt_unverifiable');
   return { version: 1, project: fs.realpathSync(row.workspace), receipt, threadId: row.threadId,
     turnId: turn.turnId, messageId: turn.id,
     prompt_sha256: crypto.createHash('sha256').update(prompt).digest('hex'), input: JSON.parse(inputKey) };
+}
+
+export async function readCodexDispatchReceipt(source, row, requestId) {
+  const clientId = await call(source.cdp,
+    `nativeSessionInfo('codex', ${JSON.stringify(row.threadId)}, 'dispatchClientId', ${JSON.stringify(requestId)})`,
+    contextFor(row));
+  return typeof clientId === 'string' && REQUEST_ID.test(clientId) ? `${row.threadId}:user-message:${clientId}` : '';
+}
+
+// A direct send ACK means native message admission, not task completion.
+export async function readCodexDispatchAcknowledgement(source, row, requestId) {
+  if (row.app !== 'codex' || row.windowId === 'backend' || !REQUEST_ID.test(requestId)) return null;
+  const check = context => {
+    assertNativeProject(context, row.workspace, row.threadId);
+    if (context.roots?.length !== 1 || !samePath(context.roots[0].root, row.workspace))
+      fail('native_window_project_ambiguous');
+  };
+  check(await readNativeContext(source.cdp, 'codex', row.threadId));
+  const receipt = await readCodexDispatchReceipt(source, row, requestId);
+  const prefix = row.threadId + ':user-message:';
+  if (!receipt || !receipt.startsWith(prefix)) return null;
+  const clientId = receipt.slice(prefix.length);
+  const turn = await readNativeTurn(source.cdp, row, receipt, true);
+  if (!turn || turn.threadId !== row.threadId || !turn.turnId || turn.id !== clientId
+      || !turn.nativeIds?.includes(clientId) || !(turn.active || turn.ended)) return null;
+  check(await readNativeContext(source.cdp, 'codex', row.threadId));
+  return { native_message_id: receipt, native_turn_id: turn.turnId };
+}
+
+function matchesCodexReceipt(row, receipt, turn) {
+  return !!receipt && !!turn?.id && !!turn.turnId && turn.threadId === row.threadId
+    && !!turn.nativeIds?.length && [turn.id, `${row.threadId}:user-message:${turn.id}`, ...turn.nativeIds].includes(receipt);
+}
+
+async function readCodexReceiptTurn(cdp, row, receipt, active = false) {
+  const deadline = performance.now() + 3000;
+  const delays = [25, 40, 60, 100, 150];
+  let turn;
+  for (let i = 0; ; i++) {
+    turn = await readNativeTurn(cdp, row, receipt, true);
+    if (matchesCodexReceipt(row, receipt, turn) && codexInputKey(turn.nativeInput)
+        && turn.lastUserId === turn.id && (!active || turn.current && turn.active)
+        || active && turn?.ended || turn?.threadId && turn.threadId !== row.threadId
+        || performance.now() >= deadline) return turn;
+    await new Promise(resolve => setTimeout(resolve, delays[Math.min(i, delays.length - 1)]));
+  }
 }
 
 export async function readCodexNativeRequest(cdp, row, receipt, prompt, submission) {
@@ -528,8 +568,12 @@ export async function prepareCursorNativePermission(source, row, receipt, pendin
 }
 
 export function assertNativeProject(context, project, threadId) {
+  // The realpath comparator deliberately rejects empty paths. Only an explicit
+  // Cursor empty-workspace context can match an empty requested project.
+  const projectless = context?.app === 'cursor' && project === '' && context.cwd === ''
+    && context.projectless === true && Array.isArray(context.roots) && context.roots.length === 0;
   if (!context || context.host || str(context.threadId) !== str(threadId)
-      || !samePath(context.cwd, project) || context.roots?.some(root => root.host))
+      || (!projectless && !samePath(context.cwd, project)) || context.roots?.some(root => root.host))
     fail('native_project_context_mismatch');
 }
 
@@ -544,12 +588,15 @@ export async function readNativeTurn(cdp, row, receipt, includeUser = false) {
     const codexInputKey = ${codexInputKey.toString()};
     let turn;
     try { turn = await helpers(${JSON.stringify(contextFor(row))}).codexFusionTurn(${JSON.stringify(receipt)}); }
-    catch (error) { ${row.app === 'codex' && !includeUser ? '' : 'throw error;'} }
-    ${row.app === 'codex' && !includeUser ? `if (!turn?.id) {
+    catch (error) { ${row.app === 'codex' ? '' : 'throw error;'} }
+    ${row.app === 'codex' ? `if (!turn?.id || !turn.ended && !turn.current) {
       const visible = helpers();
-      if (await visible.codexThread() !== ${JSON.stringify(row.threadId)}) return null;
-      turn = await visible.codexFusionTurn(${JSON.stringify(receipt)});
-      if (await visible.codexThread() !== ${JSON.stringify(row.threadId)}) return null;
+      if (await visible.codexThread() === ${JSON.stringify(row.threadId)}) {
+        const local = await visible.codexFusionTurn(${JSON.stringify(receipt)});
+        if (local?.id && local.threadId === ${JSON.stringify(row.threadId)}
+            && await visible.codexThread() === local.threadId && (!turn?.id || local.turnId === turn.turnId))
+          turn = local;
+      }
     }` : ''}
     if (!turn) return null;
     return { id: turn.id, threadId: turn.threadId, turnId: turn.turnId,
@@ -559,7 +606,7 @@ export async function readNativeTurn(cdp, row, receipt, includeUser = false) {
       nativeIds: Array.isArray(turn.nativeIds) && turn.nativeIds.length <= 100
         && turn.nativeIds.every(id => typeof id === 'string' && id.length > 0 && id.length <= 300) ? turn.nativeIds : null,
       lastUserId: typeof turn.lastUserId === 'string' && turn.lastUserId.length <= 300 ? turn.lastUserId : '',` : ''}
-      ended: turn.ended === true, completed: turn.completed === true, interrupted: turn.interrupted === true,
+      active: turn.active === true, ended: turn.ended === true, completed: turn.completed === true, interrupted: turn.interrupted === true,
       lastUserMessageId: turn.ids?.at(-1) || '',
       text: String(turn.text || '').slice(0, 16000), error: String(turn.error || '').slice(0, 400) };
   })()`, { timeout: 10000 });
@@ -658,7 +705,7 @@ export async function readNativeConversationProgress(source, row, args) {
     const verified = correlateDevinCurrentReply({ items, state, receipt, expectedPrompt:args.expected_prompt });
     if (verified) return { ...verified, ...(permission ? { nativeTurnId: permission.turnId } : {}) };
   }
-  const turn = receipt ? await readNativeTurn(source.cdp, row, receipt) : null;
+  const turn = receipt ? await readNativeTurn(source.cdp, row, receipt, row.app === 'codex') : null;
   let waitingRequest = null, requestReason = '';
   if (['codex', 'cursor'].includes(row.app) && receipt) {
     try { waitingRequest = row.app === 'codex'
@@ -666,11 +713,17 @@ export async function readNativeConversationProgress(source, row, args) {
       : await readCursorNativeRequest(source.cdp, row, receipt); }
     catch (error) { requestReason = error.message; }
   }
-  const matches = !!turn?.id && turn.threadId === row.threadId && !!turn.turnId
+  const matches = row.app === 'codex' ? matchesCodexReceipt(row, receipt, turn) : !!turn?.id && turn.threadId === row.threadId && !!turn.turnId
     && (turn.id === receipt || receipt === `${row.threadId}:user-message:${turn.id}`
       || !!human && (human.i === turn.id || human.nativeIds?.includes(turn.id)));
   const currentTurn = matches && turn.current === true;
   const runMatches = !state.run?.id || [turn?.turnId, turn?.generationId].includes(state.run.id);
+  if (row.app === 'codex' && args.reconcile_codex_send && matches && turn.interrupted && turn.ended) {
+    codexSubmissionInput(row, receipt, args.expected_prompt, args.expected_native_submission, turn);
+    return { available: true, busy: false, waiting: '', run: { id: turn.turnId, status: 'stopped' },
+      statusKnown: true, cancelled: true, exactCancellation: true, currentTurn,
+      lastUserMessageId: receipt, nativeTurnId: turn.turnId };
+  }
   const exactCompletion = matches && turn.ended === true && turn.completed === true && !turn.error
     && !waitingRequest && !!str(turn.text).trim() && (!currentTurn || runMatches && !state.busy && !state.waiting
       && !['running', 'in_progress', 'busy', 'inProgress'].includes(state.run?.status));
@@ -678,7 +731,8 @@ export async function readNativeConversationProgress(source, row, args) {
   const text = currentTurn || exactCompletion ? str(turn.text).slice(0, 16000) : '';
   return { available: true, busy: exactCompletion ? false : !!state.busy, commandApproval,
     waiting: waitingRequest ? waitingRequest.id : exactCompletion ? '' : str(state.waiting), run, waitingRequest,
-    last: text, lastUserMessageId: str(turn?.lastUserMessageId), currentTurn,
+    last: text, lastUserMessageId: row.app === 'codex' && (currentTurn || exactCompletion) ? receipt : str(turn?.lastUserMessageId), currentTurn,
+    ...(row.app === 'codex' && matches ? { nativeTurnId: turn.turnId, exactActive: currentTurn && runMatches && turn.active } : {}),
     assistantAfter: (currentTurn || exactCompletion) && !!text.trim(),
     statusKnown: (currentTurn && runMatches || exactCompletion) && turn.ended === true,
     completed: exactCompletion, exactCompletion,
@@ -687,7 +741,9 @@ export async function readNativeConversationProgress(source, row, args) {
   };
 }
 
-export async function inspectNativeWindow(cdp, app) {
+const cursorDraftThread = id => id === 'empty-state-draft' || id.startsWith('draft-');
+
+export async function inspectNativeWindow(cdp, app, allowCursorDraft = false) {
   const startup = await call(cdp, `agentStartupState(${JSON.stringify(app)}, true)`);
   if (!startup || startup.login) fail('native_window_not_ready');
   const state = await call(cdp, 'agentState()');
@@ -696,18 +752,26 @@ export async function inspectNativeWindow(cdp, app) {
   return { threadId: str(startup.thread), busy: !!state.busy, waiting: str(state.waiting), draft: !!draft,
     creationReady: app !== 'codex' || await call(cdp,
       `nativeSessionInfo('codex', ${JSON.stringify(str(startup.thread))}, 'creationReady')`) === true,
-    context: startup.thread ? await readNativeContext(cdp, app, startup.thread) : null };
+    context: startup.thread && !(allowCursorDraft && app === 'cursor' && cursorDraftThread(startup.thread))
+      ? await readNativeContext(cdp, app, startup.thread) : null };
 }
 
 export async function prepareNativeView(view, row, project, { allowBusy = false, preserveDraft = false } = {}) {
   const cdp = view.cdp, windowId = view.windowId;
   if (typeof view.projectWindowState !== 'function') fail('native_window_safety_unavailable');
   const safety = await view.projectWindowState({ id: windowId }, row.threadId, true);
-  const before = await inspectNativeWindow(cdp, row.app);
+  const before = await inspectNativeWindow(cdp, row.app, true);
   const sameThread = before.threadId === row.threadId;
   if ((safety.busy || before.busy || before.waiting) && !(allowBusy && sameThread)
       || (safety.draft || before.draft) && !(preserveDraft && sameThread)) fail('native_window_busy_waiting_or_draft');
-  if (before.context) assertNativeProject(before.context, project, before.threadId);
+  const cursorRoots = row.app === 'cursor' ? await editorRoots(view.editorCdp, row.app) : null;
+  if (cursorRoots && (project ? !cursorRoots.some(root => !root.host && samePath(root.root, project))
+      : cursorRoots.length !== 0)) fail('native_project_context_mismatch');
+  if (row.app === 'cursor' && !sameThread && (cursorDraftThread(before.threadId) || before.context?.projectless === true)) {
+    // In an empty renderer, a confirmed projectless target is legal. A
+    // project-bearing target still requires the existing exact single root.
+    if (project && (cursorRoots.length !== 1 || cursorRoots[0].host || !samePath(cursorRoots[0].root, project))) fail('native_project_context_mismatch');
+  } else if (before.context) assertNativeProject(before.context, project, before.threadId);
   const target = await readNativeContext(cdp, row.app, row.threadId);
   assertNativeProject(target, project, row.threadId);
   if (before.threadId !== row.threadId) {
@@ -724,6 +788,8 @@ export async function prepareNativeView(view, row, project, { allowBusy = false,
   if (after.threadId !== row.threadId) fail('native_thread_selection_failed');
   if ((after.busy || after.waiting) && !allowBusy || after.draft && !preserveDraft) fail('native_window_busy_waiting_or_draft');
   assertNativeProject(after.context, project, row.threadId);
+  if (row.app === 'cursor' && !project && (await editorRoots(view.editorCdp, row.app)).length)
+    fail('native_project_context_mismatch');
   SessionBinding.commit(view, { threadId: row.threadId, selectedThread: row.threadId, bindingReady: true });
   await view.assertSelectedThread();
 }
@@ -813,14 +879,12 @@ export async function cancelExactNativeTurn(source, row, receipt, options = {}) 
     if (typeof options.prompt !== 'string' || !options.prompt.trim()) fail('native_cancel_prompt_missing');
     if (await call(source.cdp, `nativeSessionInfo('codex', ${JSON.stringify(row.threadId)}, 'cancelReady')`, contextFor(row)) !== true)
       fail('native_cancel_adapter_unavailable');
-    const turn = await readNativeTurn(source.cdp, row, receipt, true);
+    const turn = await readCodexReceiptTurn(source.cdp, row, receipt, true);
     const context = await readNativeContext(source.cdp, row.app, row.threadId);
     assertNativeProject(context, row.workspace, row.threadId);
     if (context.app !== 'codex' || context.roots?.length !== 1 || !samePath(context.roots[0].root, row.workspace))
       fail('native_cancel_project_mismatch');
-    if (!turn?.id || !turn.turnId || turn.threadId !== row.threadId || !turn.current || turn.ended
-        || turn.lastUserId !== turn.id || !Array.isArray(turn.nativeIds) || !turn.nativeIds.length
-        || ![turn.id, `${row.threadId}:user-message:${turn.id}`, ...turn.nativeIds].includes(receipt))
+    if (!matchesCodexReceipt(row, receipt, turn) || !turn.current || !turn.active || turn.ended || turn.lastUserId !== turn.id)
       fail('cannot_prove_active_native_turn_for_cancel');
     const nativeInputKey = codexSubmissionInput(row, receipt, options.prompt, options.submission, turn);
     const binding = JSON.stringify({ threadId: turn.threadId, id: turn.id, turnId: turn.turnId,

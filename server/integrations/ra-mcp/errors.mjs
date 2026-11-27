@@ -1,6 +1,9 @@
 // Public MCP errors are fixed protocol codes, never arbitrary native/OS messages.
 const codes = new Set([
-  'invalid_limit', 'invalid_before', 'invalid_history_cursor', 'history_cursor_expired',
+  'unknown_action', 'invalid_client_request_id', 'invalid_continue_task_id', 'invalid_wait_ms',
+  'unconfirmed_outcome', 'task_poll_busy', 'request_cancelled', 'no_reusable_session', 'ambiguous_reusable_session',
+  'native_session_claimed', 'task_occupancy_unavailable', 'task_continuation_mismatch',
+  'invalid_limit', 'invalid_before', 'invalid_history_cursor', 'history_cursor_expired', 'invalid_cursor', 'session_cursor_stale',
   'native_task_control_receipt_unavailable', 'invalid_name', 'invalid_text', 'invalid_when', 'invalid_effort', 'invalid_fast', 'invalid_value', 'native_operation_unsupported', 'native_setting_not_available', 'native_settings_receipt_unconfirmed',
   'absolute_config_path_required', 'agent_busy_waiting_or_auto_approved', 'agent_operation_in_progress', 'approval_operation_already_processed',
   'binding_mismatch', 'body_too_large', 'cannot_prove_active_native_acp_turn_for_cancel', 'cannot_prove_active_native_turn_for_cancel',
@@ -27,6 +30,7 @@ const codes = new Set([
   'native_creation_adapter_unavailable', 'native_creation_identity_mismatch', 'native_creation_window_ambiguous', 'native_creation_window_missing_or_ambiguous',
   'native_independent_session_unconfirmed', 'native_project_context_mismatch', 'native_project_context_pending',
   'native_question_answer_shape_unsupported', 'native_question_option_ack_unconfirmed', 'native_question_option_not_exact', 'native_question_selection_unconfirmed',
+  'codex_backend_unavailable', 'codex_backend_native_owner', 'native_queue_unavailable',
   'native_receipt_missing', 'native_receipt_task_mismatch', 'native_request_absent', 'native_request_ambiguous',
   'native_request_changed', 'native_request_expired', 'native_request_identity_mismatch', 'native_request_turn_mismatch',
   'native_request_unverifiable', 'native_selection_adapter_unavailable', 'native_send_failed', 'native_send_not_enabled_for_app',

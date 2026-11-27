@@ -3,7 +3,7 @@ import { windowName } from '../lib/notify.mjs';
 import { allFusionRuns, fusionSummary, FUSION_ACTIVE } from './fusion/state.mjs';
 import { readLibrary, sessionId, rememberSessionStatuses, storedSessionStatus } from '../lib/session-library.mjs';
 import { IS_WIN, samePath, localFilePath, pathKey } from '../lib/platform.mjs';
-import { workspaceLabel } from '../lib/files.mjs';
+import { editorRoots, workspaceLabel } from '../lib/files.mjs';
 import path from 'node:path';
 import fs from 'node:fs';
 import { storedProjectSession, fusionTargets } from './project-windows.mjs';
@@ -33,7 +33,41 @@ function codexCardState(native, backend, hasWriter) {
   return (native.observedAt || 0) >= (backend.observedAt || 0) ? native : backend;
 }
 
-export function overviewSnapshot(deviceId, selection) {
+// Cursor's native header list is global to the application, not a list of
+// threads owned by the renderer that returned it. Empty URI can also mean an
+// unresolved workspace identifier; only explicit projectless proves empty.
+function cursorWindowRank(roots, native, workspace, host) {
+  if (!workspace) return roots.length ? 0 : native?.projectless === true ? 2 : 1;
+  return native?.workspaceConfirmed === true && native.projectless !== true
+    && (native.host || '') === host && samePath(native.workspace, workspace, !host)
+    && roots.some(root => (root.host || '') === host && samePath(root.root, workspace, !host)) ? 2 : 0;
+}
+
+// MCP accepts exact current window/thread bindings, unlike phone navigation
+// which may open a historical project's window. Read roots and directory from
+// each actual Cursor renderer; cached roots can survive a workspace switch.
+export async function mcpOverviewSnapshot(deviceId, app) {
+  if (app && app !== 'cursor') return overviewSnapshot(deviceId);
+  const cursorWindows = new Map();
+  await Promise.all(nativeTargets().filter(win => win.app === 'cursor').map(async win => {
+    const source = nativeWindowAt(win.ws);
+    if (!source) return;
+    try {
+      await source.connect();
+      const [roots, catalog] = await Promise.all([
+        editorRoots(source.cdp, 'cursor'),
+        source.cdp.evaluate(helpersCall("nativeSessionInfo('cursor', '', 'list')"), { timeout: 8000 }),
+      ]);
+      if (Array.isArray(roots) && Array.isArray(catalog) && nativeWindowAt(win.ws) === source
+          && nativeTargets().some(target => target.app === 'cursor' && target.ws === win.ws
+            && (target.pageId || target.id) === (win.pageId || win.id)))
+        cursorWindows.set(win.pageId || win.id, { roots, catalog, source });
+    } catch { /* Unverified windows can only contribute dormant historical rows. */ }
+  }));
+  return overviewSnapshot(deviceId, undefined, cursorWindows);
+}
+
+export function overviewSnapshot(deviceId, selection, cursorWindows = null) {
   const now = Date.now(), projects = new Map(), collected = new Map(), excluded = fusionTargets(), errors = [];
   const selectedApp = String(selection?.win || '').split(':')[0], selectedThread = selection?.threadId;
   let pendingWindows = 0;
@@ -41,7 +75,10 @@ export function overviewSnapshot(deviceId, selection) {
     if (selection && win.app !== selectedApp) continue;
     const windowId = win.pageId || win.id;
     if (excluded.windows.has(win.app + ':' + windowId.replace(/^(cursor|devin|codex):/, ''))) continue;
-    const source = nativeWindowAt(win.ws), snap = source?.snapshot, roots = source?.roots;
+    const source = nativeWindowAt(win.ws), snap = source?.snapshot;
+    const cursorLive = win.app === 'cursor' ? cursorWindows?.get(windowId) : null;
+    const cursorVerified = cursorLive?.source === source && !!cursorLive;
+    const roots = cursorVerified ? cursorLive.roots : source?.roots;
     const catalog = nativeSessionCatalog(win.app);
     if (!roots) {
       if (source?.rootsError) errors.push({ app: win.app, windowId, error: source.rootsError });
@@ -56,14 +93,14 @@ export function overviewSnapshot(deviceId, selection) {
         project: workspace ? path.posix.basename(workspace) || workspace : windowName(win.title, APP[win.app]), loading: !catalog });
     }
     const rows = new Map((catalog?.rows || []).map(row => [sessionId(win.app, row.id), row]));
-    const local = new Map((source.catalog || []).map(row => [sessionId(win.app, row.id), row]));
+    const local = new Map(((cursorVerified ? cursorLive.catalog : source.catalog) || []).map(row => [sessionId(win.app, row.id), row]));
     const workspaceIds = new Set([...local.keys()].map(id => rows.get(id)?.workspaceId).filter(Boolean));
     const belongs = row => row.workspace
       ? roots.some(root => (root.host || '') === (row.host || '') && samePath(root.root, row.workspace, !row.host))
       : !!row.workspaceId && workspaceIds.has(row.workspaceId);
     const projectRows = new Map([...rows].filter(([key, row]) => (!selection || key === selectedThread)
       && (belongs(row) || win.app === 'devin' && row.workspace && !row.host || win.app === 'cursor' && row.workspace)));
-    for (const [key, row] of local) if ((!selection || key === selectedThread) && (belongs(row) || !row.workspace && win.app === 'cursor'))
+    for (const [key, row] of local) if ((!selection || key === selectedThread) && (belongs(row) || win.app === 'cursor'))
       projectRows.set(key, { ...rows.get(key), ...row, lastUsed: row.lastUsed || rows.get(key)?.lastUsed || 0 });
     for (const state of source.overviewStates(selectedThread)) {
       const key = sessionId(win.app, state.thread), row = projectRows.get(key), known = rows.get(key) || local.get(key);
@@ -87,7 +124,13 @@ export function overviewSnapshot(deviceId, selection) {
       const s = { ...row, busy: row.busy ?? row.running };
       const saved = win.app === 'cursor' && !row.workspace && !row.projectless && storedProjectSession('cursor', key);
       const fallback = win.app === 'cursor' ? (saved?.workspaceConfirmed ? saved.workspace : '') : (roots.length === 1 ? roots[0].root : '');
-      const workspace = localFilePath(row.workspace || fallback, !row.host && IS_WIN), host = row.host || '';
+      const nativeCursor = win.app === 'cursor' ? local.get(key) : null;
+      const workspace = localFilePath(nativeCursor?.workspaceConfirmed ? nativeCursor.workspace
+        : nativeCursor?.projectless === true ? '' : row.workspace || fallback, !row.host && IS_WIN);
+      const host = nativeCursor?.workspaceConfirmed ? nativeCursor.host || '' : row.host || '';
+      const cursorOwner = win.app === 'cursor' ? cursorWindowRank(roots, nativeCursor, workspace, host) : 0;
+      const cursorControlReady = cursorVerified && cursorOwner === 2 && !host
+        && (!workspace || roots.length === 1);
       const project = projectId(win.app, workspace, host, windowId);
       if (!projects.has(project)) projects.set(project, { projectId: project, win: id, windowId, app: win.app,
         workspace, host, project: path.posix.basename(workspace) || workspace || windowName(win.title, APP[win.app]), loading: false });
@@ -103,13 +146,18 @@ export function overviewSnapshot(deviceId, selection) {
         actions: s.actions || [], devin: !!s.devin, changed: s.changed || 0, acceptAll: !!s.acceptAll, changes: s.changes || null, lastUsed: Number.isFinite(s.lastUsed) ? s.lastUsed : 0,
         favorite: record?.favorite === true, lastMessageAt: Number(record?.lastMessageAt) || 0,
         workspace, host,
+        ...(win.app === 'cursor' && cursorWindows ? { dormant: !cursorControlReady } : {}),
       };
       if (win.app === 'devin' && value.statusKnown && s.busy === false && value.run?.status === 'unknown') value.run = null;
-      const identity = JSON.stringify([project, key]), previous = collected.get(identity);
+      // A Cursor thread has one native identity across all windows. Other
+      // apps keep their existing project/transport-specific identity.
+      const identity = JSON.stringify([win.app === 'cursor' ? 'cursor' : project, key]), previous = collected.get(identity);
       const quality = Number(!!s.run && s.run.status !== 'unknown') * 4 + Number(!!s.run) * 2
-        + Number(key === sessionId(win.app, snap?.chat?.thread));
+        + Number(win.app === 'cursor' && cursorVerified ? nativeCursor?.current === true
+          : key === sessionId(win.app, snap?.chat?.thread));
       const owner = win.app === 'codex' ? Number(!!s.nativeOwner) : win.app === 'devin'
         ? Number(key.startsWith('acp/devin-cli/') ? !!source.devinCatalog?.get(key)?.workspace : local.has(key) || source.devinCatalog?.has(key))
+        : win.app === 'cursor' ? (cursorWindows ? cursorControlReady ? 4 : cursorVerified ? cursorOwner : -1 : cursorOwner)
         : Number(belongs({ ...row, workspace }));
       if (!previous || owner > previous.owner || owner === previous.owner && ((s.run?.startedAt || 0) > (previous.value.run?.startedAt || 0)
         || (s.run?.startedAt || 0) === (previous.value.run?.startedAt || 0)
@@ -180,7 +228,10 @@ export function overviewSnapshot(deviceId, selection) {
       try { localPaths.set(key, !fs.statSync(row.workspace).isDirectory()); }
       catch (error) { localPaths.set(key, ['ENOENT', 'ENOTDIR'].includes(error.code)); }
     }
-    if (localPaths.get(key)) row.workspaceMissing = true;
+    if (localPaths.get(key)) {
+      row.workspaceMissing = true;
+      if (cursorWindows && row.app === 'cursor') row.dormant = true;
+    }
   }
   rememberSessionStatuses(sessions);
   for (const row of sessions) if (row.dormant || row.statusKnown === false || row.run?.status === 'unknown') {

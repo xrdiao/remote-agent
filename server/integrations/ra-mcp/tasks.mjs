@@ -4,6 +4,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import { registerNativeTaskOwnership } from '../../session/task-ownership.mjs';
+import { fusionProject, fusionSessionReserved } from '../../fusion/state.mjs';
 import { assertSendMode } from '../../agent/control.mjs';
 import { DATA_DIR } from '../../../lib/auth.mjs';
 import { OPENCODE_URL } from '../../config.mjs';
@@ -52,7 +54,7 @@ function root() {
   if (!fs.statSync(base).isDirectory()) throw Error('task_root_unavailable');
   return base;
 }
-function projectRoot(value) {
+export function projectRoot(value) {
   if (typeof value !== 'string' || !value || value.length > 1024 || !path.isAbsolute(value))
     throw Error('invalid_task_project');
   const real = fs.realpathSync(value);
@@ -135,7 +137,42 @@ function currentOpenCodeTurn(row, messages) {
   return !!row.native_message_id && users.at(-1)?.info?.id===row.native_message_id;
 }
 
-export function createTask(device,args) {
+const settled = new Set(['COMPLETED', 'FAILED', 'CANCELLED']);
+function heldTasks() {
+  try {
+    return fs.readdirSync(dir()).filter(name => /^[a-f0-9-]{36}\.json$/.test(name))
+      .map(name => JSON.parse(fs.readFileSync(path.join(DIR, name), 'utf8')))
+      .filter(row => {
+        if (!STATES.has(row.state) || !row.task_id || !row.project || !row.app)
+          throw new Error('invalid_task_state');
+        return !settled.has(row.state);
+      });
+  } catch {
+    throw new Error('task_occupancy_unavailable');
+  }
+}
+
+function taskOwnsSession({ app, threadId, project }, { ignore, exact = false, tasks = heldTasks() } = {}) {
+  return tasks.some(row => row.task_id !== ignore && row.app === app
+    && (row.thread_id ? row.thread_id === threadId
+      : !exact && row.state !== 'QUEUED' && fusionProject(row.project)?.id === project.id));
+}
+
+registerNativeTaskOwnership(taskOwnsSession);
+
+export function reusableSessionFilter() {
+  const tasks = heldTasks();
+  return binding => !fusionSessionReserved(binding) && !taskOwnsSession(binding, { tasks });
+}
+
+export function assertTaskSessionAvailable(row) {
+  if (!row.thread_id) return;
+  const binding = { app: row.app, threadId: row.thread_id, project: fusionProject(row.project) };
+  if (!binding.project || fusionSessionReserved(binding) || taskOwnsSession(binding, { ignore: row.task_id }))
+    throw Object.assign(new Error('native_session_claimed'), { outcomeUnknown: false });
+}
+
+export function createTask(device,args, { policy } = {}) {
   if (!APPS.has(args.app)) throw Error('unsupported_task_app');
   if (typeof args.prompt!=='string' || !args.prompt.trim() || Buffer.byteLength(args.prompt)>16000)
     throw Error('invalid_task_prompt');
@@ -152,6 +189,11 @@ export function createTask(device,args) {
     thread_id:threadId,model,when,effort:args.effort||'',fast:args.fast||'',state:'QUEUED',attempt:0,created:Date.now(),
     updated:Date.now(),native_message_id:'',pending:null,output:'',error:'',note:'',
     mode:windowId?'existing_session':args.app==='opencode'?'new_opencode_session':'new_native_session'};
+  if (policy) {
+    row.session_policy = policy;
+    if (policy === 'reuse' && !row.thread_id) throw Error('no_reusable_session');
+    assertTaskSessionAvailable(row);
+  }
   save(row,true);
   return publicTask(row);
 }
@@ -164,10 +206,34 @@ export function listTasks(device, {max=60}={}) {
   return {tasks:out.sort((a,b)=>b.created-a.created).slice(0,Math.max(1,Math.min(100,max)))};
 }
 export function getStoredTask(device,id) {return publicTask(load(device,id));}
-export async function startTask(device,id,sendExisting,createNative) {
+
+export function canReconcileCodexSubmission(row) {
+  return ['UNKNOWN', 'SUBMITTING'].includes(row.state) && row.app === 'codex' && row.window_id && row.window_id !== 'backend'
+    && row.thread_id && !row.native_queued && !row.submitted && row.native_request_id === row.task_id
+    && (!row.note || row.note === 'native_codex_submit_unconfirmed');
+}
+
+export function recordCodexSendReceipt(device, id, receipt) {
+  return exclusive(device.id+':'+id, async () => {
+    const row = load(device,id);
+    if (row.app !== 'codex' || row.window_id === 'backend' || row.state !== 'UNKNOWN'
+        || row.note !== 'native_codex_submit_unconfirmed' || receipt.requestId !== id
+        || receipt.threadId !== row.thread_id || !receipt.messageId || row.native_message_id) return;
+    row.native_request_id=id;
+    row.native_message_id=receipt.messageId;
+    save(row);
+  });
+}
+
+export async function startTask(device,id,sendExisting,createNative, { compact } = {}) {
   return exclusive(device.id+':'+id,async()=>{
     let row=load(device,id);
     if(row.state!=='QUEUED')return publicTask(row);
+    if (compact || row.session_policy) {
+      if (!row.thread_id && row.session_policy !== 'new') throw Error('no_reusable_session');
+      // Check and persist the claim in the same turn of the relay event loop.
+      assertTaskSessionAvailable(row);
+    }
     row.state='STARTING';save(row);
     let uncertain=false;
     try{
@@ -183,14 +249,20 @@ export async function startTask(device,id,sendExisting,createNative) {
         row.window_id=created.window_id;row.thread_id=created.thread_id;
         row.native_creation={task_id:row.task_id,app:row.app,project:row.project,
           window_id:created.window_id,thread_id:created.thread_id,transport:created.transport};
+        if (compact || row.session_policy) assertTaskSessionAvailable(row);
         row.state='CREATED';save(row);
       }
-      row.state='SUBMITTING';save(row);
+      row.state='SUBMITTING';
+      if (row.app === 'codex' && row.window_id !== 'backend') {
+        row.note='native_codex_submit_unconfirmed';
+        row.native_request_id=row.task_id;
+      }
+      save(row);
       uncertain=true;
       if(typeof sendExisting!=='function')throw Error('native_adapter_not_connected');
       const outcome=await sendExisting(row);
       if(outcome?.native_message_id)row.native_message_id=outcome.native_message_id;
-      row.native_request_id=String(outcome?.request_id||'').slice(0,160);
+      row.native_request_id=String(outcome?.request_id||row.native_request_id||'').slice(0,160);
       row.native_queued=outcome?.queued===true;
       row.native_queue_id=outcome?.native_queue_id||'';
       if(outcome?.state!=='ACKNOWLEDGED'||!outcome.native_message_id)
@@ -199,7 +271,7 @@ export async function startTask(device,id,sendExisting,createNative) {
         if(!outcome.native_submission)throw Error('native_submission_receipt_missing');
         row.native_submission=outcome.native_submission;
       }
-      row.state='RUNNING';row.submitted=Date.now();save(row);return publicTask(row);
+      row.state='RUNNING';row.submitted=Date.now();row.note='';save(row);return publicTask(row);
     } catch(error){
       if(row.mode!=='existing_session' && error?.created_session?.window_id && error.created_session.thread_id && !row.thread_id){
         row.window_id=error.created_session.window_id;row.thread_id=error.created_session.thread_id;
@@ -248,6 +320,28 @@ export async function refreshTask(device,id,readExisting) {
     if (['cursor','devin'].includes(row.app) && row.native_queued && row.state==='RUNNING') {
       row.state='UNKNOWN';row.note='native_queue_promotion_receipt_unavailable';save(row);
     }
+    if (canReconcileCodexSubmission(row) && typeof readExisting==='function') {
+      let proof;
+      try { proof = await readExisting(row); } catch { return publicTask(row); }
+      const receipt = row.native_message_id || (proof?.reconciledRequestId === row.native_request_id
+        ? proof.nativeSubmission?.receipt : '');
+      if (receipt && proof?.available === true && proof.lastUserMessageId === receipt
+          && proof.nativeSubmission?.receipt === receipt && proof.nativeSubmission.threadId === row.thread_id
+          && proof.nativeTurnId && proof.nativeSubmission.turnId === proof.nativeTurnId) {
+        const stopped = proof.confirmedCancellation === true && proof.busy === false && !proof.waiting && !proof.pending;
+        const completed = proof.confirmedCompletion === true && proof.exactCompletion === true && proof.busy === false
+          && !proof.waiting && !proof.pending && String(proof.text || '').trim();
+        const active = proof.exactActive === true && proof.currentTurn === true && proof.busy === true;
+        if (stopped || completed || active) {
+          row.state=stopped?'CANCELLED':completed?'COMPLETED':'RUNNING';
+          if (stopped) row.cancelled=Date.now();
+          if (completed) {row.completed=Date.now();row.output=limit(proof.text,16000);}
+          row.native_message_id=receipt;row.native_submission=proof.nativeSubmission;row.submitted=Date.now();row.error='';
+          row.note='native_codex_submit_exact_turn_reconciled';save(row);
+        }
+      }
+      return publicTask(row);
+    }
     if (row.state === 'UNKNOWN') {
       // Native ACP cancel may have no immediate ACK. Only the exact frozen
       // turn's explicit native stop reason can settle this task.
@@ -294,6 +388,8 @@ export async function refreshTask(device,id,readExisting) {
     {
       if(typeof readExisting!=='function')return publicTask({...row,note:'native_status_adapter_unavailable'});
       const status=await readExisting(row);
+      if (status?.available === false && row.state === 'WAITING')
+        return publicTask({ ...row, fresh:false, note:'native_status_unavailable' });
       if(status?.nativeSubmission){row.native_submission=status.nativeSubmission;row.native_queued=false;}
       if(status?.nativeQueued===false)row.native_queued=false;
       reconcileCodexCommandApproval(row,status?.commandApproval);
@@ -513,12 +609,14 @@ export async function approveTask(device,id,{kind,request_id,decision,answers=[]
     return publicTask(row);
   });
 }
-export function retryTask(device,id) {
+export function retryTask(device,id, { compact } = {}) {
   const row=load(device,id);
   if(!['FAILED','CANCELLED'].includes(row.state))throw Error('task_retry_not_safe');
+  if (compact && row.mode !== 'existing_session' && row.session_policy !== 'new')
+    throw Error('no_reusable_session');
   const retry=createTask(device,{app:row.app,project_path:row.project,prompt:row.prompt,
     window_id:row.mode==='existing_session'?row.window_id:'',
-    thread_id:row.mode==='existing_session'?row.thread_id:'',model:row.model,when:row.when,effort:row.effort,fast:row.fast});
+    thread_id:row.mode==='existing_session'?row.thread_id:'',model:row.model,when:row.when,effort:row.effort,fast:row.fast}, { policy: compact || row.session_policy ? row.session_policy || 'reuse' : undefined });
   const next=load(device,retry.task_id);
   next.retry_of=row.task_id;save(next);return publicTask(next);
 }

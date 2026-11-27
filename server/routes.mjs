@@ -1,5 +1,5 @@
 import { updateDevice } from '../lib/auth.mjs';
-import { Cdp, cdpRead } from './cdp.mjs';
+import { cdpRead } from './cdp.mjs';
 import { listWindows, phoneWindows, codexWindows } from './windows.mjs';
 import { CODEX_CDP_URL, EDITORS } from './config.mjs';
 import { PAGE_SRC, helpersCall } from './page/build.mjs';
@@ -12,13 +12,12 @@ import { unsupportedCapability } from './apps/adapter.mjs';
 import { readLibrary, importLibrary, favoriteSession } from '../lib/session-library.mjs';
 import { computerId } from '../lib/auth.mjs';
 import { scanProjectWindows, projectWindowSettings } from './project-windows.mjs';
-import { nativeWindow, configureNativeRetry } from './native-windows.mjs';
+import { nativeWindow, nativeWindowAt, configureNativeRetry, withNativeWindowRead } from './native-windows.mjs';
 import { manageOverviewSession } from './overview-actions.mjs';
 import { withOperation, lookupOperations } from './operations.mjs';
 import { realpath } from 'node:fs/promises';
 import { writeTextFile } from '../lib/files.mjs';
 import { fileAction } from '../lib/file-actions.mjs';
-import { parseSessionRef } from '../lib/shared-rules.mjs';
 import os from 'node:os';
 import { terminalService } from './terminal-service.mjs';
 import { SourceRef, conversationTerminalSource } from './session/source-ref.mjs';
@@ -53,6 +52,25 @@ function runAppMethod(session, method, ...args) {
   if (!AGENT_REGISTRY[session.app]?.methods[method]) throw unsupportedCapability(session.app, method);
   return session[method](...args);
 }
+function showSelectedUsage(session, message) {
+  // A late read from the previous app must not load the new renderer or
+  // publish its quota into the wrong conversation.
+  if (message.sel && message.sel !== session.selectionKey()) return;
+  if (message.automatic !== true) {
+    session.manualUsageRevision = (session.manualUsageRevision || 0) + 1;
+    return session.showUsage(false);
+  }
+  const revision = session.manualUsageRevision;
+  return session.deferWindowRead('usage', () => {
+    if (session.manualUsageRevision === revision) return session.showUsage(true);
+  });
+}
+
+function listSelectedAgents(session, message, projectWindow = '') {
+  const silent = message.silent === true, automatic = message.automatic === true, checkTrust = message.checkTrust === true;
+  const read = () => session.listAgents(silent, automatic, projectWindow, checkTrust);
+  return automatic && silent && !projectWindow && !checkTrust ? session.deferWindowRead('catalog', read) : read();
+}
 
 const fusionRoute = method => ({ fast: true, fastRun: async (session, message) => {
   try { return await session[method](message); }
@@ -78,40 +96,38 @@ async function cursorPlanFor(cdp) {
 }
 
 function readAllPlans(session, windows) {
-  if (plansRead) return plansRead;
-  plansRead = (async () => {
-    try {
-      const wins = windows || await listWindows();
-      const codex = wins.find(w => w.app === 'codex');
-      if (codex) {
-        const page = (await codexWindows(CODEX_CDP_URL)).find(p => p.chatWs);
-        if (page) {
-          const cdp = new Cdp(page.chatWs);
-          try {
-            await cdp.connect();
-            const u = await cdp.evaluate(helpersCall('refreshCodexUsage(false)'), { timeout: 30000 }).catch(() => null);
-            if (u) appPlans.codex = u.account?.planType || '';
-          } finally { cdp.close(); }
-        }
+  const view = session.connectionView, connection = view.generation;
+  const probe = (url, app, id, read) => {
+    const run = () => withNativeWindowRead(url, app, id, read);
+    const source = nativeWindowAt(url);
+    return source ? source.deferBackgroundRead('app-plan', run, null) : run();
+  };
+  plansRead ||= cdpRead.run(null, async () => {
+    const wins = windows || await listWindows();
+    const readCodex = async () => {
+      if (!wins.some(w => w.app === 'codex')) return;
+      const page = (await codexWindows(CODEX_CDP_URL)).find(p => p.chatWs);
+      if (page) await probe(page.chatWs, 'codex', page.pageId, async cdp => {
+        const usage = await cdp.evaluate(helpersCall('refreshCodexUsage(false)'), { timeout: 30000 });
+        if (usage) appPlans.codex = usage.account?.planType || '';
+      });
+    };
+    const readEditor = async app => {
+      for (const w of wins.filter(win => win.app === app)) {
+        if (appPlans[app]) break;
+        await probe(w.ws, app, w.id, async cdp => {
+          const plan = app === 'devin'
+            ? (await cdp.evaluate(helpersCall('readDevinUsage()'), { timeout: 30000 }))?.plan
+            : await cursorPlanFor(cdp);
+          if (plan) appPlans[app] = plan;
+        }).catch(() => {});
       }
-      for (const w of wins) {
-        if (appPlans[w.app] || (w.app !== 'devin' && w.app !== 'cursor')) continue;
-        const cdp = new Cdp(w.ws);
-        try {
-          await cdp.connect();
-          if (w.app === 'devin') {
-            const u = await cdp.evaluate(helpersCall('readDevinUsage()'), { timeout: 30000 }).catch(() => null);
-            if (u?.plan) appPlans.devin = u.plan;
-          } else {
-            const plan = await cursorPlanFor(cdp).catch(() => '');
-            if (plan) appPlans.cursor = plan;
-          }
-        } finally { cdp.close(); }
-      }
-      session.emit({ t: 'plans', plans: appPlans });
-    } catch {}
-  })().finally(() => { plansRead = null; });
-  return plansRead;
+    };
+    await Promise.allSettled([readCodex(), readEditor('cursor'), readEditor('devin')]);
+  }).finally(() => { plansRead = null; });
+  return plansRead.then(() => {
+    if (view.current(connection)) view.run(() => session.emit({ t: 'plans', plans: appPlans }), connection);
+  });
 }
 
 const questionDone = (s, m, result) => s.emit({ t: 'questionDone', requestId: m.requestId, sel: s.selectionKey(), ok: true,
@@ -234,21 +250,7 @@ export const ROUTES = {
     fastRun: (s, m) => s.setMode(m.mode), pre: (s, m) => s.setMode(m.mode) },
   visible: { connection: true,
     fast: s => s.mode === 'terminal', fastRun: (s, m) => ROUTES.visible.pre(s, m),
-    pre: (s, m) => {
-      s.notifyVisible = Boolean(m.watching);
-      s.notifyPresenceAt = Date.now();
-      if (s.visible === Boolean(m.v)) return;
-      s.visible = Boolean(m.v);
-      if (s.mode === 'terminal') {
-        if (!s.visible) return s.stopTerminalUpdates();
-        if (s.terminalId) return s.selectTerminal(s.terminalId, s.terminalSubscription);
-        return;
-      }
-      if (!s.visible) { s.chatUpdatesStop?.(); s.chatUpdatesStop = null; }
-      if (!s.editorCdp && s.app !== 'opencode' && !s.codexBackend && s.mode !== 'screen') return;
-      if (!s.visible && s.mode === 'screen') return s.stopVisual();
-      if (s.visible) return s.setMode(s.mode);
-    },
+    pre: (s, m) => s.setSubscriptionsVisible(m),
   },
   lang: { connection: true,  pre: (s, m) => { updateDevice(s.deviceId, { lang: m.v === 'en' ? 'en' : 'zh' }); } },
   draft: {
@@ -278,18 +280,16 @@ export const ROUTES = {
 
   agents: { switchRead: true,
     background: (s, m) => m.automatic === true && m.silent === true,
-    pre: (s, m) => (s.app === 'codex' && s.cdp ? s.listAgents(m.silent === true, m.automatic === true, '', m.checkTrust === true) : SKIP),
+    pre: (s, m) => (s.app === 'codex' && s.cdp ? listSelectedAgents(s, m) : SKIP),
     readOnly: (s, m) => m.silent === true,
-    run: (s, m) => s.listAgents(m.silent === true, m.automatic === true, String(m.projectWindow || ''), m.checkTrust === true),
+    run: (s, m) => listSelectedAgents(s, m, String(m.projectWindow || '')),
     fail: (s, m, error) => s.emit({ t: 'agents', app: s.app, sel: s.selectionKey(), silent: m.silent === true, error: error?.message || '会话已切换，请重试列表' }),
   },
   openAgent: { switchRead: true, navigation: true,
     pre: (s, m) => {
       const id = String(m.id ?? '');
-      if (s.app !== 'codex' || s.cdp || s.fusionBinding || !id.startsWith('thread:')) return SKIP;
-      const threadId = parseSessionRef('codex', id);
-      if (!threadId || !s.adapter.backendThread(threadId)) return SKIP;
-      return s.adapter.attachBackend.call(s, { threadId });
+      const backend = AGENT_REGISTRY[s.app]?.navigation.backendAgent?.call(s, id, true);
+      return backend ? s.adapter.attachBackend.call(s, backend) : SKIP;
     },
     run: (s, m) => s.openAgent(String(m.id ?? ''), String(m.title ?? '')),
   },
@@ -299,11 +299,11 @@ export const ROUTES = {
   },
   pickMenu: {
     run: async (s, m) => {
-      try { return await s.pickMenu(m.kind, m.label, m.name); }
+      try { return await s.pickMenu(m.kind, m.label, m.name, m.confirmFullAccess === true); }
       catch (error) { if (m.kind === 'model' || m.kind === 'effort') await s.closeMenus(); throw error; }
     },
-    after: (s, m) => { if (m.kind === 'model' || m.kind === 'effort' || m.kind === 'fast' || s.app === 'opencode' && m.kind === 'permission') s.emit({ t: 'menuPicked', sel: s.selectionKey(), requestId: m.requestId, kind: m.kind, label: m.label, ok: true }); },
-    fail: (s, m) => { if (m.kind === 'model' || m.kind === 'effort' || m.kind === 'fast' || s.app === 'opencode' && m.kind === 'permission') s.emit({ t: 'menuPicked', sel: s.selectionKey(), requestId: m.requestId, kind: m.kind, label: m.label, ok: false }); },
+    after: (s, m, result) => { if (['model', 'effort', 'fast'].includes(m.kind) || m.kind === 'permission' && ['codex', 'opencode'].includes(s.app)) s.emit({ t: 'menuPicked', sel: s.selectionKey(), requestId: m.requestId, kind: m.kind, label: m.label, ok: !result?.pending, ...(result?.pending && { pending: true }) }); },
+    fail: (s, m) => { if (['model', 'effort', 'fast'].includes(m.kind) || m.kind === 'permission' && ['codex', 'opencode'].includes(s.app)) s.emit({ t: 'menuPicked', sel: s.selectionKey(), requestId: m.requestId, kind: m.kind, label: m.label, ok: false }); },
   },
   fusionOptions: { run: (s, m) => runAppMethod(s, 'fusionOptions', String(m.part ?? '')) },
   fusionPick: { run: (s, m) => runAppMethod(s, 'fusionPick', String(m.part ?? ''), m.value) },
@@ -364,12 +364,12 @@ export const ROUTES = {
   closeDesktopSettings: { run: s => s.closeDesktopSettings() },
   toggleSetting: { run: (s, m) => s.toggleSetting(String(m.label ?? ''), typeof m.value === 'string' ? m.value : undefined) },
   usage: { switchRead: true,
-    fast: s => s.app === 'codex' || s.app === 'devin',
-    fastRun: (s, m) => s.showUsage(m.automatic === true),
-    background: (s, m) => m.automatic === true,
-    readOnly: (s, m) => m.automatic === true,
+    // Devin account reads can occupy its renderer for over a second. Run
+    // automatic reads after navigation, and serialize manual refreshes.
+    background: (s, m) => s.app === 'codex' || m.automatic === true || m.sel?.startsWith('codex|'),
+    readOnly: (s, m) => s.app === 'codex' || m.automatic === true,
     fusionFree: true,
-    run: (s, m) => s.showUsage(m.automatic === true),
+    run: showSelectedUsage,
   },
   fusionWorkspace: fusionRoute('fusionWorkspace'),
   fusionCreate: fusionRoute('fusionCreate'),

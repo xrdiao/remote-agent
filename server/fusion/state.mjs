@@ -1,3 +1,4 @@
+import { assertNativeSessionUnclaimedByTask } from '../session/task-ownership.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
@@ -137,6 +138,10 @@ export class FusionState {
       throw new Error('不能改变 Fusion 工作台的原始身份');
     next.updated = Date.now(); next.revision++;
     const owner = this.#owners[run.deviceId], current = next.removedAt && owner.current === run.id ? '' : owner.current;
+    for (const binding of next.bindings) {
+      if (!record.value.bindings.some(old => old.app === binding.app && old.host === binding.host && old.threadId === binding.threadId))
+        assertNativeSessionUnclaimedByTask(binding);
+    }
     const value = structuredClone(next);
     this.#write(value, current);
     record.value = freeze(value);
@@ -259,6 +264,16 @@ export function fusionSummary(controller) {
 export function fusionBindingInUse(app, thread) {
   return allFusionRuns().some(controller => controller.bindings.some(binding => binding.role !== 'main' && binding.app === app && binding.threadId === thread
     && controller.attempts.some(attempt => attempt.bindingId === binding.id && NATIVE_UNSETTLED.includes(attempt.status))));
+}
+export function fusionSessionReserved({ app, threadId, project }) {
+  assertFusionReady();
+  if ([...fusionState.failures.values()].some(failure => failure.stage === 'load')) throw Error('task_occupancy_unavailable');
+  return allFusionRuns().some(run => run.bindings.some(binding =>
+    binding.app === app && !binding.host && binding.threadId === threadId)
+    || [run.main, ...run.agents].some(owner => owner.creations?.some(creation =>
+      creation.app === app && !['bound', 'rejected'].includes(creation.status)
+      && (creation.nativeThreadId === threadId || creation.requestedThreadId === threadId
+        || !creation.nativeThreadId && creation.projectId === project.id))));
 }
 export function fusionWindowInUse(window) {
   const target = String(window.id).replace(/^(cursor|devin|codex):/, '');

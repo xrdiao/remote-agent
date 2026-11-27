@@ -26,6 +26,9 @@ const selectedConversation = {
   live: '', serial: 0, navigation: null, ready: false, metadata: '', metadataWindow: '',
 };
 
+function setViewSelection(key) {
+  viewSel = key;
+}
 function resetSelectionProjection() {
   Object.assign(selectedConversation, { live: '', navigation: null, ready: false, metadata: '', metadataWindow: '' });
 }
@@ -173,9 +176,11 @@ function applyCodexAccount(value) {
   if (previous !== value.account) {
     codexAccounts.set(key, value.account);
     quotaCache.delete(key);
-    for (const name of [...menuCache.keys()]) if (name.startsWith(menuCachePrefix())) menuCache.delete(name);
-    menuRequest++;
-    if (menuPending) showMenuError(menuPending.kind, 'Codex 账号已更新，请重新读取菜单');
+    if (previous !== undefined) {
+      for (const name of [...menuCache.keys()]) if (name.startsWith(menuCachePrefix())) menuCache.delete(name);
+      menuRequest++;
+      if (menuPending) showMenuError(menuPending.kind, 'Codex 账号已更新，请重新读取菜单');
+    }
     renderQuota({ missing: true, quota: [], limits: [] });
   }
   appPlans = { ...appPlans, codex: value.plan || '' };
@@ -202,7 +207,10 @@ function applySelection(m, clearChat = true) {
     selectedConversation.ready = false;
     setWindowReady(false);
     $('items').inert = true;
-    capabilityBlock = ''; viewSel = m.sel || ''; selectedConversation.live = ''; beginChatSelection(); thoughtObserver.disconnect(); cache.clear(); $('sessionNotice').hidden = true;
+    capabilityBlock = '';
+    setViewSelection(m.sel || '');
+    selectedConversation.live = '';
+    beginChatSelection(); thoughtObserver.disconnect(); cache.clear(); $('sessionNotice').hidden = true;
     if (currentApp === 'codex') { menuCache.delete(menuCacheKey('model')); menuCache.delete(menuCacheKey('effort')); }
   }
   const here = currentComputer();

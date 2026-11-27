@@ -9,10 +9,10 @@ import { openCode } from '../opencode/state.mjs';
 import { defineAgentAdapter, unsupportedCapability } from './adapter.mjs';
 
 const registry = Object.create(null);
-const add = (metadata, { adapter, methods, capabilities, nativeCapabilities }) => {
+const add = (metadata, { adapter, methods, capabilities, nativeCapabilities, navigation }) => {
   const app = metadata.app;
   if (registry[app]) throw new Error(`Duplicate agent adapter: ${app}`);
-  registry[app] = defineAgentAdapter({ ...metadata, adapter, methods, capabilities, nativeCapabilities });
+  registry[app] = defineAgentAdapter({ ...metadata, adapter, methods, capabilities, nativeCapabilities, navigation });
 };
 
 const editor = app => EDITORS.find(item => item.app === app);

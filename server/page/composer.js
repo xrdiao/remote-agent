@@ -347,28 +347,48 @@
     const requestForView = () => {
       const scopes = codexHistoryScopes();
       const manager = codexConversationManager(codexThread(), scopes, host);
-      if (manager?.requestClient) return (method, params) => manager.requestClient.sendRequest(method, params);
+      if (manager?.requestClient) return { client: manager.requestClient, manager,
+        request: (method, params) => manager.requestClient.sendRequest(method, nativeValue(params)) };
       for (const scope of scopes) for (const bindings of scope.familyBindings.values()) {
         const connection = codexHistoryBinding(scope, bindings.get(host))?.get();
         const rpc = connection?.status === 'ready' && connection.client?.hostId === host && connection.client.rpc;
-        if (typeof rpc?.sendRequest === 'function') return (method, params) =>
-          doc.defaultView.Reflect.apply(rpc.sendRequest, rpc, [method, nativeValue(params), nativeValue({ priority: 'critical' })]);
+        if (typeof rpc?.sendRequest === 'function') return { client: rpc, request: (method, params) =>
+          doc.defaultView.Reflect.apply(rpc.sendRequest, rpc, [method, nativeValue(params), nativeValue({ priority: 'critical' })]) };
       }
       return null;
     };
-    let request = requestForView();
-    if (!request && waitForAccount) {
+    let owner = requestForView();
+    if (!owner && waitForAccount) {
       const deadline = Date.now() + 6000;
-      while (!request && !codexNeedsLogin() && Date.now() < deadline) {
+      while (!owner && !codexNeedsLogin() && Date.now() < deadline) {
         await new Promise(resolve => setTimeout(resolve, 100));
-        request = requestForView();
+        owner = requestForView();
       }
     }
-    if (!request) {
-      if (codexNeedsLogin()) return { account: null, requiresOpenaiAuth: true };
+    if (!owner) {
+      if (codexNeedsLogin()) {
+        const account = { account: null, requiresOpenaiAuth: true };
+        return refresh === 'snapshot' ? { account } : account;
+      }
       return null;
     }
-    return refresh ? request('account/rateLimits/read', {}) : request('account/read', { refreshToken: false });
+    const { request, manager, client } = owner;
+    if (refresh !== 'snapshot') return refresh ? request('account/rateLimits/read', {}) : request('account/read', { refreshToken: false });
+    let changed = false;
+    const subscription = manager?.subscribeAuthStatus?.(() => { changed = true; });
+    try {
+      const account = await request('account/read', { refreshToken: false });
+      if (!account || changed || requestForView()?.client !== client) return null;
+      if (account.account?.type !== 'chatgpt') return { account };
+      let limits, failed = false;
+      try { limits = await request('account/rateLimits/read', {}); }
+      catch { failed = true; }
+      if (requestForView()?.client !== client || doc.defaultView.document !== doc) return null;
+      return { account, limits, changed: changed || !subscription && !limits?.accountId, failed };
+    } finally {
+      if (typeof subscription === 'function') subscription();
+      else subscription?.unsubscribe();
+    }
   };
 
   // Named controls in Cursor's UI; each entry lists fallbacks from newest to oldest Cursor layouts.

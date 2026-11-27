@@ -551,6 +551,11 @@
     }
     return true;
   };
+  const codexPermissionLabel = permissions => !permissions ? null
+    : permissions.sandboxPolicy?.type === 'dangerFullAccess' ? 'Full access'
+      : ['auto_review', 'guardian_subagent'].includes(permissions.approvalsReviewer) ? 'Approve for me' : 'Ask for approval';
+  const codexConversationPermissions = conversation => conversation.latestThreadSettings?.sandboxPolicy
+    ? conversation.latestThreadSettings : conversation.currentPermissions;
   const codexConversationChat = async (history, pageSize) => {
     const thread = remoteContext.threadId, scopes = codexHistoryScopes();
     const host = remoteContext.host || 'local', manager = codexConversationManager(thread, scopes, host);
@@ -570,10 +575,9 @@
     const settings = conversation.latestThreadSettings || {};
     mergeCodexCapacity(page.items, state, codexVisibleThread() === thread ? codexCapacityItem() : null);
     const model = settings.model || conversation.latestModel || '', effort = settings.effort ?? conversation.latestReasoningEffort;
-    const permissions = conversation.currentPermissions, visible = codexVisibleThread() === thread;
+    const permissions = codexConversationPermissions(conversation), visible = codexVisibleThread() === thread;
     const visiblePermission = visible ? permissionLabel() : null;
-    const permission = visiblePermission || (['auto_review', 'guardian_subagent'].includes(permissions?.approvalsReviewer) ? 'Approve for me'
-      : permissions?.sandboxPolicy?.type === 'dangerFullAccess' ? 'Full access' : permissions ? 'Ask for approval' : null);
+    const permission = codexPermissionLabel(permissions) || visiblePermission;
     const view = visible ? codexFacts(conversation)?.view : null;
     return { thread, title: conversation.title || '', rect: [0, 0, 0, 0], items: page.items, global: [],
       _nativeState: { thread, run, busy: run?.status === 'running', host: remoteContext.host, ...nativeWaiting('codex', thread, manager) },

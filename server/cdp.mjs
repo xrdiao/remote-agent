@@ -1,7 +1,12 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
+import { setTimeout as sleep } from 'node:timers/promises';
+import { PAGE_FACTORY, PAGE_VERSION } from './page/build.mjs';
 
 // A window switch cancels only reads running in the previous binding's scope.
 export const cdpRead = new AsyncLocalStorage();
+const pageHelper = `globalThis.__remoteAgentPage_${PAGE_VERSION}`;
+const helperMissing = `RemoteAgent page helper missing: ${PAGE_VERSION}`;
+const helperInstalls = new WeakMap();
 
 export function awaitCdpRead(pending) {
   const signal = cdpRead.getStore();
@@ -12,6 +17,33 @@ export function awaitCdpRead(pending) {
     signal.addEventListener('abort', cancel, { once: true });
     Promise.resolve(pending).then(resolve, reject).finally(() => signal.removeEventListener('abort', cancel));
   });
+}
+
+export async function pollUntil(check, { timeout, delays = [25, 40, 60, 100, 150], signal = cdpRead.getStore() }) {
+  signal?.throwIfAborted();
+  if (timeout <= 0) return null;
+  const deadline = performance.now() + timeout;
+  const limit = new AbortController(), expired = new Error('Readiness deadline reached');
+  const poll = signal ? AbortSignal.any([limit.signal, signal]) : limit.signal;
+  const timer = setTimeout(() => limit.abort(expired), timeout);
+  try {
+    return await cdpRead.run(poll, async () => {
+      for (let attempt = 0; performance.now() < deadline; attempt++) {
+        poll.throwIfAborted();
+        const value = await awaitCdpRead(check(attempt));
+        poll.throwIfAborted();
+        const remaining = deadline - performance.now();
+        if (remaining <= 0) break;
+        if (value) return value;
+        await sleep(Math.min(remaining, delays[Math.min(attempt, delays.length - 1)]), undefined, { signal: poll });
+      }
+      return null;
+    });
+  } catch (error) {
+    signal?.throwIfAborted();
+    if (error === expired || error?.cause === expired) return null;
+    throw error;
+  } finally { clearTimeout(timer); }
 }
 
 export class Cdp {
@@ -90,8 +122,40 @@ export class Cdp {
   }
 
   async evaluate(expression, opts = {}) {
-    const r = await this.send('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true,
-      ...(opts.contextId != null ? { contextId: opts.contextId } : {}) }, opts.timeout ?? 30000);
+    const params = { returnByValue: true, awaitPromise: true,
+      ...(opts.contextId != null ? { contextId: opts.contextId } : {}) };
+    const timeout = opts.timeout ?? 30000;
+    const evaluate = (source, remaining = timeout) =>
+      this.send('Runtime.evaluate', { ...params, expression: source }, remaining);
+    let r;
+    if (expression.includes(PAGE_FACTORY)) {
+      const deadline = performance.now() + timeout;
+      const remaining = () => Math.max(1, deadline - performance.now());
+      // Guard before evaluating the caller's expression. On a context reset, only
+      // the guard has run, so action expressions can safely follow installation.
+      const cached = `typeof ${pageHelper} === "function"
+        ? (${expression.replaceAll(PAGE_FACTORY, pageHelper)}\n)
+        : (() => { throw ${JSON.stringify(helperMissing)}; })()`;
+      r = await evaluate(cached, remaining());
+      if (r.exceptionDetails?.exception?.value === helperMissing) {
+        const socket = this.ws, context = opts.contextId ?? null;
+        let installs = helperInstalls.get(socket);
+        if (!installs) helperInstalls.set(socket, installs = new Map());
+        let install = installs.get(context);
+        if (!install) {
+          // Other reads in the same execution context can use this installation
+          // even if the navigation that initiated it is superseded.
+          install = cdpRead.run(null, () =>
+            evaluate(`typeof ${pageHelper} === "function" || (${pageHelper} = ${PAGE_FACTORY}, true)`, remaining()))
+            .then(result => {
+              if (result.exceptionDetails) throw new Error(result.exceptionDetails.exception?.description || 'page helper install failed');
+            }).finally(() => installs.delete(context));
+          installs.set(context, install);
+        }
+        await awaitCdpRead(install);
+        r = await evaluate(cached, remaining());
+      }
+    } else r = await evaluate(expression);
     if (r.exceptionDetails) throw new Error(r.exceptionDetails.exception?.description || 'evaluate failed');
     return r.result.value;
   }

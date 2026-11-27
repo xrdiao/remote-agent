@@ -66,19 +66,29 @@ function mergeDevinCatalogs(catalogs) {
   }
   return { ready: ready.length > 0, complete: false, rows: [...rows.values()], removed: Object.keys(removedAt), removedAt };
 }
-async function refreshSessionCatalog(source, changed) {
+async function refreshSessionCatalog(source, changed, background = false) {
   const app = source.win?.app;
   if (!['cursor', 'devin', 'codex'].includes(app)) return;
   if (!catalogReads.has(app)) catalogReads.set(app, { at: 0 });
   const read = catalogReads.get(app);
   if (read.promise) {
-    if (changed) read.pending = source;
+    if (!background && read.partial) {
+      await read.promise;
+      return refreshSessionCatalog(source, changed);
+    }
+    if (changed) read.pending = { source, background };
     return read.promise;
   }
   if (!changed && read.catalog && Date.now() - read.at < 15000) return;
+  const candidates = app === 'devin' ? [...new Set([source, ...[...windows.values()].filter(window => window.win?.app === app)])] : [source];
+  const deferred = background ? candidates.filter(window => window.foregroundReads) : [];
+  for (const window of deferred) window.deferBackgroundRead('session-catalog', () => refreshSessionCatalog(window, true, true), null)
+    .catch(error => { if (windows.get(window.cdp.wsUrl) === window) publishCatalog(app, error); });
+  const sources = candidates.filter(window => !deferred.includes(window));
+  if (!sources.length) return;
+  read.partial = deferred.length > 0;
   read.at = Date.now();
   read.promise = (async () => {
-    const sources = app === 'devin' ? [...new Set([source, ...[...windows.values()].filter(window => window.win?.app === app)])] : [source];
     const ids = projectSessionIds(app);
     if (app === 'devin') for (const window of sources) {
       const id = sessionId(app, window.thread);
@@ -88,13 +98,24 @@ async function refreshSessionCatalog(source, changed) {
       await window.connect();
       if (app === 'codex') return readCodexCatalog(window, ids);
       const result = await window.cdp.evaluate(helpersCall(`nativeSessionInfo(${JSON.stringify(app)}, ${JSON.stringify(ids)}, true)`), { timeout: 30000 });
-      if (app === 'devin' && result.ready) window.devinCatalog = new Map(result.rows.map(row => [row.id, row]));
+      if (app === 'devin' && result.ready) {
+        const observedAt = result.at;
+        window.devinCatalog = new Map(result.rows.map(row => [row.id, { ...row, observedAt }]));
+      }
       return result;
     }));
     if (results.every(result => result.status === 'rejected')) throw results[0].reason;
     const catalogs = results.map(result => result.status === 'fulfilled' ? result.value : { ready: false });
-    const catalog = app === 'devin' ? mergeDevinCatalogs(catalogs) : catalogs[0];
+    // A deferred renderer is unavailable for this scan, so partial reads cannot
+    // establish that a Devin session is absent from every native directory.
+    const catalog = app === 'devin' ? mergeDevinCatalogs([...catalogs, ...deferred.map(() => ({ ready: false }))]) : catalogs[0];
     if (!catalog.ready) return;
+    if (deferred.length && read.catalog) {
+      const seen = new Set([...catalog.rows.map(row => row.id), ...catalog.removed]);
+      // Deferring one renderer must not erase its last published directory rows.
+      catalog.rows.push(...read.catalog.rows.filter(row => !seen.has(row.id)));
+    }
+    catalog.observedAt = Date.now();
     catalog.rows = catalog.rows.map(row => row.host || !row.workspace ? row : { ...row, workspace: localFilePath(row.workspace) });
     if (app === 'codex' && catalog.unknown?.length) {
       const states = await codexSessionStates(catalog.unknown, catalog.rows.map(row => row.path).filter(Boolean));
@@ -111,9 +132,10 @@ async function refreshSessionCatalog(source, changed) {
     if (first || changed || reconciled || recovered) publishCatalog(app);
   })().catch(error => publishCatalog(app, error)).finally(() => {
     read.promise = null;
+    read.partial = false;
     const pending = read.pending;
     read.pending = null;
-    if (pending) refreshSessionCatalog(pending, true).catch(error => publishCatalog(app, error));
+    if (pending) refreshSessionCatalog(pending.source, true, pending.background).catch(error => publishCatalog(app, error));
   });
   await read.promise;
 }
@@ -183,6 +205,30 @@ export async function devinSource(thread, preferred = '', project = null) {
   return choose(sources.filter(source => source.thread === id || source.catalog?.some(row => row.id === id)));
 }
 export const nativeWindowAt = url => windows.get(url);
+function liveReadWindow(url, app, pageId) {
+  const source = nativeWindowAt(url);
+  if (!pageId || !source || source.cdp.ws?.readyState !== WebSocket.OPEN) return;
+  const id = value => value?.startsWith(app + ':') ? value.slice(app.length + 1) : value;
+  const matches = win => win?.app === app && id(win.pageId || win.id) === id(pageId);
+  if (source.win) {
+    if (source.win.ws === url && matches(source.win)) return source;
+  } else if ((!source.app || source.app === app) && targets.some(win => win.editorWs === url && matches(win))) {
+    // A Codex workbench and its chat webview have different CDP targets.
+    return source;
+  }
+}
+
+export async function withNativeWindowRead(url, app, pageId, read) {
+  cdpRead.getStore()?.throwIfAborted();
+  const source = liveReadWindow(url, app, pageId);
+  if (source) return read(source.cdp);
+  const cdp = new Cdp(url);
+  try {
+    await cdp.connect();
+    return await read(cdp);
+  } finally { cdp.close(); }
+}
+
 export function configureNativeRetry(deviceId, source, settings) {
   for (const window of windows.values()) window.retrySettings.delete(deviceId);
   if (source && settings?.enabled) {
@@ -209,7 +255,10 @@ export class NativeWindow {
     this.previews = new Map();
     this.runStates = new Map();
     this.conversations = new Map();
+    this.codexOwners = new Map();
     this.contexts = new Map();
+    this.foregroundLeases = new Set();
+    this.backgroundReads = new Map();
     this.cdp.on('Runtime.executionContextCreated', ({ context }) => this.contexts.set(context.id, context));
     this.cdp.on('Runtime.executionContextDestroyed', ({ executionContextId }) => this.contexts.delete(executionContextId));
     this.cdp.onclose = error => this.close(error);
@@ -310,15 +359,17 @@ export class NativeWindow {
     if (this.watching) return this.watching;
     this.watching = cdpRead.run(null, async () => {
       await this.connect();
-      if (win.app === 'codex') await this.cdp.evaluate(helpersCall("nativeSessionInfo('codex', '', 'refreshCatalog')"));
-      refreshSessionCatalog(this, false).catch(error => publishCatalog(win.app, error));
+      this.deferBackgroundRead('startup-catalog', async () => {
+        if (win.app === 'codex') await this.cdp.evaluate(helpersCall("nativeSessionInfo('codex', '', 'refreshCatalog')"));
+        await refreshSessionCatalog(this, false, true);
+      }, null).catch(error => { if (windows.get(this.cdp.wsUrl) === this) publishCatalog(win.app, error); });
       const observer = this.observer = new NativeCdp(this.cdp.wsUrl);
       this.stopWatch = await watchChat(observer, () => {
         this.revision++;
         this.readReceipts().catch(() => {});
-        this.read().catch(() => {});
+        this.readInBackground().catch(() => {});
       }, win.app === 'codex');
-      this.read().catch(() => {});
+      this.readInBackground().catch(() => {});
     }).catch(error => { this.watching = null; this.observer?.close(); throw error; });
     return this.watching;
   }
@@ -380,11 +431,85 @@ export class NativeWindow {
     })().finally(() => { entry.flight = null; });
     return entry.flight;
   }
+  get foregroundReads() { return this.foregroundLeases.size; }
+  beginForegroundRead(signal) {
+    if (signal?.aborted) return () => {};
+    const release = () => {
+      if (!this.foregroundLeases.delete(release)) return;
+      signal?.removeEventListener('abort', release);
+      if (this.foregroundReads || !this.backgroundReads.size || this.backgroundFlush) return;
+      // A newer foreground read may have overtaken the previous scheduled flush.
+      // Give deferred work the next actual idle boundary in that case.
+      if (this.backgroundFlushMissed) return this.flushBackgroundReads();
+      this.backgroundFlush = setImmediate(() => {
+        this.backgroundFlush = null;
+        if (this.foregroundReads) this.backgroundFlushMissed = true;
+        else this.flushBackgroundReads();
+      });
+    };
+    this.foregroundLeases.add(release);
+    signal?.addEventListener('abort', release, { once: true });
+    return release;
+  }
+  async deferBackgroundRead(key, action, signal = cdpRead.getStore()) {
+    signal?.throwIfAborted();
+    if (windows.get(this.cdp.wsUrl) !== this) return;
+    const previous = this.backgroundReads.get(key);
+    if (previous) return awaitCdpRead(previous.promise);
+    if (!this.foregroundReads) return cdpRead.run(signal, action);
+    const job = {};
+    const execute = bindOperation(action);
+    const cleanup = () => {
+      this.backgroundReads.delete(key);
+      signal?.removeEventListener('abort', cancel);
+    };
+    const cancel = () => job.cancel(signal.reason);
+    job.promise = new Promise((resolve, reject) => {
+      job.cancel = error => { cleanup(); reject(error); };
+      job.run = () => {
+        cleanup();
+        try { resolve(cdpRead.run(signal, execute)); }
+        catch (error) { reject(error); }
+      };
+    });
+    this.backgroundReads.set(key, job);
+    signal?.addEventListener('abort', cancel, { once: true });
+    return job.promise;
+  }
+  startBackgroundRead(key) {
+    this.backgroundReads.get(key)?.run();
+  }
+  flushBackgroundReads() {
+    this.backgroundFlushMissed = false;
+    for (const key of this.backgroundReads.keys()) {
+      if (this.foregroundReads) break;
+      this.startBackgroundRead(key);
+    }
+  }
+  readInBackground() {
+    // Leave live transcript subscribers, running turns and receipt tracking
+    // independent of first-screen priority.
+    if (this.listeners.size || this.sends.size || this.snapshot?.chat?.busy || this.snapshot?.states?.some(state => state.busy))
+      return this.read();
+    return this.deferBackgroundRead('snapshot', () => this.read(), null);
+  }
   invalidate() {
     this.revision++;
     this.updatedAt = 0;
     this.reading?.controller.abort(new Error('原生窗口内容已切换'));
     this.reading = null;
+  }
+  rememberCodexOwner(id, owner, pageId, revision) {
+    if (revision !== this.revision) return;
+    this.codexOwners.delete(id);
+    if (owner?.role !== 'owner') return;
+    this.codexOwners.set(id, { value: owner, pageId, revision, at: Date.now() });
+    if (this.codexOwners.size > 16) this.codexOwners.delete(this.codexOwners.keys().next().value);
+  }
+  cachedCodexOwner(id, pageId) {
+    const seen = this.codexOwners.get(id);
+    if (seen?.pageId === pageId && this.cdp.ws?.readyState === 1 && seen.revision === this.revision
+        && Date.now() - seen.at < this.interval()) return seen.value;
   }
   setThread(thread) {
     if (this.thread === thread) return;
@@ -475,12 +600,28 @@ export class NativeWindow {
         ${app === 'cursor' ? "for (const state of states) state.nativeUpdatedAt = h.nativeSessionInfo('cursor', state.thread, 'connection')?.updatedAt || 0;" : ''}
         return { chat, activeTab, states,
           surface: h.devinSurface(),
+          ${app === 'codex' ? "owner: chat?.thread && h.codexThread() === chat.thread && h.nativeSessionInfo('codex', chat.thread, 'owner')," : ''}
         };
       })()`);
       controller.signal.throwIfAborted();
+      if (app === 'codex') {
+        const { owner, chat } = result;
+        if (chat?.thread) this.rememberCodexOwner(chat.thread, owner && { ...owner, role: 'owner', visible: true },
+          this.win.pageId, revision);
+        delete result.owner;
+      }
       rememberSessionStatuses((result.states || []).map(state => ({ ...state, app, threadId: state.thread })));
       for (const state of result.states || []) if (state.run && state.run.status !== 'unknown') this.runStates.set(state.thread, state.run);
-      this.readCatalog().catch(error => publishCatalog(app, error));
+      if (fresh && !this.catalogDeferred) {
+        // Resolve and publish the real first-screen read before scheduling the
+        // next native catalog evaluation on the same renderer.
+        this.catalogDeferred = setImmediate(() => {
+          this.catalogDeferred = null;
+          if (windows.get(this.cdp.wsUrl) === this && this.win?.app === app)
+            this.readCatalog().catch(error => publishCatalog(app, error));
+        });
+        this.catalogDeferred.unref?.();
+      } else if (!fresh && !this.catalogDeferred) this.readCatalog().catch(error => publishCatalog(app, error));
       const key = JSON.stringify(result);
       const changed = key !== this.snapshotKey;
       this.snapshotKey = key;
@@ -510,13 +651,35 @@ export class NativeWindow {
       if (this.reading === read) {
         this.reading = null;
         if (!controller.signal.aborted) this.retryCapacity(this.snapshot);
-        if (!controller.signal.aborted && revision !== this.revision) this.read().catch(() => {});
+        if (!controller.signal.aborted && revision !== this.revision) {
+          this.readInBackground().catch(() => {});
+        }
       }
     });
     this.reading = read;
     return awaitCdpRead(read.promise);
   }
   readCatalog() {
+    if (this.foregroundReads) return this.deferBackgroundRead('window-catalog', () => this.readCatalog(), null);
+    // Native catalog reads can take hundreds of milliseconds on a busy renderer.
+    // Chat snapshots do not imply a changed catalog: coalesce the frequent
+    // observer-triggered reads while direct user catalog requests stay fresh.
+    if (['cursor', 'devin', 'codex'].includes(this.win?.app) && this.catalogAt && this.catalog) {
+      const age = Date.now() - this.catalogAt;
+      if (age < 900) {
+        // A native event received during this window still needs a refresh
+        // after the coalescing period, even if no further events arrive.
+        if (!this.catalogTimer) {
+          this.catalogTimer = setTimeout(() => {
+            this.catalogTimer = null;
+            this.readCatalog().catch(error => publishCatalog(this.win.app, error));
+          }, Math.max(1, 900 - age));
+          this.catalogTimer.unref?.();
+        }
+        return this.catalogReading || Promise.resolve(this.catalog);
+      }
+    }
+    if (this.catalogTimer) { clearTimeout(this.catalogTimer); this.catalogTimer = null; }
     if (this.catalogReading) { this.catalogAgain = true; return this.catalogReading; }
     const app = this.win.app;
     this.catalogReading = cdpRead.run(null, async () => {
@@ -526,13 +689,27 @@ export class NativeWindow {
           throw new Error(`${this.win.id} 窗口会话列表：${error.message}`, { cause: error });
         });
       if (catalog === null) return;
+      // A workbench can reuse the same CDP target after opening a project.
+      // Its initial roots are no longer evidence of window ownership.
+      let changedRoots = false, rootsError;
+      if (app === 'cursor') {
+        try {
+          const roots = await editorRoots(this.cdp, app);
+          changedRoots = JSON.stringify(roots) !== JSON.stringify(this.roots);
+          this.roots = roots; this.rootsError = null;
+        } catch (error) {
+          changedRoots = this.roots !== undefined;
+          this.roots = undefined; this.rootsError = error.message; rootsError = error;
+        }
+      }
       for (const row of catalog) if (!row.host && row.workspace) row.workspace = localFilePath(row.workspace);
       this.catalog = catalog;
       this.catalogAt = Date.now();
       const key = JSON.stringify(catalog.map(row => [row.id, row.title, row.workspace, row.host, row.current, row.running]));
       const changed = this.catalogKey != null && this.catalogKey !== key;
       this.catalogKey = key;
-      await refreshSessionCatalog(this, changed);
+      if (changedRoots || rootsError) publishCatalog(app, rootsError);
+      await refreshSessionCatalog(this, changed, true);
     }).finally(() => {
       this.catalogReading = null;
       if (this.catalogAgain) { this.catalogAgain = false; this.readCatalog().catch(error => publishCatalog(app, error)); }
@@ -570,7 +747,7 @@ export class NativeWindow {
       this.receiptAgain = true;
       return this.receiptRead.promise;
     }
-    const requests = [...this.sends.values()].map(({ requestId, thread, afterTurn }) => ({ requestId, thread, afterTurn }));
+    const requests = [...this.sends.values()].map(({ requestId, thread, afterTurn, trackClientId }) => ({ requestId, thread, afterTurn, trackClientId }));
     const read = { controller: new AbortController() };
     read.promise = cdpRead.run(read.controller.signal, async () => {
       await this.connect();
@@ -578,6 +755,8 @@ export class NativeWindow {
         const h = ${PAGE_SRC};
         const receipts = ${JSON.stringify(requests)}.map(request => ({
           ...h.codexSendState(false, request.thread || undefined, request.afterTurn), requestId: request.requestId,
+          clientId: request.trackClientId ? h.nativeSessionInfo('codex', request.thread, 'dispatchClientId', request.requestId) : null,
+          firstThread: request.thread ? null : h.nativeSessionInfo('codex', request.requestId, 'firstSubmission'),
         }));
         const errors = window.__remoteAgentSubmitErrors || [];
         window.__remoteAgentSubmitErrors = [];
@@ -606,19 +785,24 @@ export class NativeWindow {
     for (const [id, request] of this.sends) {
       const state = result.receipts?.find(state => state.requestId === id) || result.receipt;
       if (!state || request.thread && state.thread !== request.thread) continue;
+      const receiptId = state.clientId && `${request.thread}:user-message:${state.clientId}`;
+      const owns = (id, ids, text, expected) => request.trackClientId
+        ? !!receiptId && (id === receiptId || ids?.includes(state.clientId))
+        : expected ? text.trim() === expected : request.hasAttachments;
       const matches = row => !request.before.has(row.id) && !claimed.has(row.id)
         && !row.nativeIds?.some(id => request.beforeQueues.has(id) || claimed.has(id))
-        && (request.expected ? row.t.trim() === request.expected : request.hasAttachments);
+        && owns(row.i, row.nativeIds, row.t, request.expected);
       const messages = new Map(state.messages.filter(matches).map(row => [row.i, row]));
       if (request.action === 'send') for (const run of state.runs || []) {
         if (!request.beforeTurns.has(run.id) && !claimed.has(run.id)
-            && (request.expected ? run.t.trim() === request.expected : request.hasAttachments)) messages.set(run.i, run);
+            && owns(run.i, run.nativeIds, run.t, request.expected)) messages.set(run.i, run);
       }
       // Steer can temporarily occupy the native admission queue. Only an
       // accepted user message confirms Steer; a queue row cannot confirm it.
       const queued = request.action === 'steer' ? [] : state.queued.filter(row => !request.beforeQueues.has(row.id) && !claimed.has(row.id)
-        && (request.queueExpected ? row.t.trim() === request.queueExpected : request.hasAttachments));
-      if (messages.size + queued.length === 1) {
+        && owns(row.messageId, null, row.t, request.queueExpected));
+      if (messages.size + queued.length === 1 && (request.thread || state.turnCount === 1
+          && state.firstThread && state.firstThread === state.thread)) {
         const row = queued[0] || messages.values().next().value;
         claimed.add(row.id);
         for (const nativeId of row.nativeIds || []) claimed.add(nativeId);
@@ -682,6 +866,14 @@ export class NativeWindow {
     targets = targets.filter(target => target.ws !== this.cdp.wsUrl);
     if (targets.length !== count && this.win?.app) publishCatalog(this.win.app);
     this.reading?.controller.abort(error);
+    if (this.catalogDeferred) clearImmediate(this.catalogDeferred);
+    this.catalogDeferred = null;
+    clearTimeout(this.catalogTimer);
+    this.catalogTimer = null;
+    clearImmediate(this.backgroundFlush);
+    this.backgroundFlush = null;
+    for (const job of this.backgroundReads.values()) job.cancel(error);
+    for (const release of this.foregroundLeases) release();
     this.receiptRead?.controller.abort(error);
     this.stopWatch?.();
     this.observer?.close();
@@ -723,7 +915,7 @@ export function startNativeWindows(listWindows) {
     if (Date.now() - discoveryAt >= 5000) scan();
     for (const source of windows.values()) {
       if (source.sends.size) source.readReceipts().catch(() => {});
-      if (source.win && Date.now() - source.updatedAt >= source.interval()) source.read().catch(() => {});
+      if (source.win && Date.now() - source.updatedAt >= source.interval()) source.readInBackground().catch(() => {});
     }
   }, 1000).unref();
 }

@@ -3,7 +3,9 @@ import { Unavailable } from '../browser.mjs';
 
 export default [
   { id: 'models.codex-permissions', title: 'Codex 三种权限实际切换并回读', refs: ['F08', 'W03', 'M02'], mode: 'write', apps: ['codex'], async run(c, app) {
-    await c.open(await c.target(app, 'permissions', true));
+    const target = await c.target(app, 'permissions', true);
+    c.check(target.owned, '权限测试仅限本轮拥有的隔离会话');
+    await c.open(target);
     const original = (await c.menu('permission')).find(row => row.checked);
     c.check(!!original, '原生权限有当前选项');
     const values = [];
@@ -12,6 +14,11 @@ export default [
         const choices = await c.menu('permission');
         c.check(choices.length === 3, '权限菜单保留三个模式');
         await c.b.click(`#sheet [data-kind="permission"]${by('data-label', label)}`);
+        if (label === 'Full access' && !choices.some(row => row.label === label && row.checked)) {
+          await c.b.wait("sheetKind==='ask'&&!!document.querySelector('#askOk')", '真实完全访问二次确认');
+          c.check(await c.b.read(`currentApp==='codex'&&lastChat?.thread===${attr(target.thread)}&&!lastChat.busy&&!lastChat.waiting`), '仅确认精确空闲隔离会话');
+          await c.b.click('#askOk');
+        }
         await c.b.wait('!menuPending', '权限修改回执');
         c.check((await c.menu('permission')).some(row => row.label === label && row.checked), '实际回读选中：' + label);
         values.push(label);

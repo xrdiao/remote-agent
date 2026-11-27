@@ -1,17 +1,18 @@
+import { fusionProject } from '../../fusion/state.mjs';
 import { publicErrorCode } from './errors.mjs';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { DATA_DIR, computerId, computerName, listDevices, needsTotp } from '../../../lib/auth.mjs';
-import { overviewSnapshot } from '../../overview.mjs';
+import { overviewSnapshot, mcpOverviewSnapshot } from '../../overview.mjs';
 import { readSessionHistory } from './session-history.mjs';
 import { openCode } from '../../opencode/state.mjs';
 import { terminalService } from '../../terminal-service.mjs';
 import * as local from '../chatgpt/local-files.mjs';
 import * as taskService from './tasks.mjs';
-import { discoverNativeApps, sendNativeMessage, readNativeProgress, cancelNativeTask, createNativeTaskSession,
-  prepareNativeTaskApproval, controlNativeSession } from './native-apps.mjs';
+import { discoverNativeApps, sendNativeMessage, readNativeProgress, cancelNativeTask, createNativeTaskSession, reusableNativeSessions, verifyExistingTaskSession,
+  prepareNativeTaskApproval, controlNativeSession, readNativeSendAcknowledgement } from './native-apps.mjs';
 
 const uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/;
 const text=(max=16000)=>({type:'string',minLength:1,maxLength:max});
@@ -27,8 +28,8 @@ function qaSessionAllowed(row) {
   try {return !!row.workspace && inside(checkedRoot(),fs.realpathSync(row.workspace));}
   catch{return false;}
 }
-const selected = (device, args) => {
-  const snapshot=overviewSnapshot(device.id);
+const selected = async (device, args) => {
+  const snapshot=await mcpOverviewSnapshot(device.id,args.app);
   const list=snapshot.sessions.filter(s=>s.app===args.app&&s.windowId===args.window_id&&s.threadId===args.thread_id&&!s.dormant&&qaSessionAllowed(s));
   if(list.length!==1 || list[0].host)throw Error('session_not_found_or_remote');
   return list[0];
@@ -55,10 +56,10 @@ function persist(id,obj,create=false) {
     else fs.renameSync(tmp,name);
   }finally{fs.rmSync(tmp,{force:true});}
 }
-async function mutating(device,name,args,action) {
+async function mutating(device,name,args,action,semantics) {
   if(!uuid.test(args.operation_id||''))throw Error('invalid_operation_id');
   getValidDevice(device.id);
-  const id=args.operation_id,key=sha(JSON.stringify([device.id,name,args]));
+  const id=args.operation_id,key=sha(JSON.stringify([device.id,name,args,...(semantics ? [semantics] : [])]));
   const previous=record(id);
   if(previous){
     if(previous.hash!==key||previous.device!==device.id)throw Error('operation_id_conflict');
@@ -77,7 +78,8 @@ async function mutating(device,name,args,action) {
       const value=await action();
       done={...row,state:value?.state||'SUCCEEDED',result:value,completedAt:Date.now()};
     }catch(e){
-      done={...row,state:e?.outcomeUnknown?'UNKNOWN':'FAILED',error:safeErr(e),completedAt:Date.now()};
+      done={...row,state:e?.outcomeUnknown?'UNKNOWN':'FAILED',error:safeErr(e),completedAt:Date.now(),
+        ...(e?.code==='ambiguous_reusable_session' ? { candidates:e.candidates } : {})};
     }
     try { persist(id,done);return done; }
     catch {
@@ -99,6 +101,12 @@ const tool=(name,description,properties={},annotations=reading)=>({
 });
 const file={path:text(1024)};
 const sess={app:{type:'string',enum:['opencode','codex','cursor','devin']},window_id:text(2048),thread_id:text(256)};
+const SESSION_PAGE_LIMIT = 150;
+const sessionListInput = {
+  app: sess.app,
+  limit: { type: 'integer', minimum: 1, maximum: SESSION_PAGE_LIMIT },
+  cursor: { ...text(75), pattern: '^[1-9][0-9]{0,9}\\.[a-f0-9]{64}$' },
+};
 const operation={operation_id:{type:'string',pattern:uuid.source}};
 const terminal={terminal_id:text(64)};
 const taskOptional=(max=2048)=>({type:'string',minLength:0,maxLength:max});
@@ -116,7 +124,7 @@ const taskTool=(name,description,properties,required=[],annotations=reading)=>{
 export const definitions=[
   tool('list_devices','List the paired RA computer represented by this server.'),
   tool('list_agents','Discover native agents available on this paired computer.'),
-  tool('list_sessions','List RA native agent sessions on this computer.'),
+  taskTool('list_sessions','List authorized local RA sessions. Optionally filter by app. Continue with next_cursor as cursor and the same filters and limit. Defaults to a fair page of up to 150 sessions.',sessionListInput),
   taskTool('read_session','Read session status and bounded native conversation messages in chronological order. For Codex, Cursor and Devin, use limit (1–30) and next_before as before to page within recent history.',
     {...sess,limit:{type:'integer',minimum:1,maximum:30},before:text(2048)},Object.keys(sess)),
   taskTool('send_message','Send to an exact native session. Default idle refuses busy; explicitly choose queue or now (native steer/Devin interrupt). Unsupported modes fail. ACK is not completion.',{...sess,message:text(),when,...operation},[...Object.keys(sess),'message','operation_id'],mutation),
@@ -151,7 +159,7 @@ export const definitions=[
   taskTool('retry_task','Explicitly clone a FAILED/CANCELLED task with a new ID. UNKNOWN cannot be auto-retried.',{...taskId,...operation},['task_id','operation_id'],mutation),
 
 ];
-function checkArgs(def,args) {
+export function checkArgs(def,args) {
   if(!args||typeof args!=='object'||Array.isArray(args))throw Error('invalid_args');
   if(Object.keys(args).some(k=>!Object.hasOwn(def.inputSchema.properties,k)))throw Error('invalid_args');
   for(const [name,schema] of Object.entries(def.inputSchema.properties)){
@@ -167,7 +175,7 @@ function checkArgs(def,args) {
   }
 }
 async function readSession(device,args) {
-  const row=selected(device,args);
+  const row=await selected(device,args);
   if(row.app==='opencode') {
     if (args.limit !== undefined || args.before !== undefined) throw Error('native_operation_unsupported');
     await openCode.connect();
@@ -180,30 +188,128 @@ async function readSession(device,args) {
   }
   const history = await readSessionHistory(row, args);
   getValidDevice(device.id);
-  const current = selected(device, args);
+  const current = await selected(device, args);
   if (current.workspace !== row.workspace) throw Error('native_project_context_mismatch');
   return { app: row.app, window_id: row.windowId, thread_id: row.threadId,
     busy: current.busy, waiting: current.waiting, status_known: current.statusKnown, ...history };
 }
 
-async function exec(device,name,args) {
-  if(name==='list_devices')return {devices:[{id:computerId(),name:computerName(),kind:'local',root:checkedRoot()}]};
+async function listSessions(device, { app, limit = SESSION_PAGE_LIMIT, cursor }) {
+  const authorized = new Map();
+  for (const row of (await mcpOverviewSnapshot(device.id,app)).sessions) {
+    if (row.host || (app && row.app !== app) || !qaSessionAllowed(row)) continue;
+    const key = JSON.stringify([row.app, row.windowId, row.threadId]);
+    if (!authorized.has(key)) authorized.set(key, row);
+  }
+
+  const byApp = new Map();
+  // Keep the app-fair paging contract, but show verified Cursor bindings
+  // before dormant historical records. No routing from a dormant record.
+  for (const key of [...authorized.keys()].sort((a,b) => {
+    const x=authorized.get(a),y=authorized.get(b);
+    return (x.app==='cursor' && y.app==='cursor' ? Number(!!x.dormant)-Number(!!y.dormant) : 0)
+      || (a<b ? -1 : a>b ? 1 : 0);
+  })) {
+    const name = authorized.get(key).app;
+    if (!byApp.has(name)) byApp.set(name, []);
+    byApp.get(name).push(key);
+  }
+  const keys = [];
+  for (let rank = 0; keys.length < authorized.size; rank++) {
+    for (const group of byApp.values()) if (rank < group.length) keys.push(group[rank]);
+  }
+
+  const digest = cursor || keys.length > limit ? sha(JSON.stringify([device.id, app ?? null, limit, keys])) : null;
+  let offset = 0;
+  if (cursor) {
+    const [position, recorded] = cursor.split('.');
+    if (recorded !== digest) throw Error('session_cursor_stale');
+    offset = Number(position);
+    if (offset >= keys.length) throw Error('invalid_cursor');
+  }
+  const sessions = keys.slice(offset, offset + limit).map(key => {
+    const x = authorized.get(key);
+    return { app: x.app, window_id: x.windowId, thread_id: x.threadId, title: x.title, workspace: x.workspace,
+      busy: x.busy, waiting: x.waiting, dormant: !!x.dormant };
+  });
+  const next = offset + sessions.length;
+  return { sessions, next_cursor: next < keys.length ? `${next}.${digest}` : null };
+}
+
+async function resolveTaskInput(device, args, options, auth) {
+  if (!options?.compact) return args;
+  if (options.sessionPolicy === 'new' && (Object.hasOwn(args, 'window_id') || Object.hasOwn(args, 'thread_id')))
+    throw Error('invalid_session_policy');
+  const project = fusionProject(taskService.projectRoot(args.project_path));
+  const explicit = args.window_id || args.thread_id;
+  let preferred;
+  if (options.continuation) {
+    preferred = taskService.getStoredTask(device, options.continuation);
+    if (options.sessionPolicy === 'new' || preferred.app !== args.app || !preferred.window_id || !preferred.thread_id
+        || fusionProject(preferred.project)?.id !== project.id
+        || explicit && (args.window_id !== preferred.window_id || args.thread_id !== preferred.thread_id))
+      throw Error('task_continuation_mismatch');
+  }
+  if (!!args.window_id !== !!args.thread_id) throw Error('task_native_session_must_be_complete');
+  if (explicit) {
+    const input = { ...args, project_path: project.root };
+    await verifyExistingTaskSession(device, input, auth);
+    return input;
+  }
+  if (options.sessionPolicy === 'new') return { ...args, project_path: project.root };
+  if (args.when && args.when !== 'idle') throw Error('invalid_when');
+  const candidates = await reusableNativeSessions(device, { app: args.app, project, preferred },
+    auth, taskService.reusableSessionFilter());
+  if (!candidates.length) throw Error('no_reusable_session');
+  if (candidates.length > 1)
+    throw Object.assign(Error('ambiguous_reusable_session'), { code:'ambiguous_reusable_session', candidates });
+  const { window_id, thread_id } = candidates[0];
+  return { ...args, project_path: project.root, window_id, thread_id };
+}
+
+async function readOperationReceipt(device,id) {
+  const row=record(id);
+  if(!row||row.device!==device.id)throw Error('operation_not_found');
+  if(row.state==='STARTED')return {...row,state:'UNKNOWN',error:'unconfirmed_outcome'};
+  const sent=row.result;
+  if(row.name!=='send_message'||row.state!=='UNKNOWN'||sent?.state!=='UNKNOWN'
+      ||sent.app!=='codex'||!sent.window_id||sent.window_id==='backend'||!sent.thread_id
+      ||sent.request_id!==id||!['native_receipt_pending','native_receipt_unconfirmed'].includes(sent.reason)
+      ||locks.has(id))return row;
+  locks.add(id);
+  try {
+    let proof;
+    try {
+      proof=await readNativeSendAcknowledgement(device,{app:sent.app,window_id:sent.window_id,
+        thread_id:sent.thread_id,operation_id:id},{scope:'ra:read',allowSession:qaSessionAllowed});
+    }catch{return row;}
+    if(!proof||proof.app!==sent.app||proof.window_id!==sent.window_id||proof.thread_id!==sent.thread_id
+        ||proof.request_id!==id||typeof proof.native_message_id!=='string'
+        ||!proof.native_message_id.startsWith(sent.thread_id+':user-message:')
+        ||!proof.native_turn_id)return row;
+    getValidDevice(device.id);
+    const current=record(id);
+    if(!current||current.device!==device.id||current.hash!==row.hash||current.name!==row.name
+        ||current.state!=='UNKNOWN'||current.result?.request_id!==id
+        ||current.result?.app!==sent.app||current.result?.window_id!==sent.window_id
+        ||current.result?.thread_id!==sent.thread_id)return row;
+    const {reason,...previousResult}=sent;
+    const reconciled={...row,state:'ACKNOWLEDGED',result:{...previousResult,state:'ACKNOWLEDGED',
+      native_message_id:proof.native_message_id,native_turn_id:proof.native_turn_id,queued:false,native_queue_id:''},
+      reconciledAt:Date.now(),original_receipt:{state:'UNKNOWN',reason}};
+    try {persist(id,reconciled);return reconciled;}catch{return row;}
+  }finally{locks.delete(id);}
+}
+
+async function exec(device,name,args,options) {
+  if(name==='list_devices')return {devices:[{id:computerId(),computer_id:computerId(),device_id:device.id,name:computerName(),kind:'local',root:checkedRoot()}]};
   if(name==='list_agents'){
     const s=overviewSnapshot(device.id);
     return {agents:[...new Set(s.sessions.filter(qaSessionAllowed).map(x=>x.app))].map(app=>({app,ready:s.sessions.some(x=>x.app===app&&!x.dormant&&qaSessionAllowed(x))}))};
   }
-  if(name==='list_sessions'){
-    const s=overviewSnapshot(device.id);
-    return {sessions:s.sessions.filter(x=>!x.host&&qaSessionAllowed(x)).slice(0,150).map(x=>
-      ({app:x.app,window_id:x.windowId,thread_id:x.threadId,title:x.title,workspace:x.workspace,
-        busy:x.busy,waiting:x.waiting,dormant:!!x.dormant}))};
-  }
+  if(name==='list_sessions')return listSessions(device,args);
   if(name==='read_session')return readSession(device,args);
-  if(name==='operation_status'){
-    const r=record(args.operation_id);
-    if(!r||r.device!==device.id)throw Error('operation_not_found');
-    return r.state==='STARTED'?{...r,state:'UNKNOWN',error:'unconfirmed_outcome'}:r;
-  }
+  if(name==='operation_status')return readOperationReceipt(device,args.operation_id);
   if(name==='list_app_capabilities')
     return discoverNativeApps(device.id,qaSessionAllowed);
   const controlAuth={scope:'ra:control',allowSession:qaSessionAllowed};
@@ -217,24 +323,29 @@ async function exec(device,name,args) {
     const native={app:row.app,window_id:row.window_id,thread_id:row.thread_id,
       project_path:row.project,message:row.prompt,operation_id:row.task_id,when:row.when,model:row.model,effort:row.effort,fast:row.fast,capture_native_submission:row.app==='codex',
       ...(row.mode==='new_native_session'?{created_session:row.native_creation}:{})};
-    return sendNativeMessage(device,native,{scope:'ra:control',allowSession:qaSessionAllowed});
+    return sendNativeMessage(device,native,{...controlAuth,
+      ...(options?.compact || row.session_policy ? { beforeAction: () => taskService.assertTaskSessionAvailable(row) } : {}),
+      ...(row.app === 'codex' && row.window_id !== 'backend' ? { onCodexReceipt: receipt => {
+        taskService.recordCodexSendReceipt(device,row.task_id,receipt).catch(() => {});
+      } } : {})});
   };
   const createNative=row=>createNativeTaskSession(device,row,{scope:'ra:control',allowSession:qaSessionAllowed});
-  if(name==='create_task')
-    return mutating(device,name,args,()=>taskService.createTask(device,args));
-  if(name==='submit_task')
+  if(name==='create_task'||name==='submit_task')
     return mutating(device,name,args,async()=>{
-      const created=taskService.createTask(device,args);
-      return taskService.startTask(device,created.task_id,submitExisting,createNative);
-    });
+      const input=await resolveTaskInput(device,args,options,controlAuth);
+      const created=taskService.createTask(device,input,{policy:options?.compact ? options.sessionPolicy : undefined});
+      return name==='submit_task' ? taskService.startTask(device,created.task_id,submitExisting,createNative,options) : created;
+    },options?.compact ? { session_policy:options.sessionPolicy, continue_task_id:options.continuation } : undefined);
   if(name==='start_task')
-    return mutating(device,name,args,()=>taskService.startTask(device,args.task_id,submitExisting,createNative));
+    return mutating(device,name,args,()=>taskService.startTask(device,args.task_id,submitExisting,createNative,options));
   if(name==='get_task')
     return taskService.refreshTask(device,args.task_id,async row=>{
       const state=await readNativeProgress(device,{
         app:row.app,window_id:row.window_id,thread_id:row.thread_id,
         project_path:row.project,after_message_id:row.native_message_id,expected_prompt:row.prompt,
         expected_native_submission:row.native_submission,native_queued:row.native_queued,
+        reconcile_codex_send:taskService.canReconcileCodexSubmission(row),
+        expected_native_request_id:row.native_request_id,
         expected_command_approval:row.approval_response?.state==='UNCONFIRMED'
           || row.app==='codex' && row.window_id==='backend' && row.approval_response?.decision==='reject'
           ? row.approval_native_command : undefined,
@@ -242,9 +353,10 @@ async function exec(device,name,args) {
         expected_cancel_turn_id:row.app==='codex' && row.approval_response?.decision==='reject' ? row.native_submission?.turnId ?? row.approval_native_turn_id
           : row.app==='devin' && row.note==='native_cancel_requested_unconfirmed' ? row.cancel_native_turn_id : undefined,
         auth:{scope:'ra:read',allowSession:qaSessionAllowed}});
-      return {busy:state.busy,waiting:state.waiting,text:state.last_reply,
+      return {available:state.available,busy:state.busy,waiting:state.waiting,text:state.last_reply,
         confirmedCompletion:state.can_confirm_completion,confirmedFailure:state.can_confirm_failure,error:state.native_error,nativeQueued:state.native_queued,confirmedCancellation:state.can_confirm_cancellation,
-        currentTurn:state.current_turn,exactCompletion:state.exact_completion,note:state.reason,nativeSubmission:state.native_submission,
+        currentTurn:state.current_turn,exactActive:state.exact_active,exactCompletion:state.exact_completion,note:state.reason,nativeSubmission:state.native_submission,
+        reconciledRequestId:state.reconciled_request_id,
         pending:state.waiting_request,lastUserMessageId:state.last_user_message_id,nativeTurnId:state.native_turn_id,
         rejectedQuestion:state.native_question_rejection,rejectedPermission:state.native_permission_rejection,
         commandApproval:state.native_command_approval};
@@ -263,7 +375,7 @@ async function exec(device,name,args) {
       answers:args.answers_json?JSON.parse(args.answers_json):[]},
       (task,options)=>prepareNativeTaskApproval(device,task,options,{scope:'ra:control',allowSession:qaSessionAllowed})));
   if(name==='retry_task')
-    return mutating(device,name,args,()=>taskService.retryTask(device,args.task_id));
+    return mutating(device,name,args,()=>taskService.retryTask(device,args.task_id,options));
   if(name==='list_files')return local.listFiles(checkedRoot(),args.path);
   if(name==='read_file')return local.readFile(checkedRoot(),args.path);
   if(name==='save_file'||name==='create_file')
@@ -297,7 +409,7 @@ async function exec(device,name,args) {
   });
   throw Error('tool_not_found');
 }
-export async function runTool(device,scope,name,args) {
+export async function runTool(device,scope,name,args,options) {
   const d=definitions.find(x=>x.name===name);
   if(!d)throw Error('tool_not_found');
   checkArgs(d,args);
@@ -305,5 +417,7 @@ export async function runTool(device,scope,name,args) {
   if (name === 'read_session' && !String(scope || '').split(/\s+/).some(value => value === 'ra:read' || value === 'ra:control'))
     throw Error('scope_required');
   getValidDevice(device.id);
-  return exec(device,name,args);
+  const result = await exec(device,name,args,options);
+  return name === 'list_app_capabilities' || name === 'operation_status' || !d.annotations.readOnlyHint
+    ? { ...result, computer_id: computerId(), device_id: device.id } : result;
 }

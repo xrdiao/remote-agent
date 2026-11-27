@@ -1,3 +1,4 @@
+import { fusionProject } from '../../fusion/state.mjs';
 import fs from 'node:fs';
 import { EventEmitter } from 'node:events';
 import crypto from 'node:crypto';
@@ -5,10 +6,11 @@ import { executeAgentControl, assertSendMode, readAgentSetting, setAgentSetting,
 import { leaseWindow } from '../../window-use.mjs';
 import { isAbortedOpenCodeRequest } from '../../opencode/requests.mjs';
 import { normalizeOpenCodeQuestions, openCodeQuestionRejection, openCodePermissionRejection } from './questions.mjs';
+import { PAGE_SRC } from '../../page/build.mjs';
 import { assertNativeProject, readNativeContext, readNativeConversationProgress,
   inspectNativeWindow, prepareNativeView, createNativeSessionOnView, cancelExactNativeTurn, captureCodexNativeSubmission,
   prepareCursorNativeQuestion, prepareCursorNativePermission, prepareCodexNativeInteraction, prepareDevinNativePermission, prepareDevinNativeQuestion,
-  readCodexBackendProgress, prepareCodexBackendInteraction, cancelExactCodexBackendTurn } from './native-task-adapter.mjs';
+  readCodexBackendProgress, prepareCodexBackendInteraction, cancelExactCodexBackendTurn, readCodexDispatchReceipt, readCodexDispatchAcknowledgement } from './native-task-adapter.mjs';
 
 const APPS = Object.freeze({ codex: 'Codex', cursor: 'Cursor', devin: 'Devin', opencode: 'OpenCode' });
 const NAMES = Object.keys(APPS);
@@ -67,8 +69,9 @@ async function evaluate(row, app, native, env, deviceId) {
   if (isBackendRow(row, app, env)) {
     if (typeof env.backendInfo !== 'function') return { ok: false, reason: 'codex_backend_unavailable' };
     const info = await env.backendInfo(str(row.threadId), deviceId, row);
-    if (!info?.exists || !info.allowed || !info.ready) return { ok: false, reason: 'codex_backend_unavailable' };
+    if (!info?.exists || !info.allowed) return { ok: false, reason: 'codex_backend_unavailable' };
     if (info.nativeOwner) return { ok: false, reason: 'codex_backend_native_owner' };
+    if (!info.ready) return { ok: false, reason: 'codex_backend_unavailable' };
     return { ok: true, backend: true, writer: !!info.writer };
   }
   if (row.dormant) return { ok: false, reason: 'native_window_not_ready' };
@@ -79,16 +82,16 @@ async function evaluate(row, app, native, env, deviceId) {
   return target ? { ok: true, target } : { ok: false, reason: 'native_cdp_unavailable' };
 }
 
-async function selectSession(deviceId, sel, env, reviewer, project = '', createdContext = null) {
+async function selectSession(deviceId, sel, env, reviewer, project = '', createdContext = null, requireCatalog = false) {
   if (!await env.validDevice(deviceId)) fail('device_pairing_revoked');
-  const snapshot = await env.snapshot(deviceId);
+  const snapshot = await env.snapshot(deviceId, sel.app);
   const rows = (snapshot.sessions || []).filter(row => row && row.app === sel.app
     && str(row.windowId) === sel.windowId && str(row.threadId) === sel.threadId);
-  const native = await env.nativeInfo(deviceId);
+  const native = await env.nativeInfo(deviceId, sel.app);
   // A newly created native session may not yet be in the overview catalog.
   // Only task callers supply a canonical authorized project, and the native
   // context must independently prove the complete app/window/thread/project.
-  if (project && (!rows.length || createdContext && rows.length === 1 && !rows[0].workspace)
+  if (!requireCatalog && project && (!rows.length || createdContext && rows.length === 1 && !rows[0].workspace)
       && (createdContext || typeof env.readContext === 'function')) {
     const context = createdContext || await env.readContext(sel, native);
     assertNativeProject(context, project, sel.threadId);
@@ -99,9 +102,9 @@ async function selectSession(deviceId, sel, env, reviewer, project = '', created
   if (rows.length !== 1) fail('session_not_found_or_ambiguous');
   const row = rows[0];
   if (project && !await (env.projectMatches || sameProject)(row.workspace, project)) fail('task_project_mismatch');
+  if (typeof reviewer === 'function' && !reviewer(row)) fail('session_not_allowed');
   const verdict = await evaluate(row, sel.app, native, env, deviceId);
   if (!verdict.ok) fail(verdict.reason);
-  if (typeof reviewer === 'function' && !reviewer(row)) fail('session_not_allowed');
   return { row, native, verdict };
 }
 
@@ -276,16 +279,16 @@ async function createRealDeps() {
       const row = authModule.listDevices().find(device => device.id === id);
       return !!row && !authModule.needsTotp(row);
     },
-    snapshot: async id => overview.overviewSnapshot(id),
-    nativeInfo: async () => ({
+    snapshot: (id, app) => overview.mcpOverviewSnapshot(id, app),
+    nativeInfo: async (_device, app) => ({
       targets: native.nativeTargets(),
-      connected: !!opencodeModule.openCode.connected || await (async()=>{
+      connected: (!app || app === 'opencode') && (!!opencodeModule.openCode.connected || await (async()=>{
         try {
           const response = await fetch(configModule.OPENCODE_URL + '/config',
             { signal: AbortSignal.timeout(1200) });
           return response.ok;
         } catch { return false; }
-      })(),
+      })()),
       catalogReady: app => !!native.nativeSessionCatalog(app)?.ready,
     }),
     capabilities: async app => registry.AGENT_REGISTRY[app]?.capabilities || {},
@@ -336,6 +339,10 @@ async function createRealDeps() {
     },
     readSubmission: (row, receipt, prompt) => captureCodexNativeSubmission(
       sourceFor({ app: row.app, windowId: row.windowId }), row, receipt, prompt),
+    readDispatchReceipt: (row, requestId) => readCodexDispatchReceipt(
+      sourceFor({ app: row.app, windowId: row.windowId }), row, requestId),
+    readDispatchAcknowledgement: (row, requestId) => readCodexDispatchAcknowledgement(
+      sourceFor({ app: row.app, windowId: row.windowId }), row, requestId),
     prepareQuestion: (row, receipt, pending, options) => ({ codex: prepareCodexNativeInteraction, cursor: prepareCursorNativeQuestion, devin: prepareDevinNativeQuestion }[row.app])(
       sourceFor({ app: row.app, windowId: row.windowId }), row, receipt, pending, options),
     preparePermission: (row, receipt, pending, options) => {
@@ -348,9 +355,13 @@ async function createRealDeps() {
     backendInfo: async (id, deviceId) => {
       const backend = codexState.codexBackend;
       if (!backend.records.has(id)) return { exists: false };
+      if (!backend.canAccess(id, deviceId)) return { exists: true, allowed: false };
       let nativeOwner = false;
       try { nativeOwner = !!await registry.AGENT_REGISTRY.codex.adapter.backendOwner(id, false, ''); }
       catch { nativeOwner = true; }
+      // Like the phone path, the matching authorized background thread may
+      // be the first consumer of the app-server after a relay restart.
+      if (!nativeOwner) try { await backend.client.connect(); } catch { /* readiness remains false */ }
       return { exists: true, allowed: backend.canAccess(id, deviceId), ready: !!backend.client.ready,
         writer: backend.hasWriter(id), nativeOwner };
     },
@@ -610,6 +621,34 @@ export async function discoverNativeApps(deviceId, allowSession, deps) {
   };
 }
 
+export async function verifyExistingTaskSession(device, args, auth, deps) {
+  requireScope(auth, ['ra:control']);
+  await selectSession(deviceIdOf(device), selectArgs(args), await resolveDeps(deps),
+    auth.allowSession, args.project_path, null, true);
+}
+
+export async function reusableNativeSessions(device, { app, project, preferred }, auth, free, deps) {
+  const env = await resolveDeps(deps), id = deviceIdOf(device);
+  requireScope(auth, ['ra:control']);
+  if (!await env.validDevice(id)) fail('device_pairing_revoked');
+  const { sessions = [] } = await env.snapshot(id, app);
+  const native = await env.nativeInfo(id, app);
+  const candidates = [];
+  for (const row of sessions) {
+    if (row.app !== app || row.host || !row.threadId || !row.windowId || row.dormant || row.archived
+      || !row.statusKnown || row.busy !== false || row.waiting || row.workspaceMissing
+      || preferred && (preferred.thread_id !== row.threadId || preferred.window_id !== row.windowId)
+      || auth.allowSession && !auth.allowSession(row)) continue;
+    if (fusionProject(row.workspace)?.id !== project.id || !free({ app, threadId: row.threadId, project })) continue;
+    // Ambiguous directory entries are not a verifiable native binding.
+    if (sessions.filter(candidate => candidate.app === app && candidate.threadId === row.threadId).length !== 1) continue;
+    if (!(await evaluate(row, app, native, env, id)).ok) continue;
+    candidates.push({ app, window_id: row.windowId, thread_id: row.threadId });
+    if (candidates.length === 20) break;
+  }
+  return candidates;
+}
+
 async function withNativeControl(device, args, auth, options, action, deps) {
   const env = await resolveDeps(deps), id = deviceIdOf(device);
   requireScope(auth, options.readOnly ? ['ra:read', 'ra:control'] : ['ra:control']);
@@ -644,7 +683,11 @@ async function withNativeControl(device, args, auth, options, action, deps) {
       const current = await selectSession(id, sel, env, reviewer, args.project_path);
       if (current.verdict.backend !== verdict.backend || current.verdict.target?.ws !== verdict.target?.ws)
         fail('native_window_context_changed');
-      return await runAgentControl(view, () => { started = true; return action({ view, row, verdict, env, events, requestId, sel }); });
+      return await runAgentControl(view, () => {
+        auth.beforeAction?.();
+        started = true;
+        return action({ view, row, verdict, env, events, requestId, sel });
+      });
     } finally { release(); }
   }); } catch (error) {
     if (error.outcomeUnknown === undefined) error.outcomeUnknown = started && !options.readOnly;
@@ -672,6 +715,20 @@ export async function controlNativeSession(device, args, auth, deps) {
       const caps = await env.capabilities(view.app);
       if (!caps.queue) fail('native_operation_unsupported');
       if (args.action === 'read_queue') {
+        if (view.app === 'codex' && !view.codexBackend) {
+          const threadId = view.threadId;
+          let result;
+          try {
+            result = await view.cdp.evaluate(`(() => {
+              const helpers = ${PAGE_SRC};
+              return helpers.activeThread() === ${JSON.stringify(threadId)} ? helpers.codexQueued() : null;
+            })()`);
+          } catch {
+            fail('native_queue_unavailable');
+          }
+          if (!Array.isArray(result)) fail('native_thread_selection_failed');
+          return { selection: view.selectionKey(), queued: result };
+        }
         if (view.codexBackend || view.app === 'opencode') await view.handle({ t: 'refresh' });
         else await view.pollChat(true, true);
         const chat = events.findLast(message => message.t === 'chat' && message.sel === view.selectionKey());
@@ -700,6 +757,10 @@ export async function sendNativeMessage(device, args, auth, deps) {
       for (const kind of ['model', 'effort', 'fast']) if (args[kind])
         await setAgentSetting(view, kind, args[kind], events, requestId);
       try {
+        if (sel.app === 'codex' && !verdict.backend) {
+          view.mcpCodexSend = true;
+          view.onCodexReceipt = auth.onCodexReceipt;
+        }
         await executeAgentControl(view, { action: 'send', text: args.message, when, requestId });
         if (typeof env.waitForAck === 'function') await env.waitForAck(events, requestId);
       } catch (error) { throw Object.assign(error, { outcomeUnknown: error.outcomeUnknown ?? true }); }
@@ -718,6 +779,22 @@ export async function sendNativeMessage(device, args, auth, deps) {
     }, deps);
 }
 
+// Reconcile an already-dispatched direct operation without acquiring a writer,
+// switching the desktop session, or submitting the input again.
+export async function readNativeSendAcknowledgement(device, args, auth, deps) {
+  const env = await resolveDeps(deps), id = deviceIdOf(device), sel = selectArgs(args);
+  requireScope(auth, ['ra:read', 'ra:control']);
+  if (sel.app !== 'codex' || sel.windowId === CODEX_BACKEND || !UUID.test(args.operation_id || ''))
+    return null;
+  const reviewer = auth?.allowSession || env.allowSession;
+  const { row, verdict } = await selectSession(id, sel, env, reviewer, '', null, true);
+  if (verdict.backend || typeof env.readDispatchAcknowledgement !== 'function') return null;
+  const proof = await env.readDispatchAcknowledgement(row, args.operation_id);
+  if (!proof || !await env.validDevice(id)) return null;
+  return { app: sel.app, window_id: sel.windowId, thread_id: sel.threadId,
+    request_id: args.operation_id, ...proof };
+}
+
 export async function readNativeProgress(device, args, deps) {
   const env = await resolveDeps(deps);
   const id = deviceIdOf(device);
@@ -733,10 +810,21 @@ export async function readNativeProgress(device, args, deps) {
       last_user_message_id: '', reason: sel.app === 'opencode' && error.status === 404 ? 'native_session_missing' : error.code || 'session_unavailable' };
   }
   let submission = args.expected_native_submission;
-  if (sel.app === 'codex' && !selected.verdict.backend && args.native_queued && !submission) {
-    try { submission = await env.readSubmission(selected.row, args.after_message_id, args.expected_prompt); }
+  const reconcile = sel.app === 'codex' && !selected.verdict.backend && args.reconcile_codex_send;
+  let reconciledRequestId;
+  if (sel.app === 'codex' && !selected.verdict.backend && (args.native_queued || reconcile) && !submission) {
+    try {
+      if (reconcile && !args.after_message_id) {
+        const requestId = args.expected_native_request_id;
+        const receipt = await env.readDispatchReceipt(selected.row, requestId);
+        if (!receipt) fail('native_submission_receipt_unverifiable');
+        args = { ...args, after_message_id: receipt };
+        reconciledRequestId = requestId;
+      }
+      submission = await env.readSubmission(selected.row, args.after_message_id, args.expected_prompt);
+    }
     catch { return { available: true, busy: true, waiting: '', last_reply: '', can_confirm_completion: false,
-      current_turn: false, reason: 'native_queue_promotion_unconfirmed' }; }
+      current_turn: false, reason: args.reconcile_codex_send ? 'native_submission_receipt_unverifiable' : 'native_queue_promotion_unconfirmed' }; }
   }
   let info;
   try { info = await env.progress(id, selected.row, { ...args, expected_native_submission: submission }) || {}; }
@@ -753,6 +841,7 @@ export async function readNativeProgress(device, args, deps) {
     window_id: sel.windowId,
     thread_id: sel.threadId,
     ...(submission ? { native_submission: submission } : {}),
+    ...(reconciledRequestId ? { reconciled_request_id: reconciledRequestId } : {}),
     available,
     busy,
     waiting,
@@ -760,6 +849,7 @@ export async function readNativeProgress(device, args, deps) {
     status_known: statusKnown,
     assistant_after: correlated,
     current_turn: available && info.currentTurn === true,
+    exact_active: available && info.exactActive === true,
     exact_completion: available && info.exactCompletion === true,
     can_confirm_failure: statusKnown && !busy && (info.currentTurn === true || info.exactFailure === true)
       && !!args.after_message_id && info.lastUserMessageId === args.after_message_id && ['error', 'failed'].includes(info.run?.status),
@@ -781,7 +871,7 @@ export async function readNativeProgress(device, args, deps) {
       || ['codex', 'cursor', 'devin'].includes(sel.app) && !selected.verdict.backend && waitingRequest.kind === 'permission' && typeof env.preparePermission === 'function'),
     last_user_message_id: str(info.lastUserMessageId),
     ...(info.nativeTurnId !== undefined ? { native_turn_id: info.nativeTurnId } : {}),
-    reason: available ? (info.reason || (correlated || info.cancelled === true || waitingRequest && info.currentTurn === true ? '' : 'no_native_send_correlation')) : (info.reason || 'native_info_unavailable'),
+    reason: available ? (info.reason || (correlated || info.exactActive || info.cancelled === true || waitingRequest && info.currentTurn === true ? '' : 'no_native_send_correlation')) : (info.reason || 'native_info_unavailable'),
     ...(info.run ? { run: info.run } : {}),
   };
 }

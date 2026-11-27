@@ -294,7 +294,16 @@ export default [
     c.check(preview.available, '原生摘要实际可读');
     c.equal(preview.threadId, target.thread, '卡片摘要属于当前会话');
     c.equal(preview.win, target.win, '摘要属于请求的软件路由');
-    c.check((preview.text || '').length <= 600 && (preview.tools || []).length <= 3, '卡片摘要和工具数量遵守显示上限');
+    // Expanded native cards intentionally retain the complete latest message
+    // (cae9908); only the compact last field and tool list have these limits.
+    c.check((preview.last || '').length <= 600 && (preview.tools || []).length <= 3, '折叠摘要和工具数量遵守显示上限');
+    if (['cursor', 'devin'].includes(app))
+      c.equal(preview.last || '', (preview.text || '').slice(-600), '原生展开摘要保留完整文本，折叠摘要取末尾');
+    if (app === 'opencode') c.check((preview.text || '').length <= 600, 'OpenCode 当前轮摘要遵守 600 字符上限');
+    if (preview.last) {
+      const shown = await c.b.wait(`(()=>{const p=ovPreviews.get(${attr(target.key)})?.value,el=document.querySelector(${attr(card+' .ov-last .ovRaw')});return p?.available&&p.threadId===${attr(target.thread)}&&p.text&&el?.textContent===p.text?{length:p.text.length}:null;})()`, '展开卡片显示真实完整摘要');
+      c.check(shown.length > 0, '实际展开摘要非空且与原生回包一致');
+    }
     c.check(await c.b.has(`${card} [data-ov="full"]`), '展开卡片保留打开正文入口');
     return { elapsedMs: opened.elapsedMs, previewCharacters: preview.text?.length || 0 };
   } },
