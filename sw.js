@@ -1,10 +1,10 @@
 // Caches the app shell so the installed app opens instantly; live data (url.json, relay) always goes to the network.
 importScripts('push-sw.js?v=478');
 const CACHE_PREFIX = 'remote-agent:' + self.registration.scope + ':';
-const CACHE = CACHE_PREFIX + 'v527'; // keep in sync with APP_VERSION in js/core.js
+const CACHE = CACHE_PREFIX + 'v530'; // keep in sync with APP_VERSION in js/core.js
 const SHELL = ['push-sw.js?v=478', 'js/shared-rules.js?v=501', 'js/ui-helpers.js?v=501', './', 'index.html',   'app.css?v=525', 'i18n.js?v=525', 'manifest.webmanifest', 'icon-192.png', 'icon-512.png', 'logo.png',
-  'js/core.js?v=527', 'js/fusion.js?v=525-remote-qa1', 'js/gate.js?v=525', 'js/auth.js?v=525', 'js/net.js?v=525', 'js/computer-connection.js?v=525', 'js/command-transport.js?v=525', 'js/desktop-operations.js?v=525', 'js/connection-resume.js?v=525', 'js/session-selection.js?v=525', 'js/relay-events.js?v=525', 'js/source-ref.js?v=525', 'js/peers.js?v=525', 'js/phone-control.js?v=525', 'js/sheets.js?v=525', 'js/notify.js?v=525', 'js/mode.js?v=386', 'js/chat.js?v=525',
-  'js/history.js?v=526', 'js/files.js?v=525', 'js/screen.js?v=382',   'js/terminal.js?v=525', 'js/composer-operations.js?v=525', 'js/composer.js?v=525', 'js/voice.js?v=501', 'js/local-voice.js?v=501', 'js/voice-worklet.js?v=133',
+  'js/core.js?v=530', 'js/fusion.js?v=525-remote-qa1', 'js/gate.js?v=525', 'js/auth.js?v=525', 'js/net.js?v=525', 'js/computer-connection.js?v=525', 'js/command-transport.js?v=528', 'js/desktop-operations.js?v=525', 'js/connection-resume.js?v=530', 'js/session-selection.js?v=530', 'js/relay-events.js?v=525', 'js/source-ref.js?v=525', 'js/peers.js?v=525', 'js/phone-control.js?v=525', 'js/sheets.js?v=528', 'js/notify.js?v=530', 'js/mode.js?v=386', 'js/chat.js?v=525',
+  'js/history.js?v=530', 'js/files.js?v=525', 'js/screen.js?v=382',   'js/terminal.js?v=525', 'js/composer-operations.js?v=525', 'js/composer.js?v=525', 'js/voice.js?v=501', 'js/local-voice.js?v=501', 'js/voice-worklet.js?v=133',
   'js/transfer.js?v=527', 'js/scanner.js',
   'js/latency.js?v=367', 'js/image-editor.js?v=447', 'js/ra-core-ui.js?v=525', 'js/overview.js?v=525',
   'markdown-it/markdown-it-15.0.3.min.js', 'js/markdown.js?v=449',

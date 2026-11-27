@@ -26,7 +26,8 @@ function send(obj, target) {
     obj.requestId = ++menuRequest;
     menuPending = { requestId: obj.requestId, kind: obj.kind, sel: viewSel };
   }
-  if (obj.t === 'pickMenu' && (obj.kind === 'model' || obj.kind === 'effort' || obj.kind === 'fast' || currentApp === 'opencode' && obj.kind === 'permission')) {
+  if (obj.t === 'pickMenu' && (['model', 'effort', 'fast'].includes(obj.kind) || obj.kind === 'permission'
+      && (currentApp === 'opencode' || currentApp === 'codex' && supportsCapability('permissionReceipt', false)))) {
     clearSwitchWatch();
     obj.requestId = ++menuPickRequest;
     modelSwitchRequest = { requestId: obj.requestId, sel: viewSel };

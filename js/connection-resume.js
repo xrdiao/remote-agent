@@ -249,7 +249,8 @@ async function connect(resumeLink = null) {
     Object.assign(conn, link.connection);
     authed = link.authed;
     restoreSelectionProjection(link.navigationId, ready ? null : preload.navigation);
-    lastChat = null; viewSel = '';
+    setRenderedChat(null);
+    setViewSelection('');
     ungate();
     if (ready) {
       Object.assign(conn, { initialSelection: false, attachFailed: false });

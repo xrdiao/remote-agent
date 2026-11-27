@@ -705,6 +705,9 @@ function toggleExecutionRecords() {
   renderChat(lastChat, chatStale, false, false);
   showMainMenu();
 }
+function setRenderedChat(chat) {
+  lastChat = chat;
+}
 function renderChat(chat, stale, loading = false, keepReading = true, historyInsertion = false) {
   if (chat) reconcileSent(chat);
   chat = withMessageTimes(chat);
@@ -755,7 +758,7 @@ function renderChat(chat, stale, loading = false, keepReading = true, historyIns
     chat = { ...chat, items: merged, ...(currentApp === 'devin' && historyExpanded && historyCursor !== null ? { earlier: historyCursor > 0 } : {}) };
   }
   if ((chatTouching || chatMomentum || chatScrolling || turnNavPointer?.dragging) && chat && previous?.thread === chat.thread) {
-    lastChat = chat;
+    setRenderedChat(chat);
     paintGenerationTime();
     deferredScrollRender = true;
     chatBusy = !!chat.busy;
@@ -768,7 +771,7 @@ function renderChat(chat, stale, loading = false, keepReading = true, historyIns
   let restorePosition = !followBottom && !threadChanged && scrollMode === 'freeScroll'
     && (keepReading || historyInsertion) ? chatReadingPosition() : null;
   noteChatLayoutChange();
-  lastChat = chat; updateTitle();
+  setRenderedChat(chat); updateTitle();
   paintGenerationTime();
   paintWorkdir(chat?.workdir);
   if (chat && 'context' in chat) renderContext(chat.context);
